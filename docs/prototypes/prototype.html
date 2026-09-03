@@ -1,0 +1,1804 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VideoCutTool - Motrix 风格视频裁剪与方案管理原型</title>
+  <style>
+    :root {
+      --bg-main: #0c0e14;
+      --bg-sidebar: #090b10;
+      --bg-card: rgba(22, 27, 34, 0.85);
+      --bg-card-hover: rgba(30, 36, 46, 0.95);
+      --bg-elevated: #161b22;
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-active: rgba(88, 166, 255, 0.4);
+      --accent-blue: #58a6ff;
+      --accent-green: #238636;
+      --accent-green-hover: #2ea043;
+      --accent-red: #da3633;
+      --accent-red-hover: #f85149;
+      --text-main: #f0f6fc;
+      --text-muted: #8b949e;
+      --text-dim: #6e7681;
+      --content-max-width: 1360px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: radial-gradient(circle at 50% 0%, #151a24 0%, var(--bg-main) 65%);
+      color: var(--text-main);
+      height: 100vh;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* ========================================================= */
+    /* 1. Motrix 经典左侧侧边栏 (Sidebar Navigation)             */
+    /* ========================================================= */
+    aside.sidebar {
+      width: 68px;
+      height: 100%;
+      background: var(--bg-sidebar);
+      border-right: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 18px 0 20px;
+      z-index: 60;
+      flex-shrink: 0;
+    }
+
+    .sidebar-logo {
+      width: 42px;
+      height: 42px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #1f6feb, #238636);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 14px rgba(31, 111, 235, 0.4);
+      margin-bottom: 28px;
+      cursor: pointer;
+    }
+
+    .nav-tabs {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      flex: 1;
+      width: 100%;
+      align-items: center;
+    }
+
+    .nav-item {
+      width: 46px;
+      height: 46px;
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-muted);
+      cursor: pointer;
+      position: relative;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      border: 1px solid transparent;
+    }
+
+    .nav-item:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .nav-item.active {
+      color: #fff;
+      background: rgba(88, 166, 255, 0.15);
+      border-color: rgba(88, 166, 255, 0.3);
+      box-shadow: 0 2px 10px rgba(88, 166, 255, 0.2);
+    }
+
+    .nav-item.active::before {
+      content: "";
+      position: absolute;
+      left: -11px;
+      top: 10px;
+      bottom: 10px;
+      width: 3px;
+      border-radius: 0 3px 3px 0;
+      background: var(--accent-blue);
+      box-shadow: 0 0 8px var(--accent-blue);
+    }
+
+    .nav-badge {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      background: var(--accent-blue);
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 10px;
+      line-height: 1.2;
+    }
+
+    .sidebar-footer {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+
+    /* ========================================================= */
+    /* 2. 右侧主视窗 (Content Area) 与全局 1360px 统一轴线对齐    */
+    /* ========================================================= */
+    .app-main {
+      flex: 1;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      position: relative;
+    }
+
+    /* 顶栏 Header：内部严格对齐 1360px 轴线 */
+    header {
+      background: rgba(12, 14, 20, 0.75);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border-subtle);
+      position: sticky;
+      top: 0;
+      z-index: 40;
+      width: 100%;
+      padding: 12px 28px;
+    }
+
+    .header-inner {
+      max-width: var(--content-max-width);
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+    }
+
+    .header-title {
+      font-size: 15px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    /* 通用按钮 */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      border: 1px solid var(--border-subtle);
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-main);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.18);
+      transform: translateY(-1px);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn-primary {
+      background: linear-gradient(180deg, #2ea043, #238636);
+      border-color: rgba(255, 255, 255, 0.15);
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(35, 134, 54, 0.3);
+    }
+
+    .btn-primary:hover {
+      background: linear-gradient(180deg, #34b34b, #2ea043);
+      box-shadow: 0 4px 14px rgba(35, 134, 54, 0.45);
+    }
+
+    .btn-danger {
+      background: rgba(218, 54, 51, 0.15);
+      border-color: rgba(218, 54, 51, 0.3);
+      color: #f85149;
+    }
+
+    .btn-danger:hover {
+      background: rgba(218, 54, 51, 0.25);
+    }
+
+    /* Tab 页面容器 */
+    .tab-page {
+      display: none;
+      padding: 24px 28px 110px;
+      max-width: var(--content-max-width);
+      width: 100%;
+      margin: 0 auto;
+      flex-direction: column;
+      gap: 22px;
+    }
+
+    .tab-page.active {
+      display: flex;
+    }
+
+    /* ========================================================= */
+    /* 3. 播放器与时间轴：严格居中与对齐                         */
+    /* ========================================================= */
+    .player-section {
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .video-viewport {
+      position: relative;
+      width: 100%;
+      height: 380px;
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    video, canvas#virtual-screen {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    .video-overlay-info {
+      position: absolute;
+      top: 14px;
+      left: 16px;
+      background: rgba(0, 0, 0, 0.65);
+      backdrop-filter: blur(8px);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      color: var(--text-muted);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      gap: 12px;
+    }
+
+    .timeline-container {
+      position: relative;
+      width: 100%;
+      height: 72px;
+      background: rgba(15, 18, 24, 0.95);
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      cursor: pointer;
+      overflow: hidden;
+    }
+
+    canvas#timeline-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* 播放控制栏：3 段式弹性布局，保证中间播放器绝对居中！ */
+    .player-controls {
+      display: flex;
+      align-items: center;
+      padding: 0 4px;
+      width: 100%;
+    }
+
+    .player-controls-left {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+    }
+
+    .player-controls-center {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .player-controls-right {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+    }
+
+    .time-display {
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 15px;
+      font-weight: 600;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .time-sub {
+      color: var(--text-dim);
+      font-weight: 400;
+      font-size: 13px;
+    }
+
+    .btn-cut {
+      background: linear-gradient(135deg, rgba(88, 166, 255, 0.2), rgba(31, 111, 235, 0.25));
+      border-color: rgba(88, 166, 255, 0.4);
+      color: var(--accent-blue);
+      padding: 8px 18px;
+      font-size: 14px;
+      font-weight: 600;
+      box-shadow: 0 0 16px rgba(88, 166, 255, 0.15);
+    }
+
+    .btn-cut:hover {
+      background: linear-gradient(135deg, rgba(88, 166, 255, 0.35), rgba(31, 111, 235, 0.45));
+      border-color: var(--accent-blue);
+      box-shadow: 0 0 20px rgba(88, 166, 255, 0.3);
+      color: #fff;
+    }
+
+    /* ========================================================= */
+    /* 4. 彻底重构：分段卡片 3 阶段固定栅格，根治一切“不齐”与折行 */
+    /* ========================================================= */
+    .segment-section {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 4px;
+    }
+
+    .section-title {
+      font-size: 16px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .section-counter {
+      font-size: 12px;
+      color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.06);
+      padding: 3px 10px;
+      border-radius: 12px;
+    }
+
+    /* 卡片网格：最小宽度 310px，统一 stretch 等高拉伸 */
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+      gap: 16px;
+      width: 100%;
+      align-items: stretch;
+    }
+
+    /* 单张卡片：统一固定垂直结构，杜绝任何一行高度漂移！ */
+    .segment-card {
+      background: var(--bg-card);
+      backdrop-filter: blur(10px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+      overflow: hidden;
+      min-width: 0;
+      height: 100%; /* 保证整行卡片 100% 绝对等高 */
+    }
+
+    .segment-card:hover {
+      background: var(--bg-card-hover);
+      border-color: rgba(255, 255, 255, 0.16);
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    }
+
+    .segment-card.is-keep {
+      border-color: rgba(35, 134, 54, 0.45);
+      box-shadow: inset 0 0 0 1px rgba(35, 134, 54, 0.25);
+    }
+
+    .segment-card.is-keep::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 4px;
+      height: 100%;
+      background: #238636;
+      box-shadow: 0 0 10px rgba(35, 134, 54, 0.6);
+    }
+
+    .segment-card.is-discard {
+      background: rgba(26, 18, 20, 0.85);
+      border-color: rgba(218, 54, 51, 0.4);
+    }
+
+    .segment-card.is-discard::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 4px;
+      height: 100%;
+      background: var(--accent-red);
+    }
+
+    /* 行 1：顶部元信息 (序号 + 决策胶囊标 | 右侧时长) - 绝不放时间！空间无限！ */
+    .card-row-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 24px;
+      width: 100%;
+    }
+
+    .meta-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .card-id-text {
+      font-size: 14px;
+      font-weight: 800;
+      font-family: ui-monospace, monospace;
+    }
+
+    .decision-pill {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 5px;
+      white-space: nowrap;
+      flex-shrink: 0;
+      line-height: 1.2;
+    }
+
+    .decision-pill.keep {
+      background: rgba(35, 134, 54, 0.25);
+      color: #3fb950;
+      border: 1px solid rgba(35, 134, 54, 0.4);
+    }
+
+    .decision-pill.discard {
+      background: rgba(218, 54, 51, 0.25);
+      color: #f85149;
+      border: 1px solid rgba(218, 54, 51, 0.4);
+    }
+
+    .duration-pill {
+      font-size: 11.5px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-muted);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    /* 行 2：专属独立起止时间展示行（大号纯白等宽字，左右各占，箭头连接，绝对单行绝不折行！） */
+    .card-row-time {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      width: 100%;
+    }
+
+    .time-val {
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 13.5px;
+      font-weight: 700;
+      color: #ffffff;
+      letter-spacing: 0.4px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .time-separator-arrow {
+      color: var(--text-dim);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    /* 行 3：操作按钮行（底端吸附，所有卡片按钮水平处于同一条水平绝对基准线） */
+    .card-row-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: auto; /* 保证底端绝对齐平对齐 */
+      padding-top: 6px;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      width: 100%;
+    }
+
+    .btn-card-preview {
+      padding: 6px 10px;
+      border-radius: 7px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      font-size: 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .btn-card-preview:hover {
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    /* 保留/丢弃双态一体切换胶囊 */
+    .toggle-group {
+      display: flex;
+      flex: 1;
+      border-radius: 7px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(0, 0, 0, 0.2);
+    }
+
+    .btn-toggle-option {
+      flex: 1;
+      padding: 6px 4px;
+      font-size: 12px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      color: var(--text-dim);
+      white-space: nowrap;
+      transition: all 0.2s;
+    }
+
+    .btn-toggle-option.keep.active {
+      background: linear-gradient(180deg, #2ea043, #238636);
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(35, 134, 54, 0.4);
+    }
+
+    .btn-toggle-option.discard.active {
+      background: linear-gradient(180deg, #e5534b, #da3633);
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(218, 54, 51, 0.4);
+    }
+
+    .nudge-group {
+      display: flex;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .btn-nudge {
+      padding: 5px 6px;
+      font-size: 11px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .btn-nudge:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: #fff;
+    }
+
+    /* ========================================================= */
+    /* 5. 方案管理中心 (Plan Manager)                            */
+    /* ========================================================= */
+    .plans-container {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .plans-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 12px 18px;
+    }
+
+    .filter-tabs {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .filter-btn {
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 12px;
+      cursor: pointer;
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-muted);
+      transition: all 0.2s;
+    }
+
+    .filter-btn.active {
+      background: rgba(88, 166, 255, 0.15);
+      color: var(--accent-blue);
+      border-color: rgba(88, 166, 255, 0.3);
+      font-weight: 600;
+    }
+
+    .plan-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 18px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      transition: all 0.2s;
+    }
+
+    .plan-card:hover {
+      background: var(--bg-card-hover);
+      border-color: rgba(255, 255, 255, 0.16);
+    }
+
+    .plan-info {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .plan-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .plan-path-sub {
+      font-size: 12px;
+      font-family: ui-monospace, monospace;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .plan-meta-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+
+    .status-tag {
+      padding: 3px 9px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .status-tag.ready {
+      background: rgba(88, 166, 255, 0.15);
+      color: var(--accent-blue);
+      border: 1px solid rgba(88, 166, 255, 0.3);
+    }
+
+    .status-tag.completed {
+      background: rgba(35, 134, 54, 0.2);
+      color: #3fb950;
+      border: 1px solid rgba(35, 134, 54, 0.4);
+      box-shadow: 0 0 10px rgba(35, 134, 54, 0.2);
+    }
+
+    .plan-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* ========================================================= */
+    /* 6. 设置页 (Settings)                                      */
+    /* ========================================================= */
+    .settings-group {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .settings-group-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: #fff;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      padding-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .setting-item {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .setting-text h4 {
+      font-size: 14px;
+      font-weight: 500;
+      margin-bottom: 4px;
+      color: #fff;
+    }
+
+    .setting-text p {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    .setting-control {
+      flex-shrink: 0;
+    }
+
+    .select-input, .text-input {
+      background: #0d1117;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      color: #fff;
+      padding: 7px 12px;
+      font-size: 13px;
+      outline: none;
+    }
+
+    /* ========================================================= */
+    /* 7. 底部 Dock 状态栏：内部与 1360px 轴线完全对齐       */
+    /* ========================================================= */
+    .dock-footer {
+      position: fixed;
+      bottom: 0;
+      left: 68px;
+      right: 0;
+      background: rgba(12, 14, 20, 0.88);
+      backdrop-filter: blur(20px);
+      border-top: 1px solid var(--border-subtle);
+      padding: 12px 28px;
+      z-index: 50;
+      display: flex;
+    }
+
+    .dock-inner {
+      max-width: var(--content-max-width);
+      margin: 0 auto;
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .footer-stats {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      font-size: 13px;
+    }
+
+    .stat-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .stat-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    .stat-dot.green { background: #2ea043; box-shadow: 0 0 8px rgba(46, 160, 67, 0.6); }
+    .stat-dot.red { background: #f85149; }
+    .stat-dot.blue { background: #58a6ff; }
+
+    .stat-value {
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    /* 模态弹窗 */
+    .modal-backdrop {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(8px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      padding: 20px;
+    }
+
+    .modal-backdrop.open {
+      display: flex;
+    }
+
+    .modal-box {
+      background: #161b22;
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      max-width: 680px;
+      width: 100%;
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+      overflow: hidden;
+    }
+
+    .modal-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .modal-body {
+      padding: 20px;
+      overflow-y: auto;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 13px;
+      color: #7ee787;
+      background: #0d1117;
+      line-height: 1.5;
+    }
+
+    .modal-footer {
+      padding: 14px 20px;
+      border-top: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 左侧 Motrix 风格导航侧边栏 -->
+  <aside class="sidebar">
+    <div class="sidebar-logo" title="VideoCutTool">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="6" cy="6" r="3"></circle>
+        <circle cx="6" cy="18" r="3"></circle>
+        <line x1="20" y1="4" x2="8.12" y2="15.88"></line>
+        <line x1="14.47" y1="14.48" x2="20" y2="20"></line>
+        <line x1="8.12" y1="8.12" x2="12" y2="12"></line>
+      </svg>
+    </div>
+
+    <div class="nav-tabs">
+      <div class="nav-item active" id="tab-btn-cutter" onclick="switchTab('cutter')" title="视频裁剪工作台">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="6" cy="6" r="3"></circle>
+          <circle cx="6" cy="18" r="3"></circle>
+          <line x1="20" y1="4" x2="8.12" y2="15.88"></line>
+          <line x1="14.47" y1="14.48" x2="20" y2="20"></line>
+          <line x1="8.12" y1="8.12" x2="12" y2="12"></line>
+        </svg>
+      </div>
+
+      <div class="nav-item" id="tab-btn-plans" onclick="switchTab('plans')" title="方案管理与任务执行">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+          <polyline points="14 2 14 8 20 8"></polyline>
+          <line x1="16" y1="13" x2="8" y2="13"></line>
+          <line x1="16" y1="17" x2="8" y2="17"></line>
+          <polyline points="10 9 9 9 8 9"></polyline>
+        </svg>
+        <span class="nav-badge" id="plans-count-badge">2</span>
+      </div>
+
+      <div class="nav-item" id="tab-btn-settings" onclick="switchTab('settings')" title="偏好与输出设置">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
+          <circle cx="12" cy="12" r="3"></circle>
+        </svg>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <div style="font-size: 11px; color: var(--text-dim); font-family: monospace;">v1.0</div>
+    </div>
+  </aside>
+
+  <!-- 右侧主界面内容 -->
+  <div class="app-main">
+    <header>
+      <div class="header-inner">
+        <div class="header-title">
+          <span id="page-heading">视频裁剪工作台</span>
+          <span style="font-size: 11px; padding: 2px 8px; border-radius: 12px; background: rgba(88, 166, 255, 0.15); color: var(--accent-blue); border: 1px solid rgba(88, 166, 255, 0.25);">
+            Motrix Shell
+          </span>
+        </div>
+
+        <div class="header-actions" id="header-cutter-actions">
+          <input type="file" id="file-input" accept="video/*" style="display: none;" />
+          <button class="btn" onclick="document.getElementById('file-input').click()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"></path>
+              <path d="M12 12v9"></path>
+              <path d="m16 16-4-4-4 4"></path>
+            </svg>
+            载入视频
+          </button>
+          <button class="btn" onclick="saveCurrentToPlans()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+              <polyline points="17 21 17 13 7 13 7 21"></polyline>
+              <polyline points="7 3 7 8 15 8"></polyline>
+            </svg>
+            存为方案
+          </button>
+          <button class="btn" onclick="openPlanModal()">查看方案 JSON</button>
+          <button class="btn btn-primary" onclick="triggerExecution()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <polygon points="5 3 19 12 5 21 5 3"></polygon>
+            </svg>
+            实施剪辑
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Tab 1: 视频裁剪工作台 -->
+    <div class="tab-page active" id="tab-page-cutter">
+      <section class="player-section">
+        <div class="video-viewport">
+          <video id="real-video" style="display: none;" playsinline></video>
+          <canvas id="virtual-screen"></canvas>
+          <div class="video-overlay-info">
+            <span id="video-name-tag">示例影片: sample_movie.mp4</span>
+            <span style="color: #3fb950;">● 关键帧保全已激活 (绝不多删)</span>
+          </div>
+        </div>
+
+        <div class="timeline-container" id="timeline-box" title="点击任意位置定位播放进度">
+          <canvas id="timeline-canvas"></canvas>
+        </div>
+
+        <!-- 3 段式控制栏：中间绝对居中 -->
+        <div class="player-controls">
+          <div class="player-controls-left">
+            <div class="time-display">
+              <span id="current-time-text">00:00.000</span>
+              <span class="time-sub">/</span>
+              <span class="time-sub" id="total-time-text">02:30.000</span>
+            </div>
+          </div>
+
+          <div class="player-controls-center">
+            <button class="btn" onclick="stepFrame(-1)" title="后退 1 帧 / 0.04s (快捷键: ←)">◀ 逐帧</button>
+            <button class="btn btn-primary" id="play-pause-btn" onclick="togglePlay()" style="padding: 7px 22px;">
+              <span id="play-btn-text">播放</span>
+            </button>
+            <button class="btn" onclick="stepFrame(1)" title="前进 1 帧 / 0.04s (快捷键: →)">逐帧 ▶</button>
+          </div>
+
+          <div class="player-controls-right">
+            <button class="btn btn-cut" onclick="insertCutAtCurrent()" title="快捷键: 按 C 键切断">
+              ✂ 插入切点 (按 C)
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 分段卡片流：严格 3 行固定栅格，绝对齐平！ -->
+      <section class="segment-section">
+        <div class="section-header">
+          <div class="section-title">
+            <span>分段管理流 (Segment Cards)</span>
+            <span class="section-counter" id="segment-summary-count">共 4 个片段</span>
+          </div>
+          <div style="font-size: 12px; color: var(--text-dim);">
+            三段式卡片栅格：元信息行、独立起止时间行、底端操作行；字字清晰，彻底杜绝折行与高低不齐。
+          </div>
+        </div>
+
+        <div class="cards-grid" id="cards-container">
+          <!-- 由 JS 动态渲染 -->
+        </div>
+      </section>
+    </div>
+
+    <!-- Tab 2: 方案管理 (Plan Manager) -->
+    <div class="tab-page" id="tab-page-plans">
+      <div class="plans-container">
+        <div class="plans-toolbar">
+          <div class="filter-tabs">
+            <button class="filter-btn active" onclick="filterPlans('all', this)">全部方案 (<span id="count-all">2</span>)</button>
+            <button class="filter-btn" onclick="filterPlans('ready', this)">⏳ 待执行 (<span id="count-ready">1</span>)</button>
+            <button class="filter-btn" onclick="filterPlans('completed', this)">✔ 已完成剪辑 (<span id="count-completed">1</span>)</button>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <button class="btn" onclick="switchTab('cutter')">+ 新建打标方案</button>
+            <button class="btn btn-primary" onclick="batchExecutePlans()">🚀 批量执行待办方案</button>
+          </div>
+        </div>
+
+        <div id="plans-list" style="display: flex; flex-direction: column; gap: 14px;">
+          <!-- 动态方案卡片 -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 3: 设置页 (Settings) -->
+    <div class="tab-page" id="tab-page-settings">
+      <div class="settings-group">
+        <div class="settings-group-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+          </svg>
+          默认输出目录规则 (Output Policy)
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-text">
+            <h4>默认输出位置</h4>
+            <p>已默认配置为原视频同级目录下的专属 _cuts/ 子文件夹，原片与剪切片物理隔离，杜绝混乱。</p>
+          </div>
+          <div class="setting-control">
+            <select class="select-input" id="setting-output-rule">
+              <option value="sub_folder" selected>原视频同级 _cuts/ 子文件夹 (默认推荐)</option>
+              <option value="same_directory">原视频同级目录 (加 _cut 后缀)</option>
+              <option value="custom_fixed">固定自定义全局输出目录</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+          </svg>
+          启动持久化配置 (config.json)
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-text">
+            <h4>位于可执行程序同级的 config.json</h4>
+            <p>软件启动时自动检测或生成该文件，方案与策略永久有效。</p>
+          </div>
+          <div class="setting-control">
+            <button class="btn" onclick="openConfigModal()">查看 / 刷新 config.json</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+          </svg>
+          LosslessCut 同款无损流复制与保全
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-text">
+            <h4>关键帧“绝不多删”安全对齐</h4>
+            <p>自动向左吸附前一个关键帧，保证正片零截断、不黑屏、秒切无损。</p>
+          </div>
+          <div class="setting-control">
+            <input type="checkbox" checked disabled style="width: 18px; height: 18px; accent-color: #2ea043;" />
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 底部 Dock 状态栏：内部与 1360px 轴线完全对齐 -->
+    <div class="dock-footer" id="dock-footer">
+      <div class="dock-inner">
+        <div class="footer-stats">
+          <div class="stat-item">
+            <span class="stat-dot green"></span>
+            <span>保留正片:</span>
+            <span class="stat-value" id="stat-kept-duration">02:30.000</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-dot red"></span>
+            <span>剔除片段:</span>
+            <span class="stat-value" id="stat-discarded-duration">00:00.000</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-dot blue"></span>
+            <span>模式:</span>
+            <span style="color: #7ee787; font-weight: 500;">极速流拷贝 (-c copy)</span>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 16px;">
+          <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); cursor: pointer;">
+            <input type="checkbox" id="concat-checkbox" checked style="accent-color: #2ea043;" />
+            <span>自动合并为单文件</span>
+          </label>
+          <button class="btn btn-primary" onclick="triggerExecution()">🚀 立即执行剪辑</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 模态弹窗 -->
+  <div class="modal-backdrop" id="plan-modal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div style="font-size: 15px; font-weight: 600;" id="modal-title">标准剪辑方案预览 (MediaRetentionPlan)</div>
+        <button class="btn" onclick="closePlanModal()" style="padding: 4px 8px;">✕</button>
+      </div>
+      <pre class="modal-body" id="plan-json-display"></pre>
+      <div class="modal-footer">
+        <button class="btn" onclick="copyModalContent()">复制内容</button>
+        <button class="btn btn-primary" onclick="closePlanModal()">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      durationMs: 150000,
+      currentMs: 0,
+      isPlaying: false,
+      isRealVideo: false,
+      currentVideoPath: 'D:/Movies/sample_movie.mp4',
+      currentFilter: 'all',
+      cuts: [30000, 93055, 110000],
+      decisions: {
+        seg_0: 'discard',
+        seg_1: 'keep',
+        seg_2: 'discard',
+        seg_3: 'keep'
+      },
+      keyframes: [0, 2400, 4800, 7200, 9600, 12000, 14400, 16800, 19200, 21600, 24000, 26400, 28800, 31200, 45000, 60000, 75000, 90000, 92800, 105000, 108000, 112000, 120000, 135000, 150000],
+      savedPlans: [
+        {
+          id: 'plan_20260903_01',
+          title: 'sample_movie.mp4 (去片头与中插广告)',
+          sourcePath: 'D:/Movies/sample_movie.mp4',
+          outputPath: 'D:/Movies/_cuts/sample_movie_cut.mp4',
+          totalDurationMs: 150000,
+          keptDurationMs: 103055,
+          cutsCount: 3,
+          status: 'ready',
+          updatedAt: '2026-09-03 20:45',
+          completedAt: null,
+          cuts: [30000, 93055, 110000],
+          decisions: { seg_0: 'discard', seg_1: 'keep', seg_2: 'discard', seg_3: 'keep' }
+        },
+        {
+          id: 'plan_20260902_02',
+          title: 'tutorial_full_hd.mkv (仅截取核心讲解)',
+          sourcePath: 'D:/Projects/tutorial_full_hd.mkv',
+          outputPath: 'D:/Projects/_cuts/tutorial_full_hd_cut.mkv',
+          totalDurationMs: 3600000,
+          keptDurationMs: 1800000,
+          cutsCount: 2,
+          status: 'completed',
+          updatedAt: '2026-09-02 18:20',
+          completedAt: '2026-09-02 18:22 (已完成)',
+          cuts: [300000, 2100000],
+          decisions: { seg_0: 'discard', seg_1: 'keep', seg_2: 'discard' }
+        }
+      ]
+    };
+
+    function switchTab(tabId) {
+      document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.tab-page').forEach(el => el.classList.remove('active'));
+
+      document.getElementById(`tab-btn-${tabId}`).classList.add('active');
+      document.getElementById(`tab-page-${tabId}`).classList.add('active');
+
+      const headings = {
+        cutter: '视频裁剪工作台',
+        plans: '方案管理中心 (Plan Manager)',
+        settings: '系统配置与输出偏好'
+      };
+      document.getElementById('page-heading').innerText = headings[tabId];
+
+      const isCutter = (tabId === 'cutter');
+      document.getElementById('header-cutter-actions').style.display = isCutter ? 'flex' : 'none';
+      document.getElementById('dock-footer').style.display = isCutter ? 'flex' : 'none';
+
+      if (tabId === 'plans') renderPlansList();
+    }
+
+    function formatTime(ms) {
+      if (ms < 0) ms = 0;
+      const totalSeconds = ms / 1000;
+      const mins = Math.floor(totalSeconds / 60);
+      const secs = Math.floor(totalSeconds % 60);
+      const millis = Math.floor(ms % 1000);
+      return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+    }
+
+    function formatDuration(ms) {
+      const totalSec = Math.round(ms / 1000);
+      const mins = Math.floor(totalSec / 60);
+      const secs = totalSec % 60;
+      if (mins > 0) return `${mins}分${secs}秒`;
+      return `${secs}秒`;
+    }
+
+    function getSegments() {
+      const sortedCuts = [...state.cuts].sort((a, b) => a - b);
+      const points = [0, ...sortedCuts, state.durationMs];
+      const segments = [];
+
+      for (let i = 0; i < points.length - 1; i++) {
+        const id = `seg_${i}`;
+        const startMs = points[i];
+        const endMs = points[i + 1];
+        const decision = state.decisions[id] || 'keep';
+        segments.push({ id, index: i + 1, startMs, endMs, durationMs: endMs - startMs, decision });
+      }
+      return segments;
+    }
+
+    // ==========================================
+    // 渲染分段卡片：严格 3 行固定栅格架构
+    // ==========================================
+    function renderSegmentCards() {
+      const container = document.getElementById('cards-container');
+      container.innerHTML = '';
+      const segments = getSegments();
+
+      document.getElementById('segment-summary-count').innerText = `共 ${segments.length} 个片段`;
+
+      segments.forEach(seg => {
+        const isKeep = (seg.decision === 'keep');
+        const card = document.createElement('div');
+        card.className = `segment-card ${isKeep ? 'is-keep' : 'is-discard'}`;
+
+        card.innerHTML = `
+          <!-- 行 1：元信息 (序号 + 决策徽章 | 时长胶囊) 永不折行 -->
+          <div class="card-row-meta">
+            <div class="meta-left">
+              <span class="card-id-text" style="color: ${isKeep ? '#3fb950' : '#f85149'};">#${seg.index}</span>
+              <span class="decision-pill ${isKeep ? 'keep' : 'discard'}">
+                ${isKeep ? '✔ 保留' : '✖ 丢弃'}
+              </span>
+            </div>
+            <span class="duration-pill">⏱ ${formatDuration(seg.durationMs)}</span>
+          </div>
+
+          <!-- 行 2：专属独立起止时间行 (等宽大字体，箭头连接，绝对单行呈现！) -->
+          <div class="card-row-time">
+            <span class="time-val">${formatTime(seg.startMs)}</span>
+            <span class="time-separator-arrow">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+                <polyline points="12 5 19 12 12 19"></polyline>
+              </svg>
+            </span>
+            <span class="time-val">${formatTime(seg.endMs)}</span>
+          </div>
+
+          <!-- 行 3：底端操作按钮行 (底端吸附，整行卡片按钮绝对水平齐平) -->
+          <div class="card-row-actions">
+            <button class="btn-card-preview" onclick="previewSegment('${seg.id}', ${seg.startMs}, ${seg.endMs})">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                <polygon points="5 3 19 12 5 21 5 3"></polygon>
+              </svg>
+              试听
+            </button>
+
+            <div class="toggle-group">
+              <button class="btn-toggle-option keep ${isKeep ? 'active' : ''}" onclick="setSegmentDecision('${seg.id}', 'keep')">
+                ✔ 保留
+              </button>
+              <button class="btn-toggle-option discard ${!isKeep ? 'active' : ''}" onclick="setSegmentDecision('${seg.id}', 'discard')">
+                ✖ 丢弃
+              </button>
+            </div>
+
+            <div class="nudge-group">
+              <button class="btn-nudge" title="微调左侧切点 -0.1s" onclick="nudgeCut(${seg.index - 2}, -100)">-0.1s</button>
+              <button class="btn-nudge" title="微调左侧切点 +0.1s" onclick="nudgeCut(${seg.index - 2}, 100)">+0.1s</button>
+            </div>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+
+      updateStatistics(segments);
+    }
+
+    function setSegmentDecision(segmentId, decision) {
+      state.decisions[segmentId] = decision;
+      renderSegmentCards();
+      drawTimeline();
+      renderVirtualVideo();
+    }
+
+    function nudgeCut(cutIndex, deltaMs) {
+      if (cutIndex < 0 || cutIndex >= state.cuts.length) return;
+
+      state.cuts[cutIndex] = Math.max(0, Math.min(state.durationMs, state.cuts[cutIndex] + deltaMs));
+      state.cuts.sort((a, b) => a - b);
+      renderSegmentCards();
+      drawTimeline();
+    }
+
+    function previewSegment(segmentId, startMs, endMs) {
+      seekTo(startMs);
+      if (!state.isPlaying) togglePlay();
+    }
+
+    function updateStatistics(segments) {
+      let keptMs = 0;
+      let discardMs = 0;
+      segments.forEach(seg => {
+        if (seg.decision === 'keep') keptMs += seg.durationMs;
+        else discardMs += seg.durationMs;
+      });
+
+      document.getElementById('stat-kept-duration').innerText = formatTime(keptMs);
+      document.getElementById('stat-discarded-duration').innerText = formatTime(discardMs);
+    }
+
+    function insertCutAtCurrent() {
+      const pos = Math.round(state.currentMs);
+      if (pos <= 100 || pos >= state.durationMs - 100) return;
+      if (state.cuts.some(c => Math.abs(c - pos) < 200)) return;
+
+      state.cuts.push(pos);
+      state.cuts.sort((a, b) => a - b);
+
+      renderSegmentCards();
+      drawTimeline();
+      renderVirtualVideo();
+    }
+
+    // ==========================================
+    // 方案管理中心
+    // ==========================================
+    function renderPlansList() {
+      const container = document.getElementById('plans-list');
+      container.innerHTML = '';
+
+      const readyCount = state.savedPlans.filter(p => p.status === 'ready').length;
+      const completedCount = state.savedPlans.filter(p => p.status === 'completed').length;
+
+      document.getElementById('count-all').innerText = state.savedPlans.length;
+      document.getElementById('count-ready').innerText = readyCount;
+      document.getElementById('count-completed').innerText = completedCount;
+      document.getElementById('plans-count-badge').innerText = readyCount;
+
+      let filtered = state.savedPlans;
+      if (state.currentFilter === 'ready') filtered = filtered.filter(p => p.status === 'ready');
+      if (state.currentFilter === 'completed') filtered = filtered.filter(p => p.status === 'completed');
+
+      if (filtered.length === 0) {
+        container.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--text-dim);">当前筛选下暂无方案</div>`;
+        return;
+      }
+
+      filtered.forEach((plan, idx) => {
+        const isCompleted = plan.status === 'completed';
+        const card = document.createElement('div');
+        card.className = 'plan-card';
+
+        card.innerHTML = `
+          <div class="plan-info">
+            <div class="plan-title">
+              <span>${plan.title}</span>
+              <span class="status-tag ${isCompleted ? 'completed' : 'ready'}">
+                ${isCompleted ? '✔ 已完成剪辑' : '⏳ 待执行'}
+              </span>
+            </div>
+            <div class="plan-path-sub">来源: ${plan.sourcePath}</div>
+            <div class="plan-path-sub" style="color: ${isCompleted ? '#3fb950' : '#58a6ff'};">
+              产物: ${plan.outputPath} ${isCompleted ? '(已生成)' : ''}
+            </div>
+            <div class="plan-meta-row">
+              <span>切点: ${plan.cutsCount} 个</span>
+              <span>保留正片: ${formatDuration(plan.keptDurationMs)}</span>
+              <span>更新时间: ${plan.updatedAt}</span>
+              ${isCompleted && plan.completedAt ? `<span style="color: #3fb950;">执行完成于: ${plan.completedAt}</span>` : ''}
+            </div>
+          </div>
+
+          <div class="plan-actions">
+            ${isCompleted ? `
+              <button class="btn" style="color: #3fb950; border-color: rgba(35, 134, 54, 0.35);" onclick="executePlan('${plan.id}')" title="再次执行重新导出">
+                ↻ 重新导出
+              </button>
+            ` : `
+              <button class="btn btn-primary" onclick="executePlan('${plan.id}')" title="一键执行无损流复制剪辑">
+                🚀 立即执行
+              </button>
+            `}
+            <button class="btn" onclick="loadPlanToCutter('${plan.id}')" title="载入到工作台微调切点">
+              ✏ 编辑
+            </button>
+            <button class="btn btn-danger" onclick="deletePlan(${idx})" title="删除方案">
+              🗑
+            </button>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    function filterPlans(type, btn) {
+      state.currentFilter = type;
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderPlansList();
+    }
+
+    function saveCurrentToPlans() {
+      const planId = `plan_${Date.now()}`;
+      const segments = getSegments();
+      let keptMs = 0;
+      segments.forEach(s => { if (s.decision === 'keep') keptMs += s.durationMs; });
+
+      const newPlan = {
+        id: planId,
+        title: `${state.currentVideoPath.split('/').pop()} (剪辑方案)`,
+        sourcePath: state.currentVideoPath,
+        outputPath: `D:/Movies/_cuts/${state.currentVideoPath.split('/').pop().replace(/\.[^/.]+$/, "")}_cut.mp4`,
+        totalDurationMs: state.durationMs,
+        keptDurationMs: keptMs,
+        cutsCount: state.cuts.length,
+        status: 'ready',
+        updatedAt: '刚刚',
+        completedAt: null,
+        cuts: [...state.cuts],
+        decisions: { ...state.decisions }
+      };
+
+      state.savedPlans.unshift(newPlan);
+      renderPlansList();
+      alert('已成功保存当前方案到【方案管理中心】！');
+    }
+
+    function loadPlanToCutter(planId) {
+      const plan = state.savedPlans.find(p => p.id === planId);
+      if (!plan) return;
+
+      state.cuts = [...plan.cuts];
+      state.decisions = { ...plan.decisions };
+      state.currentVideoPath = plan.sourcePath;
+      document.getElementById('video-name-tag').innerText = `${plan.title} (正在编辑)`;
+
+      switchTab('cutter');
+      renderSegmentCards();
+      drawTimeline();
+      seekTo(0);
+      alert(`已成功载入方案【${plan.title}】到工作台！`);
+    }
+
+    function deletePlan(index) {
+      if (confirm('确认删除该方案记录？')) {
+        state.savedPlans.splice(index, 1);
+        renderPlansList();
+      }
+    }
+
+    function executePlan(planId) {
+      const plan = state.savedPlans.find(p => p.id === planId);
+      if (!plan) return;
+      alert(`🚀 开始执行方案【${plan.title}】！\n\n输出目标：${plan.outputPath}\n已调用 FFmpeg 流复制极速完成，方案状态将标记为【✔ 已完成剪辑】！`);
+      plan.status = 'completed';
+      const now = new Date();
+      plan.completedAt = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+      renderPlansList();
+    }
+
+    function batchExecutePlans() {
+      const readyPlans = state.savedPlans.filter(p => p.status === 'ready');
+      if (readyPlans.length === 0) {
+        alert('当前没有待执行的方案！');
+        return;
+      }
+      alert(`🚀 正在批量执行 ${readyPlans.length} 个待办方案！全部完成流复制无损剪切。`);
+      readyPlans.forEach(p => {
+        p.status = 'completed';
+        p.completedAt = '刚才';
+      });
+      renderPlansList();
+    }
+
+    function openConfigModal() {
+      const sampleConfig = {
+        "_comment": "VideoCutTool 默认启动配置文件 (放置于 exe 同级目录)",
+        "version": "1.0.0",
+        "output_directory_rule": "sub_folder",
+        "sub_folder_name": "_cuts",
+        "custom_output_directory": "D:/VideoExports",
+        "keyframe_safety_guaranteed": true,
+        "auto_concat_single_file": true,
+        "ffmpeg_path": "./tools/ffmpeg.exe",
+        "plans_storage_path": "./plans"
+      };
+
+      document.getElementById('modal-title').innerText = '可执行文件同级 config.json 内容';
+      document.getElementById('plan-json-display').innerText = JSON.stringify(sampleConfig, null, 2);
+      document.getElementById('plan-modal').classList.add('open');
+    }
+
+    // ==========================================
+    // 画布与播放器
+    // ==========================================
+    const canvas = document.getElementById('virtual-screen');
+    const ctx = canvas.getContext('2d');
+    canvas.width = 960; canvas.height = 540;
+
+    function renderVirtualVideo() {
+      if (state.isRealVideo) return;
+      ctx.fillStyle = '#0a0d14';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x < canvas.width; x += 40) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(canvas.width, y); ctx.stroke();
+      }
+      for (let y = 0; y < canvas.height; y += 40) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+      }
+
+      const currentSegment = getSegments().find(s => state.currentMs >= s.startMs && state.currentMs <= s.endMs);
+      const isKeep = currentSegment?.decision === 'keep';
+
+      ctx.fillStyle = isKeep ? 'rgba(35, 134, 54, 0.15)' : 'rgba(218, 54, 51, 0.15)';
+      ctx.fillRect(40, 40, canvas.width - 80, canvas.height - 80);
+
+      ctx.fillStyle = '#f0f6fc';
+      ctx.font = 'bold 38px ui-monospace, Consolas, monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(formatTime(state.currentMs), canvas.width / 2, canvas.height / 2 - 10);
+
+      ctx.font = '16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+      ctx.fillStyle = isKeep ? '#3fb950' : '#f85149';
+      ctx.fillText(
+        `当前位置处于：片段 #${currentSegment ? currentSegment.index : 1} 【${isKeep ? '✔ 保留区间' : '✖ 丢弃区间'}】`,
+        canvas.width / 2,
+        canvas.height / 2 + 35
+      );
+    }
+
+    const timelineCanvas = document.getElementById('timeline-canvas');
+    const tCtx = timelineCanvas.getContext('2d');
+
+    function resizeTimeline() {
+      const rect = timelineCanvas.parentElement.getBoundingClientRect();
+      timelineCanvas.width = rect.width * window.devicePixelRatio;
+      timelineCanvas.height = rect.height * window.devicePixelRatio;
+      drawTimeline();
+    }
+
+    function drawTimeline() {
+      const w = timelineCanvas.width;
+      const h = timelineCanvas.height;
+      tCtx.clearRect(0, 0, w, h);
+
+      const segments = getSegments();
+      segments.forEach(seg => {
+        const x1 = (seg.startMs / state.durationMs) * w;
+        const x2 = (seg.endMs / state.durationMs) * w;
+        const width = x2 - x1;
+
+        tCtx.fillStyle = seg.decision === 'keep' ? 'rgba(35, 134, 54, 0.55)' : 'rgba(218, 54, 51, 0.35)';
+        tCtx.fillRect(x1, 16, width, h - 22);
+
+        tCtx.fillStyle = seg.decision === 'keep' ? '#3fb950' : '#da3633';
+        tCtx.fillRect(x1, 16, width, 3);
+      });
+
+      tCtx.fillStyle = 'rgba(88, 166, 255, 0.5)';
+      state.keyframes.forEach(kf => {
+        if (kf <= state.durationMs) {
+          const kfX = (kf / state.durationMs) * w;
+          tCtx.fillRect(kfX - 1, h - 6, 2, 4);
+        }
+      });
+
+      state.cuts.forEach(cutMs => {
+        const cutX = (cutMs / state.durationMs) * w;
+        tCtx.strokeStyle = '#58a6ff';
+        tCtx.lineWidth = 2 * window.devicePixelRatio;
+        tCtx.beginPath();
+        tCtx.moveTo(cutX, 12);
+        tCtx.lineTo(cutX, h);
+        tCtx.stroke();
+      });
+
+      const playheadX = (state.currentMs / state.durationMs) * w;
+      tCtx.strokeStyle = '#fff';
+      tCtx.lineWidth = 2 * window.devicePixelRatio;
+      tCtx.beginPath();
+      tCtx.moveTo(playheadX, 0);
+      tCtx.lineTo(playheadX, h);
+      tCtx.stroke();
+    }
+
+    document.getElementById('timeline-box').addEventListener('click', (e) => {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      seekTo(ratio * state.durationMs);
+    });
+
+    function seekTo(ms) {
+      state.currentMs = Math.max(0, Math.min(state.durationMs, ms));
+      if (state.isRealVideo) {
+        document.getElementById('real-video').currentTime = state.currentMs / 1000;
+      }
+      updateUI();
+    }
+
+    function updateUI() {
+      document.getElementById('current-time-text').innerText = formatTime(state.currentMs);
+      document.getElementById('total-time-text').innerText = formatTime(state.durationMs);
+      drawTimeline();
+      renderVirtualVideo();
+    }
+
+    function togglePlay() {
+      state.isPlaying = !state.isPlaying;
+      document.getElementById('play-btn-text').innerText = state.isPlaying ? '暂停' : '播放';
+      if (state.isRealVideo) {
+        if (state.isPlaying) document.getElementById('real-video').play();
+        else document.getElementById('real-video').pause();
+      }
+    }
+
+    function stepFrame(frames) {
+      seekTo(state.currentMs + frames * 40);
+    }
+
+    let lastAnimTime = performance.now();
+    function loop(now) {
+      const dt = now - lastAnimTime;
+      lastAnimTime = now;
+      if (state.isPlaying && !state.isRealVideo) {
+        state.currentMs += dt;
+        if (state.currentMs >= state.durationMs) {
+          state.currentMs = 0;
+          togglePlay();
+        }
+        updateUI();
+      }
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+      else if (e.code === 'KeyC') { e.preventDefault(); insertCutAtCurrent(); }
+      else if (e.code === 'ArrowLeft') { e.preventDefault(); stepFrame(-1); }
+      else if (e.code === 'ArrowRight') { e.preventDefault(); stepFrame(1); }
+    });
+
+    function openPlanModal() {
+      const plan = {
+        version: "1.0.0",
+        sourcePath: state.currentVideoPath,
+        durationMs: state.durationMs,
+        concatToSingleFile: document.getElementById('concat-checkbox').checked,
+        cuts: state.cuts,
+        segments: getSegments()
+      };
+      document.getElementById('modal-title').innerText = '当前裁剪方案 JSON (MediaRetentionPlan)';
+      document.getElementById('plan-json-display').innerText = JSON.stringify(plan, null, 2);
+      document.getElementById('plan-modal').classList.add('open');
+    }
+
+    function closePlanModal() {
+      document.getElementById('plan-modal').classList.remove('open');
+    }
+
+    function copyModalContent() {
+      const text = document.getElementById('plan-json-display').innerText;
+      navigator.clipboard.writeText(text).then(() => alert('已复制到剪贴板！'));
+    }
+
+    function triggerExecution() {
+      alert(`🚀 无损剪辑开始！\n\n已锁定保留正片。\n调用 FFmpeg 流拷贝 (-c copy) 极速生成视频！\n关键帧保全机制已激活：绝不多删一帧正片！`);
+    }
+
+    window.addEventListener('resize', resizeTimeline);
+    resizeTimeline();
+    renderSegmentCards();
+    updateUI();
+  </script>
+</body>
+</html>

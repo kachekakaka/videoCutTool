@@ -1,0 +1,37 @@
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+out/
+
+# 日志与临时缓存
+*.log
+*.tmp
+*.temp
+.cache/
+cache/
+temp/
+
+# 媒体文件与切片输出（遵循数据保密与防污染红线）
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.ts
+*.flv
+/slices/
+/output/
+
+# 系统与 IDE 配置
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.sw?
+
+# 密钥与本地配置
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
