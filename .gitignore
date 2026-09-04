@@ -1,8 +1,15 @@
 # 依赖与构建产物
 node_modules/
 dist/
+dist-electron/
 build/
 out/
+release/
+
+# 运行时数据与本地配置隔离
+config.json
+workspace.json
+plans/
 
 # 日志与临时缓存
 *.log
@@ -17,10 +24,16 @@ temp/
 *.mkv
 *.avi
 *.mov
-*.ts
 *.flv
-/slices/
-/output/
+*.m2ts
+slices/
+output/
+# 保护 TypeScript 源码，仅排除根目录与媒体目录下的测试视频
+!*.config.ts
+!src/**/*.ts
+!electron/**/*.ts
+!tests/**/*.ts
+!scripts/**/*.ts
 
 # 系统与 IDE 配置
 .DS_Store

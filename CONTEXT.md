@@ -40,9 +40,21 @@ _Avoid_: Task queue, history list, plan store
 A persisted retention plan document recording the source media path, output destination, segment decisions, and last execution state.
 _Avoid_: Task, job record, cut file
 
+**Data Directory**:
+The user-designated persistent directory hosting the runtime application configuration (`config.json`), saved plan records (`plans/`), and localized user data, completely isolated from application source code.
+_Avoid_: Workspace folder, cache dir, project folder
+
 **Application Configuration**:
-The persistent settings file (`config.json`) placed alongside the executable binary, governing default output paths, toolchain discovery, and execution preferences.
+The persistent settings file (`config.json`) governing default output paths, toolchain discovery, and execution preferences, stored directly within the active Data Directory.
 _Avoid_: Preferences, options, ini file
+
+**Initial Data Setup**:
+The interactive prompt presented upon application startup when no configuration file is detected in the program directory, prompting the operator to specify or initialize their Data Directory.
+_Avoid_: Install wizard, first-run guide, path dialog
+
+**Standalone Portable Executable**:
+The zero-installer, single-file binary distribution (Motrix-inspired) that bundles the application runtime and media toolchain, runnable directly from any user location.
+_Avoid_: Green package, zip distribution, installer package
 
 **Execution Status**:
 The persistent lifecycle state of a plan record, explicitly distinguishing `ready` (pending cut) from `completed` (losslessly exported with generated artifact path and completion timestamp).
@@ -51,3 +63,4 @@ _Avoid_: Run state, task progress, finish flag
 **Output Directory Policy**:
 The automated rule determining where exported videos and plan records are written (e.g., source directory, source subfolder, or fixed dedicated directory).
 _Avoid_: Export path rule, save target
+
