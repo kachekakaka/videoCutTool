@@ -110,4 +110,36 @@ describe('RetentionDraft 核心领域深模块不变量验证', () => {
     expect(planSeg.sourceKeyframeMs).toBe(2000);
     expect(planSeg.safeRange.endMs).toBe(7000);
   });
+
+  it('moveCut 应允许在合法安全边界内移动切点并保持原有保留决策', () => {
+    const draft = new RetentionDraft('/test/video.mp4', 10000);
+    draft.addCut(3000); // cutIndex 0: 3000
+    draft.addCut(7000); // cutIndex 1: 7000
+    draft.setDecision('seg_0', 'keep');
+    draft.setDecision('seg_1', 'discard');
+    draft.setDecision('seg_2', 'keep');
+
+    // 1. 合法右移 cut 0 到 4500
+    const ok = draft.moveCut(0, 4500);
+    expect(ok).toBe(true);
+    expect(draft.getCuts()).toEqual([4500, 7000]);
+
+    const segs = draft.getSegments();
+    expect(segs[0].endMs).toBe(4500);
+    expect(segs[1].startMs).toBe(4500);
+    // 决策保全不变性
+    expect(segs[0].decision).toBe('keep');
+    expect(segs[1].decision).toBe('discard');
+    expect(segs[2].decision).toBe('keep');
+
+    // 2. 碰撞防护：试图移动 cut 0 超过 cut 1 (距离 7000 小于 200ms，例如 6900)
+    const collisionOk = draft.moveCut(0, 6900);
+    expect(collisionOk).toBe(false);
+    expect(draft.getCuts()[0]).toBe(4500); // 维持原值
+
+    // 3. 首部碰撞防护：试图移动 cut 0 距离开头 < 200ms (例如 100)
+    const headCollisionOk = draft.moveCut(0, 100);
+    expect(headCollisionOk).toBe(false);
+    expect(draft.getCuts()[0]).toBe(4500); // 维持原值
+  });
 });

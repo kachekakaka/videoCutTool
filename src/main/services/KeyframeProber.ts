@@ -25,7 +25,10 @@ export class KeyframeProber {
     console.log('[KeyframeProber] Path:', this.ffprobePath);
 
     // 遵守隔离红线：关键帧持久化缓存统一存放至同级外部临时目录 ../videoCutTool_tmp/cache/
-    this.cacheDir = path.resolve(baseDir, '../videoCutTool_tmp/cache');
+    const externalTmp = path.basename(baseDir).toLowerCase() === 'release'
+      ? path.resolve(baseDir, '../../videoCutTool_tmp')
+      : path.resolve(baseDir, '../videoCutTool_tmp');
+    this.cacheDir = path.resolve(externalTmp, 'cache');
     if (!fs.existsSync(this.cacheDir)) {
       fs.mkdirSync(this.cacheDir, { recursive: true });
     }

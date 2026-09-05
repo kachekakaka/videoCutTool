@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { AppConfig, DEFAULT_APP_CONFIG } from '../../shared/types';
+import { formatTaskTimestamp } from '../../shared/timeUtils';
 
 export class ConfigService {
   private configPath: string;
@@ -178,25 +179,48 @@ export class ConfigService {
   /**
    * 根据当前输出目录策略推导视频切片的输出路径
    */
-  public resolveOutputPath(videoSourcePath: string): string {
-    return this.resolveSafeOutputPath(videoSourcePath, true);
+  public resolveOutputPath(videoSourcePath: string, isConcat: boolean = true, planTitle?: string): string {
+    return this.resolveSafeOutputPath(videoSourcePath, isConcat, planTitle);
   }
 
   /**
-   * 安全解析输出路径（自动避让同名文件与源文件物理冲突）
+   * 安全解析输出路径（增加任务时间戳前缀与方案名，自动避让同名文件与源文件物理冲突）
+   * 格式规范：
+   * - 有方案名：YYYYMMDD_HHmm_[方案名]原文件名.mp4 (合并) / YYYYMMDD_HHmm_[方案名]原文件名_seg01.mp4 (分段)
+   * - 无方案名：YYYYMMDD_HHmm_原文件名_cut.mp4 (合并) / YYYYMMDD_HHmm_原文件名_seg01.mp4 (分段)
    * @param videoSourcePath 源视频路径
    * @param isConcat 是否为单文件合并模式（若为 false 则推导多分段切片的第一段预定路径）
+   * @param planTitle 可选方案名称
    */
-  public resolveSafeOutputPath(videoSourcePath: string, isConcat: boolean = true): string {
+  public resolveSafeOutputPath(
+    videoSourcePath: string,
+    isConcat: boolean = true,
+    planTitle?: string
+  ): string {
     const ext = path.extname(videoSourcePath) || '.mp4';
-    const baseName = path.basename(videoSourcePath, ext);
+    const rawBase = path.basename(videoSourcePath, ext);
     const targetDir = this.resolveTargetDirectory(videoSourcePath);
     const resolvedSource = path.resolve(videoSourcePath);
 
     const isConflict = (p: string) => path.resolve(p) === resolvedSource || fs.existsSync(p);
-    const prefix = isConcat ? '_cut' : '_seg01';
 
-    return this.findNonConflictingPath(targetDir, baseName, prefix, ext, isConflict);
+    const timestamp = formatTaskTimestamp();
+    const cleanTitle = planTitle?.trim();
+    const hasCustomTitle = Boolean(
+      cleanTitle &&
+      cleanTitle !== rawBase &&
+      !/^plan_\d+$/.test(cleanTitle)
+    );
+
+    let prefixPart = `${timestamp}_`;
+    if (hasCustomTitle) {
+      prefixPart += `[${cleanTitle}]`;
+    }
+
+    const baseName = `${prefixPart}${rawBase}`;
+    const suffix = isConcat ? (hasCustomTitle ? '' : '_cut') : '_seg01';
+
+    return this.findNonConflictingPath(targetDir, baseName, suffix, ext, isConflict);
   }
 
   private findNonConflictingPath(

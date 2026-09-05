@@ -30,6 +30,18 @@ _Avoid_: Export config, cut recipe, job
 The keyframe-aligned time interval computed outward from a user range, strictly adhering to the safety principle: expanding boundaries outward to previous/following keyframes so that no kept content is truncated.
 _Avoid_: Keyframe range, expanded slice, snapped boundary
 
+**Cut Point Mutation & Snapping**:
+The operator-driven relocation of an existing cut point via 300ms long-press drag or direct timecode editing, strictly bounded by neighboring cut points (>=200ms collision barrier) and optionally magnetizing to adjacent physical keyframes.
+_Avoid_: Marker moving, split shift, point sliding
+
+**Scrub Thumbnail Preview**:
+A lightweight, decoupled floating video thumbnail card rendered directly above the active cut point during drag operations, displaying the exact target frame without interrupting or seeking the primary playback canvas.
+_Avoid_: Video hover tooltip, slice popup, mini player
+
+**In-place Timecode Editing**:
+Direct keyboard text entry and validation of a cut point's timestamp via double-click on the timeline or single-click on the segment card, updating the retention draft with instant millisecond precision.
+_Avoid_: Time dialog, manual timestamp entry, direct box
+
 ### Management & Execution Concepts
 
 **Media Cutting Engine**:

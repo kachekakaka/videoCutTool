@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Segment } from '../../shared/types';
-import { formatTimecode } from './VideoPlayer';
+import { formatTimecode, parseTimecodeToMs } from './VideoPlayer';
+import { TimelineThumbnailPreview } from './TimelineThumbnailPreview';
 import {
   ZoomIn,
   ZoomOut,
@@ -14,16 +15,37 @@ import {
   Scissors,
 } from 'lucide-react';
 
+interface CutDragState {
+  isDragging: boolean;
+  cutIndex: number;
+  originalTimeMs: number;
+  currentTimeMs: number;
+  isSnapped: boolean;
+  isHitBarrier: boolean;
+  anchorX: number;
+}
+
+interface CutPopoverState {
+  visible: boolean;
+  cutIndex: number;
+  cutMs: number;
+  anchorX: number;
+  inputValue: string;
+  errorMsg?: string;
+}
+
 interface TimelineProps {
   durationMs: number;
   currentTimeMs: number;
   keyframes: number[];
   cuts: number[];
   segments: Segment[];
+  videoPath?: string;
   isPlaying?: boolean;
   aspectRatioMode?: 'auto' | '16:9' | '1:1';
   onSeek: (timeMs: number) => void;
   onDeleteCut?: (cutMs: number) => void;
+  onMoveCut?: (cutIndex: number, newTimeMs: number) => boolean;
   onTogglePlay?: () => void;
   onStepFrame?: (deltaFrames: number) => void;
   onStepSeconds?: (seconds: number) => void;
@@ -37,10 +59,12 @@ export const Timeline: React.FC<TimelineProps> = ({
   keyframes,
   cuts,
   segments,
+  videoPath,
   isPlaying = false,
   aspectRatioMode = 'auto',
   onSeek,
   onDeleteCut,
+  onMoveCut,
   onTogglePlay,
   onStepFrame,
   onStepSeconds,
@@ -48,14 +72,53 @@ export const Timeline: React.FC<TimelineProps> = ({
   onInsertCut,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const trackWrapperRef = useRef<HTMLDivElement | null>(null);
+  const popoverInputRef = useRef<HTMLInputElement | null>(null);
+
   const isDraggingRef = useRef(false);
   const isPanningRef = useRef(false);
   const panStartXRef = useRef(0);
   const panStartViewMsRef = useRef(0);
 
+  // 长按与拖拽状态追踪
+  const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const dragStartRef = useRef<{ startX: number; startY: number; timeMs: number; cutIndex: number } | null>(null);
+  const lastCutClickRef = useRef<{ cutIndex: number; time: number } | null>(null);
+
   const [zoom, setZoom] = useState(1); // 1x ~ 8x 缩放倍数
   const [viewStartMs, setViewStartMs] = useState(0); // 视窗起始时间 (ms)
   const [selectedCutMs, setSelectedCutMs] = useState<number | null>(null);
+  const [trackWidth, setTrackWidth] = useState(800);
+
+  // 切点长按拖拽状态
+  const [cutDragState, setCutDragState] = useState<CutDragState>({
+    isDragging: false,
+    cutIndex: -1,
+    originalTimeMs: 0,
+    currentTimeMs: 0,
+    isSnapped: false,
+    isHitBarrier: false,
+    anchorX: 0,
+  });
+  const cutDragStateRef = useRef(cutDragState);
+  cutDragStateRef.current = cutDragState;
+
+  // 切点就地时间码编辑气泡状态
+  const [popoverState, setPopoverState] = useState<CutPopoverState>({
+    visible: false,
+    cutIndex: -1,
+    cutMs: 0,
+    anchorX: 0,
+    inputValue: '',
+  });
+
+  // 当 popover 开启时自动聚焦输入框并全选内容
+  useEffect(() => {
+    if (popoverState.visible && popoverInputRef.current) {
+      popoverInputRef.current.focus();
+      popoverInputRef.current.select();
+    }
+  }, [popoverState.visible]);
 
   // 计算当前可视时间窗口 (严格封顶于视频末尾，彻底消除后半截不可达缺陷)
   const visibleDurationMs = Math.max(1000, durationMs / zoom);
@@ -89,17 +152,22 @@ export const Timeline: React.FC<TimelineProps> = ({
     setViewStartMs(0);
   };
 
-  // 键盘快捷键监听 Delete 删除选中的切点
+  // 键盘快捷键监听 Delete 删除选中的切点 & Escape 取消输入气泡
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setPopoverState((p) => (p.visible ? { ...p, visible: false } : p));
+        return;
+      }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedCutMs !== null && onDeleteCut) {
+        if (popoverState.visible) return;
         onDeleteCut(selectedCutMs);
         setSelectedCutMs(null);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedCutMs, onDeleteCut]);
+  }, [selectedCutMs, onDeleteCut, popoverState.visible]);
 
   // 绘制时间轴
   const draw = useCallback(() => {
@@ -220,26 +288,53 @@ export const Timeline: React.FC<TimelineProps> = ({
     }
 
     // 5. 绘制切点竖线旗标
-    for (const cutMs of cuts) {
+    for (let i = 0; i < cuts.length; i++) {
+      const rawCutMs = cuts[i];
+      const isThisDragging = cutDragState.isDragging && cutDragState.cutIndex === i;
+      const cutMs = isThisDragging ? cutDragState.currentTimeMs : rawCutMs;
+
       if (cutMs >= clampedViewStartMs && cutMs <= viewEndMs) {
         const cx = ((cutMs - clampedViewStartMs) / visibleDurationMs) * logicalWidth;
-        const isSelected = selectedCutMs === cutMs;
+        const isSelected = selectedCutMs === rawCutMs || isThisDragging;
 
-        ctx.strokeStyle = isSelected ? '#38bdf8' : '#f59e0b';
-        ctx.lineWidth = isSelected ? 2.5 : 1.5;
-        ctx.beginPath();
-        ctx.moveTo(cx, 0);
-        ctx.lineTo(cx, logicalHeight);
-        ctx.stroke();
+        if (isThisDragging) {
+          // 长按拖拽激活状态：Scale 1.25 + 亮蓝外发光脉冲
+          ctx.save();
+          ctx.shadowColor = '#38bdf8';
+          ctx.shadowBlur = 10;
+          ctx.strokeStyle = '#38bdf8';
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.moveTo(cx, 0);
+          ctx.lineTo(cx, logicalHeight);
+          ctx.stroke();
 
-        // 顶部微型菱形
-        ctx.fillStyle = isSelected ? '#38bdf8' : '#f59e0b';
-        ctx.beginPath();
-        ctx.moveTo(cx, 0);
-        ctx.lineTo(cx - (isSelected ? 4 : 2.5), isSelected ? 6 : 4);
-        ctx.lineTo(cx + (isSelected ? 4 : 2.5), isSelected ? 6 : 4);
-        ctx.closePath();
-        ctx.fill();
+          // 顶部放大菱形
+          ctx.fillStyle = '#38bdf8';
+          ctx.beginPath();
+          ctx.moveTo(cx, 0);
+          ctx.lineTo(cx - 5.5, 7.5);
+          ctx.lineTo(cx + 5.5, 7.5);
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+        } else {
+          ctx.strokeStyle = isSelected ? '#38bdf8' : '#f59e0b';
+          ctx.lineWidth = isSelected ? 2.5 : 1.5;
+          ctx.beginPath();
+          ctx.moveTo(cx, 0);
+          ctx.lineTo(cx, logicalHeight);
+          ctx.stroke();
+
+          // 顶部微型菱形
+          ctx.fillStyle = isSelected ? '#38bdf8' : '#f59e0b';
+          ctx.beginPath();
+          ctx.moveTo(cx, 0);
+          ctx.lineTo(cx - (isSelected ? 4 : 2.5), isSelected ? 6 : 4);
+          ctx.lineTo(cx + (isSelected ? 4 : 2.5), isSelected ? 6 : 4);
+          ctx.closePath();
+          ctx.fill();
+        }
       }
     }
 
@@ -267,7 +362,7 @@ export const Timeline: React.FC<TimelineProps> = ({
     }
 
     ctx.restore();
-  }, [durationMs, currentTimeMs, keyframes, cuts, segments, zoom, clampedViewStartMs, viewEndMs, visibleDurationMs, selectedCutMs]);
+  }, [durationMs, currentTimeMs, keyframes, cuts, segments, zoom, clampedViewStartMs, viewEndMs, visibleDurationMs, selectedCutMs, cutDragState]);
 
   // 自适应 Canvas 大小
   useEffect(() => {
@@ -279,6 +374,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       const dpr = window.devicePixelRatio || 1;
       canvas.width = rect.width * dpr;
       canvas.height = rect.height * dpr;
+      setTrackWidth(rect.width);
       draw();
     };
 
@@ -312,30 +408,62 @@ export const Timeline: React.FC<TimelineProps> = ({
       return;
     }
 
-    if (e.button !== 0) return; // 左键才触发寻址与切点选择
+    if (e.button !== 0) return; // 左键才触发
 
-    const targetMs = getTimeFromMouseEvent(e);
-
-    // 检查是否点击在某个切点附近 (±6px)
     const canvas = canvasRef.current;
-    if (canvas) {
-      const rect = canvas.getBoundingClientRect();
-      let clickedCut: number | null = null;
-      for (const c of cuts) {
-        const cx = ((c - clampedViewStartMs) / visibleDurationMs) * rect.width;
-        if (Math.abs(cx - (e.clientX - rect.left)) <= 6) {
-          clickedCut = c;
-          break;
-        }
+    if (!canvas || durationMs <= 0) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+
+    // 检查是否点击在某个切点旗标附近 (±8px 热区)
+    let hitCutIdx = -1;
+    for (let i = 0; i < cuts.length; i++) {
+      const cx = ((cuts[i] - clampedViewStartMs) / visibleDurationMs) * rect.width;
+      if (Math.abs(cx - clickX) <= 8) {
+        hitCutIdx = i;
+        break;
       }
-      setSelectedCutMs(clickedCut);
     }
 
+    if (hitCutIdx !== -1) {
+      // 记录起始点
+      dragStartRef.current = {
+        startX: e.clientX,
+        startY: e.clientY,
+        timeMs: cuts[hitCutIdx],
+        cutIndex: hitCutIdx,
+      };
+
+      // 启动 300ms 长按检测定时器
+      if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = setTimeout(() => {
+        const initialAnchorX = ((cuts[hitCutIdx] - clampedViewStartMs) / visibleDurationMs) * rect.width;
+        setCutDragState({
+          isDragging: true,
+          cutIndex: hitCutIdx,
+          originalTimeMs: cuts[hitCutIdx],
+          currentTimeMs: cuts[hitCutIdx],
+          isSnapped: false,
+          isHitBarrier: false,
+          anchorX: initialAnchorX,
+        });
+        longPressTimerRef.current = null;
+      }, 300);
+
+      return;
+    }
+
+    // 点击未命中切点：关闭可能打开的输入气泡，走常规 Seek
+    setPopoverState((p) => (p.visible ? { ...p, visible: false } : p));
+    setSelectedCutMs(null);
+    const targetMs = getTimeFromMouseEvent(e);
     isDraggingRef.current = true;
     onSeek(targetMs);
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    // 1. 中键平移视窗
     if (isPanningRef.current && canvasRef.current) {
       const rect = canvasRef.current.getBoundingClientRect();
       const deltaPx = e.clientX - panStartXRef.current;
@@ -345,6 +473,79 @@ export const Timeline: React.FC<TimelineProps> = ({
       return;
     }
 
+    // 2. 长按判定中检查位移：若 300ms 内位移超过 5px，判定为普通滑动，取消长按切点
+    if (longPressTimerRef.current && dragStartRef.current) {
+      const dist = Math.hypot(e.clientX - dragStartRef.current.startX, e.clientY - dragStartRef.current.startY);
+      if (dist > 5) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+        dragStartRef.current = null; // 及时重置，避免 mouseup 误判为短按切点
+        // 转为常规时间轴游标 Seek
+        isDraggingRef.current = true;
+        const targetMs = getTimeFromMouseEvent(e);
+        onSeek(targetMs);
+        return;
+      }
+    }
+
+    // 3. 正在长按拖拽切点
+    if (cutDragStateRef.current.isDragging && canvasRef.current) {
+      const rect = canvasRef.current.getBoundingClientRect();
+      const rawMs = getTimeFromMouseEvent(e);
+      const cutIdx = cutDragStateRef.current.cutIndex;
+
+      // 碰撞防护屏障：前后边界至少保持 200ms
+      const prevBound = cutIdx === 0 ? 0 : cuts[cutIdx - 1];
+      const nextBound = cutIdx === cuts.length - 1 ? durationMs : cuts[cutIdx + 1];
+      const minAllowed = prevBound + 200;
+      const maxAllowed = nextBound - 200;
+
+      let clampedMs = rawMs;
+      let hitBarrier = false;
+      if (clampedMs <= minAllowed) {
+        clampedMs = minAllowed;
+        hitBarrier = true;
+      } else if (clampedMs >= maxAllowed) {
+        clampedMs = maxAllowed;
+        hitBarrier = true;
+      }
+
+      // 关键帧向近磁吸（在屏幕像素空间 ±8px 检测）
+      let snapped = false;
+      const currentPx = ((clampedMs - clampedViewStartMs) / visibleDurationMs) * rect.width;
+      let closestKf: number | null = null;
+      let minDiffPx = 9;
+
+      for (const kf of keyframes) {
+        if (kf >= minAllowed && kf <= maxAllowed) {
+          const kfPx = ((kf - clampedViewStartMs) / visibleDurationMs) * rect.width;
+          const diff = Math.abs(kfPx - currentPx);
+          if (diff <= 8 && diff < minDiffPx) {
+            minDiffPx = diff;
+            closestKf = kf;
+          }
+        }
+      }
+
+      if (closestKf !== null) {
+        clampedMs = closestKf;
+        snapped = true;
+        hitBarrier = false;
+      }
+
+      const anchorX = ((clampedMs - clampedViewStartMs) / visibleDurationMs) * rect.width;
+
+      setCutDragState((prev) => ({
+        ...prev,
+        currentTimeMs: clampedMs,
+        isSnapped: snapped,
+        isHitBarrier: hitBarrier,
+        anchorX,
+      }));
+      return;
+    }
+
+    // 4. 普通时间轴拖拽游标 Seek
     if (isDraggingRef.current) {
       const targetMs = getTimeFromMouseEvent(e);
       onSeek(targetMs);
@@ -352,8 +553,99 @@ export const Timeline: React.FC<TimelineProps> = ({
   };
 
   const handleMouseUp = () => {
+    // 1. 清除长按计时器
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+
+    // 2. 如果正处于切点拖拽状态，提交移动
+    if (cutDragStateRef.current.isDragging) {
+      const { cutIndex, currentTimeMs, originalTimeMs } = cutDragStateRef.current;
+      if (currentTimeMs !== originalTimeMs && onMoveCut) {
+        onMoveCut(cutIndex, currentTimeMs);
+        setSelectedCutMs(currentTimeMs);
+      }
+      setCutDragState({
+        isDragging: false,
+        cutIndex: -1,
+        originalTimeMs: 0,
+        currentTimeMs: 0,
+        isSnapped: false,
+        isHitBarrier: false,
+        anchorX: 0,
+      });
+      dragStartRef.current = null;
+      return;
+    }
+
+    // 3. 如果在切点上短按松开（< 300ms 且无位移）
+    if (dragStartRef.current && canvasRef.current) {
+      const { cutIndex, timeMs } = dragStartRef.current;
+      const now = Date.now();
+      const last = lastCutClickRef.current;
+      const rect = canvasRef.current.getBoundingClientRect();
+
+      if (last && last.cutIndex === cutIndex && now - last.time < 300) {
+        // 快速双击：弹出就地时间码编辑输入气泡
+        const anchorX = ((timeMs - clampedViewStartMs) / visibleDurationMs) * rect.width;
+        setPopoverState({
+          visible: true,
+          cutIndex,
+          cutMs: timeMs,
+          anchorX,
+          inputValue: formatTimecode(timeMs, true),
+          errorMsg: undefined,
+        });
+        lastCutClickRef.current = null;
+      } else {
+        // 普通单击：选中切点并寻址
+        setSelectedCutMs(timeMs);
+        onSeek(timeMs);
+        lastCutClickRef.current = { cutIndex, time: now };
+      }
+      dragStartRef.current = null;
+    }
+
     isDraggingRef.current = false;
     isPanningRef.current = false;
+  };
+
+  // 就地时间码输入气泡提交
+  const handlePopoverSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!popoverState.visible || popoverState.cutIndex < 0) return;
+
+    const parsed = parseTimecodeToMs(popoverState.inputValue);
+    if (parsed === null) {
+      setPopoverState((p) => ({ ...p, errorMsg: '时间格式无效，请输入 HH:MM:SS.mmm 或纯秒数' }));
+      return;
+    }
+
+    const cutIdx = popoverState.cutIndex;
+    const prevBound = cutIdx === 0 ? 0 : cuts[cutIdx - 1];
+    const nextBound = cutIdx === cuts.length - 1 ? durationMs : cuts[cutIdx + 1];
+
+    if (parsed < prevBound + 200 || parsed > nextBound - 200) {
+      setPopoverState((p) => ({
+        ...p,
+        errorMsg: `时间必须在 ${formatTimecode(prevBound + 200)} 与 ${formatTimecode(nextBound - 200)} 之间 (至少 200ms 安全间距)`,
+      }));
+      return;
+    }
+
+    if (onMoveCut) {
+      const success = onMoveCut(cutIdx, parsed);
+      if (success) {
+        setSelectedCutMs(parsed);
+        onSeek(parsed);
+        setPopoverState((p) => ({ ...p, visible: false }));
+      } else {
+        setPopoverState((p) => ({ ...p, errorMsg: '移动切点失败，请检查边界限制' }));
+      }
+    } else {
+      setPopoverState((p) => ({ ...p, visible: false }));
+    }
   };
 
   // 底部蓝线微型滚动条拖拽与点击跳转逻辑
@@ -589,33 +881,116 @@ export const Timeline: React.FC<TimelineProps> = ({
         </div>
       </div>
 
-      {/* ── Canvas 时间轴主轨道 (紧凑 46px 高度) ── */}
-      <div className="relative w-full h-[46px] rounded-xl overflow-hidden border border-white/10 cursor-crosshair select-none">
-        <canvas
-          ref={canvasRef}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
-          onWheel={handleWheel}
-          onContextMenu={(e) => e.preventDefault()}
-          className="w-full h-full block"
+      {/* ── Canvas 时间轴主轨道与悬浮小窗外层包装 ── */}
+      <div ref={trackWrapperRef} className="relative w-full">
+        <div
+          className={`relative w-full h-[46px] rounded-xl overflow-hidden border border-white/10 select-none transition-colors ${
+            cutDragState.isDragging ? 'cursor-grabbing' : 'cursor-crosshair'
+          }`}
+        >
+          <canvas
+            ref={canvasRef}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseUp}
+            onWheel={handleWheel}
+            onContextMenu={(e) => e.preventDefault()}
+            className="w-full h-full block"
+          />
+
+          {/* 缩放状态下底部微型视窗位置可拖拽滚动条 */}
+          {zoom > 1 && (
+            <div
+              ref={scrollbarTrackRef}
+              onClick={handleTrackClick}
+              className="absolute bottom-0 left-0 right-0 h-2 bg-black/60 hover:bg-black/80 transition-colors z-20 cursor-pointer select-none"
+              title="点击或拖拽平移视窗"
+            >
+              <div
+                onMouseDown={handleThumbMouseDown}
+                className="h-full bg-blue-500 hover:bg-blue-400 active:bg-blue-300 rounded-full cursor-grab active:cursor-grabbing shadow-sm transition-[background-color]"
+                style={{
+                  marginLeft: `${Math.min(99, Math.max(0, (clampedViewStartMs / durationMs) * 100))}%`,
+                  width: `${Math.min(100, Math.max(1, (visibleDurationMs / durationMs) * 100))}%`,
+                }}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* 悬浮微型画格小窗预览 (Scrub Thumbnail Preview) */}
+        <TimelineThumbnailPreview
+          videoPath={videoPath}
+          targetMs={cutDragState.currentTimeMs}
+          anchorX={cutDragState.anchorX}
+          containerWidth={trackWidth}
+          visible={cutDragState.isDragging}
+          isSnapped={cutDragState.isSnapped}
+          isHitBarrier={cutDragState.isHitBarrier}
         />
 
-        {/* 缩放状态下底部微型视窗位置可拖拽滚动条 */}
-        {zoom > 1 && (
+        {/* 双击切点弹出的就地时间码编辑气泡 (In-place Popover) */}
+        {popoverState.visible && (
           <div
-            ref={scrollbarTrackRef}
-            onClick={handleTrackClick}
-            className="absolute bottom-0 left-0 right-0 h-2 bg-black/60 hover:bg-black/80 transition-colors z-20 cursor-pointer select-none"
-            title="点击或拖拽平移视窗"
+            className="absolute bottom-full mb-3 z-50 bg-[#0c0e14]/95 border border-blue-500/50 rounded-xl p-2.5 shadow-2xl backdrop-blur-md flex flex-col gap-2 min-w-[220px] animate-in fade-in zoom-in-95"
+            style={{
+              left: `${Math.max(8, Math.min(trackWidth - 230, popoverState.anchorX - 110))}px`,
+            }}
           >
+            <div className="flex items-center justify-between text-xs text-zinc-300 font-medium">
+              <span className="flex items-center gap-1">
+                <Scissors className="w-3 h-3 text-blue-400" />
+                <span>切点 #{popoverState.cutIndex + 1} 时间</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setPopoverState((p) => ({ ...p, visible: false }))}
+                className="text-zinc-500 hover:text-white text-xs px-1"
+                title="关闭 (Esc)"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handlePopoverSubmit} className="flex flex-col gap-1.5">
+              <input
+                ref={popoverInputRef}
+                type="text"
+                value={popoverState.inputValue}
+                onChange={(e) =>
+                  setPopoverState((p) => ({ ...p, inputValue: e.target.value, errorMsg: undefined }))
+                }
+                placeholder="00:00:00.000 或秒数"
+                className="w-full bg-black/70 border border-white/20 rounded-lg px-2.5 py-1 font-mono text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
+              />
+              {popoverState.errorMsg && (
+                <div className="text-[10px] text-rose-400 leading-tight">
+                  {popoverState.errorMsg}
+                </div>
+              )}
+              <div className="flex items-center justify-end gap-1.5 text-[11px] mt-0.5">
+                <button
+                  type="button"
+                  onClick={() => setPopoverState((p) => ({ ...p, visible: false }))}
+                  className="px-2 py-0.5 rounded text-zinc-400 hover:text-white transition-colors"
+                >
+                  取消 (Esc)
+                </button>
+                <button
+                  type="submit"
+                  className="px-2.5 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-medium shadow-sm transition-colors active:scale-95"
+                >
+                  确定 (Enter)
+                </button>
+              </div>
+            </form>
+
+            {/* 指向切点的小三角箭头 */}
             <div
-              onMouseDown={handleThumbMouseDown}
-              className="h-full bg-blue-500 hover:bg-blue-400 active:bg-blue-300 rounded-full cursor-grab active:cursor-grabbing shadow-sm transition-[background-color]"
+              className="w-0 h-0 border-x-4 border-x-transparent border-t-4 border-t-[#0c0e14] absolute top-full"
               style={{
-                marginLeft: `${Math.min(99, Math.max(0, (clampedViewStartMs / durationMs) * 100))}%`,
-                width: `${Math.min(100, Math.max(1, (visibleDurationMs / durationMs) * 100))}%`,
+                left: `${Math.max(12, Math.min(208, popoverState.anchorX - Math.max(8, Math.min(trackWidth - 230, popoverState.anchorX - 110))))}px`,
               }}
             />
           </div>

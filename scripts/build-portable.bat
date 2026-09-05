@@ -23,7 +23,7 @@ if %errorlevel% neq 0 (
   echo.
   echo [ERROR] Build failed! Check compiler logs.
   if exist "%TEMP%\vct_workspace_backup.json" copy /y "%TEMP%\vct_workspace_backup.json" "release\workspace.json" >nul
-  pause
+  if "%1" neq "nopause" pause
   exit /b %errorlevel%
 )
 
@@ -57,5 +57,4 @@ if exist "release\VideoCutTool.exe" (
   echo [WARNING] Failed to generate release\VideoCutTool.exe
 )
 
-echo.
-pause
+if "%1" neq "nopause" pause

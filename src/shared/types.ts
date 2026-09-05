@@ -69,6 +69,7 @@ export interface PlanSegment {
 
 export interface MediaRetentionPlan {
   version: '1.0';
+  title?: string;
   sourcePath: string;
   durationMs: number;
   concatToSingleFile: boolean;

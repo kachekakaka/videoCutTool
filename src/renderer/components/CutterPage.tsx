@@ -99,7 +99,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     let isCancelled = false;
     if (window.electronAPI?.resolveOutputPath) {
       window.electronAPI
-        .resolveOutputPath(metadata.filePath, concatSingleFile)
+        .resolveOutputPath(metadata.filePath, concatSingleFile, currentPlanTitle)
         .then((resolved) => {
           if (!isCancelled) {
             setSafeOutputPath(resolved);
@@ -112,7 +112,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     return () => {
       isCancelled = true;
     };
-  }, [metadata?.filePath, concatSingleFile]);
+  }, [metadata?.filePath, concatSingleFile, currentPlanTitle]);
 
 
 
@@ -326,6 +326,20 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     }
   };
 
+  // 移动切点至新时间戳（长按拖拽 / 就地时间码输入）
+  const handleMoveCut = useCallback(
+    (cutIndex: number, newTimeMs: number): boolean => {
+      if (!draft) return false;
+      let ok = false;
+      commitDraftChange((d) => {
+        ok = d.moveCut(cutIndex, newTimeMs);
+        return ok;
+      });
+      return ok;
+    },
+    [draft, commitDraftChange]
+  );
+
   // 合并某分段至上一段（直接调用 RetentionDraft 领域方法，零字符串推导）
   const handleMergeSegment = (segmentId: string) => {
     if (!draft) return;
@@ -383,9 +397,9 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   // 统一构建持久化方案记录
   const buildCurrentRecord = async (): Promise<PlanRecord | null> => {
     if (!draft || !metadata || !window.electronAPI) return null;
-    const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.concatSingleFile);
-    const planId = currentPlanId || `plan_${Date.now()}`;
     const title = currentPlanTitle || metadata.fileName.replace(/\.[^/.]+$/, '');
+    const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.concatSingleFile, title);
+    const planId = currentPlanId || `plan_${Date.now()}`;
     return draft.toRecord({
       id: planId,
       title: title,
@@ -408,7 +422,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     if (!trimmedTitle || !draft || !metadata || !window.electronAPI) return;
 
     try {
-      const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.concatSingleFile);
+      const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.concatSingleFile, trimmedTitle);
       const isUpdating = saveMode === 'update' && Boolean(currentPlanId);
       const targetId = isUpdating && currentPlanId ? currentPlanId : `plan_${Date.now()}`;
 
@@ -468,7 +482,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     }
     if (metadata?.filePath) {
       try {
-        const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath);
+        const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, concatSingleFile, currentPlanTitle);
         window.electronAPI.showItemInFolder(outPath);
       } catch {
         window.electronAPI.showItemInFolder(metadata.filePath);
@@ -492,7 +506,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           message: `输出目录已更新为: ${selectedDir}`,
         });
         if (metadata?.filePath) {
-          const newPath = await window.electronAPI.resolveOutputPath(metadata.filePath, concatSingleFile);
+          const newPath = await window.electronAPI.resolveOutputPath(metadata.filePath, concatSingleFile, currentPlanTitle);
           setSafeOutputPath(newPath);
         }
       }
@@ -642,6 +656,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             keyframes={metadata.keyframes}
             cuts={cuts as number[]}
             segments={segments}
+            videoPath={metadata.filePath}
             isPlaying={isPlaying}
             aspectRatioMode={aspectRatioMode}
             onSeek={(ms) => {
@@ -649,6 +664,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               playerRef.current?.seekTo(ms);
             }}
             onDeleteCut={handleDeleteCut}
+            onMoveCut={handleMoveCut}
             onTogglePlay={() => {
               setAuditionRange(null);
               playerRef.current?.togglePlay();
@@ -740,7 +756,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           {/* 右侧：快捷键指示栏，响应式平滑收缩，严禁折行 */}
           <div
             className="hidden md:flex items-center gap-1.5 min-w-0 justify-end overflow-hidden whitespace-nowrap text-[11px] text-zinc-400 shrink"
-            title="常用快捷键：空格 播放/暂停 · C 插入切点 · ←/→ 逐帧微调 · Del 移除切点 · Ctrl+Z 撤销 · 点击卡片切换保留"
+            title="常用快捷键：空格 播放/暂停 · C 插入切点 · 长按切点拖拽微调 · 双击切点就地修改时间 · ←/→ 逐帧微调 · Del 移除切点 · Ctrl+Z 撤销 · 点击卡片切换保留"
           >
             <span className="flex items-center gap-1 shrink-0">
               <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px] font-mono">空格</kbd> 播放

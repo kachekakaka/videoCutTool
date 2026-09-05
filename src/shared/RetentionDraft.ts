@@ -161,25 +161,33 @@ export class RetentionDraft {
   }
 
   /**
-   * 微调切点边界（切点索引 cutIndex）
+   * 将指定切点直接移动至目标绝对时间戳（ms）
+   * 严格执行碰撞防护屏障：必须与前后相邻切点及视频首尾保持至少 200ms 安全物理间距
    */
-  public nudgeBoundary(cutIndex: number, deltaMs: number): boolean {
+  public moveCut(cutIndex: number, newTimeMs: number): boolean {
     if (cutIndex < 0 || cutIndex >= this.cuts.length) return false;
-    const currentCut = this.cuts[cutIndex];
-    const newCut = Math.round(currentCut + deltaMs);
+    const rounded = Math.round(newTimeMs);
 
     const prevBound = cutIndex === 0 ? 0 : this.cuts[cutIndex - 1];
     const nextBound = cutIndex === this.cuts.length - 1 ? this.totalDurationMs : this.cuts[cutIndex + 1];
 
-    // 必须与左右边界至少保持 200ms
-    if (newCut < prevBound + 200 || newCut > nextBound - 200) {
+    // 严格碰撞屏障：与前后边界保持至少 200ms
+    if (rounded < prevBound + 200 || rounded > nextBound - 200) {
       return false;
     }
 
-    this.intervals[cutIndex].endMs = newCut;
-    this.intervals[cutIndex + 1].startMs = newCut;
+    this.intervals[cutIndex].endMs = rounded;
+    this.intervals[cutIndex + 1].startMs = rounded;
     this.rebuildCuts();
     return true;
+  }
+
+  /**
+   * 微调切点边界（切点索引 cutIndex）
+   */
+  public nudgeBoundary(cutIndex: number, deltaMs: number): boolean {
+    if (cutIndex < 0 || cutIndex >= this.cuts.length) return false;
+    return this.moveCut(cutIndex, this.cuts[cutIndex] + deltaMs);
   }
 
   // 兼容别名
@@ -236,12 +244,13 @@ export class RetentionDraft {
       concatSingleFile?: boolean;
       concatToSingleFile?: boolean;
       stripOriginalCover?: boolean;
+      title?: string;
     }
   ): MediaRetentionPlan {
     const isConcat = options.concatSingleFile ?? options.concatToSingleFile ?? this.concatSingleFile;
     const stripCover = options.stripOriginalCover ?? this.stripOriginalCover;
 
-    return planRetention(
+    const plan = planRetention(
       this.mediaPath,
       this.totalDurationMs,
       this.getSegments(),
@@ -250,6 +259,10 @@ export class RetentionDraft {
       isConcat,
       stripCover
     );
+    if (options.title) {
+      plan.title = options.title;
+    }
+    return plan;
   }
 
   /**

@@ -22,22 +22,7 @@ interface VideoPlayerProps {
   onAuditionEnd?: () => void;
 }
 
-export const formatTimecode = (ms: number, showHours = true): string => {
-  if (isNaN(ms) || ms < 0) ms = 0;
-  const totalSeconds = Math.floor(ms / 1000);
-  const milliseconds = Math.floor(ms % 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-
-  const pad = (n: number, z = 2) => ('00' + n).slice(-z);
-  const padMs = ('000' + milliseconds).slice(-3);
-
-  if (showHours || hours > 0) {
-    return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}.${padMs}`;
-  }
-  return `${pad(minutes)}:${pad(seconds)}.${padMs}`;
-};
+export { formatTimecode, parseTimecodeToMs } from '../../shared/timeUtils';
 
 export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
   (

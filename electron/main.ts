@@ -45,8 +45,16 @@ app.commandLine.appendSwitch('no-sandbox');
 // 探测基准物理宿主目录
 const hostDir = process.env.VCT_WORKSPACE_DIR || process.env.PORTABLE_EXECUTABLE_DIR || (app.isPackaged ? path.dirname(app.getPath('exe')) : process.cwd());
 
+// 绿色临时目录解析：若宿主位于开发打包输出的 release/ 目录内，向上退两级与仓库同级的外部 tmp 对齐
+function getExternalTmpDir(baseDir: string): string {
+  if (path.basename(baseDir).toLowerCase() === 'release') {
+    return path.resolve(baseDir, '../../videoCutTool_tmp');
+  }
+  return path.resolve(baseDir, '../videoCutTool_tmp');
+}
+
 // 严格遵守绿色便携隔离规范：将 Chromium 运行时数据与缓存导向外部临时目录，彻底杜绝 C 盘 APPDATA 与 TEMP 污染
-const externalUserData = path.resolve(hostDir, '../videoCutTool_tmp/electron_userdata');
+const externalUserData = path.resolve(getExternalTmpDir(hostDir), 'electron_userdata');
 try {
   if (!fs.existsSync(externalUserData)) {
     fs.mkdirSync(externalUserData, { recursive: true });
@@ -132,7 +140,7 @@ function getMimeType(filePath: string): string {
 ipcMain.handle('config:get', async () => configService.getConfig());
 ipcMain.handle('config:save', async (_event, newConfig: Partial<AppConfig>) => configService.saveConfig(newConfig));
 ipcMain.handle('config:getPath', async () => configService.getConfigPath());
-ipcMain.handle('config:resolveOutputPath', async (_event, videoPath: string, isConcat: boolean = true) => configService.resolveSafeOutputPath(videoPath, isConcat));
+ipcMain.handle('config:resolveOutputPath', async (_event, videoPath: string, isConcat: boolean = true, planTitle?: string) => configService.resolveSafeOutputPath(videoPath, isConcat, planTitle));
 
 ipcMain.handle('media:probe', async (_event, filePath: string) => prober.probe(filePath));
 ipcMain.handle('media:probeBasic', async (_event, filePath: string) => prober.probeBasic(filePath));
@@ -236,7 +244,7 @@ app.whenReady().then(async () => {
   }
 
   const currentConfig = configService.getConfig();
-  const tempSlicesDir = path.resolve(exeDir, '../videoCutTool_tmp/slices');
+  const tempSlicesDir = path.resolve(getExternalTmpDir(exeDir), 'slices');
   prober = new KeyframeProber(currentConfig.ffprobePath, exeDir);
   cuttingEngine = new MediaCuttingEngine(currentConfig.ffmpegPath, tempSlicesDir);
   planManager = new PlanManager(configService.getDataDirectory(), cuttingEngine, prober);

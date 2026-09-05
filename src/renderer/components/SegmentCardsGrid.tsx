@@ -1,5 +1,6 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { Segment, RetentionDecision } from '../../shared/types';
+import { formatTimecode, parseTimecodeToMs } from './VideoPlayer';
 import { Play, ArrowRight, Clock, Trash2 } from 'lucide-react';
 
 interface SegmentCardsGridProps {
@@ -20,16 +21,29 @@ const formatStepLabel = (ms: number): string => {
   return `${ms / 1000}s`;
 };
 
-// 交互式时分秒毫秒微调组件
+// 交互式时分秒毫秒微调组件（支持直接点击敲字输入与鼠标滚轮微调，支持首末物理边界锁定）
 interface TimecodeWheelProps {
   ms: number;
   stepMs: number;
   stepLabel: string;
+  readOnly?: boolean;
+  lockTooltip?: string;
   onNudge: (deltaMs: number) => void;
 }
 
-const TimecodeWheel: React.FC<TimecodeWheelProps> = ({ ms, stepMs, stepLabel, onNudge }) => {
+const TimecodeWheel: React.FC<TimecodeWheelProps> = ({
+  ms,
+  stepMs,
+  stepLabel,
+  readOnly = false,
+  lockTooltip,
+  onNudge,
+}) => {
   const safeMs = Math.max(0, isNaN(ms) ? 0 : ms);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editValue, setEditValue] = useState('');
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
   const totalSeconds = Math.floor(safeMs / 1000);
   const milliseconds = Math.floor(safeMs % 1000);
   const hours = Math.floor(totalSeconds / 3600);
@@ -40,6 +54,7 @@ const TimecodeWheel: React.FC<TimecodeWheelProps> = ({ ms, stepMs, stepLabel, on
   const padMs = ('000' + milliseconds).slice(-3);
 
   const handleWheelOnUnit = (e: React.WheelEvent, unitDelta: number) => {
+    if (readOnly) return;
     e.preventDefault();
     e.stopPropagation();
     // 滚轮向上增加，向下减少
@@ -47,13 +62,68 @@ const TimecodeWheel: React.FC<TimecodeWheelProps> = ({ ms, stepMs, stepLabel, on
     onNudge(delta);
   };
 
+  const handleStartEdit = (e: React.MouseEvent) => {
+    if (readOnly) return;
+    e.stopPropagation();
+    setEditValue(formatTimecode(safeMs, true));
+    setIsEditing(true);
+  };
+
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [isEditing]);
+
+  const handleCommit = () => {
+    setIsEditing(false);
+    const parsed = parseTimecodeToMs(editValue);
+    if (parsed !== null && parsed !== safeMs) {
+      const delta = parsed - safeMs;
+      onNudge(delta);
+    }
+  };
+
+  if (isEditing && !readOnly) {
+    return (
+      <input
+        ref={inputRef}
+        type="text"
+        value={editValue}
+        onChange={(e) => setEditValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            handleCommit();
+          } else if (e.key === 'Escape') {
+            setIsEditing(false);
+          }
+        }}
+        onBlur={handleCommit}
+        className="w-[84px] h-[18px] bg-black/90 border border-blue-400 rounded px-1 font-mono text-[10px] text-white focus:outline-none focus:ring-1 focus:ring-blue-400"
+      />
+    );
+  }
+
   return (
-    <span className="inline-flex items-center select-none font-mono text-[10px] text-[#f0f6fc]">
+    <span
+      onClick={handleStartEdit}
+      className={`inline-flex items-center select-none font-mono text-[10px] rounded px-0.5 transition-colors ${
+        readOnly
+          ? 'text-zinc-500 cursor-not-allowed'
+          : 'text-[#f0f6fc] cursor-pointer hover:bg-blue-500/10 group/tc'
+      }`}
+      title={
+        readOnly
+          ? lockTooltip || '视频全片物理边界 (不可微调)'
+          : '单击直接打字输入时间码 (或悬停时分秒滚动滚轮微调)'
+      }
+    >
       {/* 小时 */}
       <span
         onWheel={(e) => handleWheelOnUnit(e, 3600000)}
-        className="hover:bg-blue-500/30 hover:text-blue-200 rounded px-0.5 cursor-ns-resize transition-colors"
-        title="鼠标滚轮微调小时 (±1h)"
+        className={readOnly ? '' : 'hover:bg-blue-500/30 hover:text-blue-200 rounded px-0.5 cursor-ns-resize transition-colors'}
+        title={readOnly ? undefined : '鼠标滚轮微调小时 (±1h)'}
       >
         {pad(hours)}
       </span>
@@ -61,8 +131,8 @@ const TimecodeWheel: React.FC<TimecodeWheelProps> = ({ ms, stepMs, stepLabel, on
       {/* 分钟 */}
       <span
         onWheel={(e) => handleWheelOnUnit(e, 60000)}
-        className="hover:bg-blue-500/30 hover:text-blue-200 rounded px-0.5 cursor-ns-resize transition-colors"
-        title="鼠标滚轮微调分钟 (±1m)"
+        className={readOnly ? '' : 'hover:bg-blue-500/30 hover:text-blue-200 rounded px-0.5 cursor-ns-resize transition-colors'}
+        title={readOnly ? undefined : '鼠标滚轮微调分钟 (±1m)'}
       >
         {pad(minutes)}
       </span>
@@ -70,8 +140,8 @@ const TimecodeWheel: React.FC<TimecodeWheelProps> = ({ ms, stepMs, stepLabel, on
       {/* 秒 */}
       <span
         onWheel={(e) => handleWheelOnUnit(e, 1000)}
-        className="hover:bg-blue-500/30 hover:text-blue-200 font-semibold text-white rounded px-0.5 cursor-ns-resize transition-colors"
-        title="鼠标滚轮微调秒 (±1s)"
+        className={readOnly ? '' : 'hover:bg-blue-500/30 hover:text-blue-200 font-semibold text-white rounded px-0.5 cursor-ns-resize transition-colors'}
+        title={readOnly ? undefined : '鼠标滚轮微调秒 (±1s)'}
       >
         {pad(seconds)}
       </span>
@@ -79,8 +149,8 @@ const TimecodeWheel: React.FC<TimecodeWheelProps> = ({ ms, stepMs, stepLabel, on
       {/* 毫秒 */}
       <span
         onWheel={(e) => handleWheelOnUnit(e, stepMs)}
-        className="text-zinc-400 hover:bg-blue-500/30 hover:text-blue-200 rounded px-0.5 cursor-ns-resize transition-colors"
-        title={`鼠标滚轮微调毫秒 (±${stepLabel})`}
+        className={readOnly ? '' : 'text-zinc-400 hover:bg-blue-500/30 hover:text-blue-200 rounded px-0.5 cursor-ns-resize transition-colors'}
+        title={readOnly ? undefined : `鼠标滚轮微调毫秒 (±${stepLabel})`}
       >
         {padMs}
       </span>
@@ -154,7 +224,7 @@ const SegmentCardItem: React.FC<SegmentCardItemProps> = ({
   const cardRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (isPlayheadActive && cardRef.current) {
-      cardRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      cardRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
     }
   }, [isPlayheadActive]);
 
@@ -268,42 +338,63 @@ const SegmentCardItem: React.FC<SegmentCardItemProps> = ({
       </div>
 
       {/* ── 行 2：时间码（支持滚轮悬停微调）与紧凑加减微调按钮 ── */}
-      <div className="flex items-center justify-between pl-1 shrink-0 h-6">
-        {/* 左：纯白等宽时间码 (HH:MM:SS.mmm，悬停时分秒滚动加减) */}
-        <div className="flex items-center gap-1 font-mono text-[10px] whitespace-nowrap bg-black/50 px-1.5 py-0.5 rounded border border-white/5">
-          <TimecodeWheel
-            ms={seg.startMs}
-            stepMs={activeStepMs}
-            stepLabel={stepLabel}
-            onNudge={(delta) => onNudgeStart(seg.id, delta)}
-          />
-          <ArrowRight className="w-2.5 h-2.5 text-zinc-500 shrink-0" />
-          <TimecodeWheel
-            ms={seg.endMs}
-            stepMs={activeStepMs}
-            stepLabel={stepLabel}
-            onNudge={(delta) => onNudgeEnd(seg.id, delta)}
-          />
-        </div>
+      {(() => {
+        const isStartLocked = idx === 0;
+        const isEndLocked = idx === totalSegments - 1;
 
-        {/* 右：纯符号微调加减按钮 (无长文本，杜绝错位) */}
-        <div className="flex items-center gap-1 shrink-0 font-mono text-xs">
-          <button
-            onClick={() => onNudgeStart(seg.id, -activeStepMs)}
-            className="w-5 h-5 rounded flex items-center justify-center bg-white/5 hover:bg-white/15 text-zinc-300 hover:text-white border border-white/10 transition-colors active:scale-90 font-bold"
-            title={`左移入点 (步长 ${stepLabel})`}
-          >
-            -
-          </button>
-          <button
-            onClick={() => onNudgeEnd(seg.id, activeStepMs)}
-            className="w-5 h-5 rounded flex items-center justify-center bg-white/5 hover:bg-white/15 text-zinc-300 hover:text-white border border-white/10 transition-colors active:scale-90 font-bold"
-            title={`右移出点 (步长 ${stepLabel})`}
-          >
-            +
-          </button>
-        </div>
-      </div>
+        return (
+          <div className="flex items-center justify-between pl-1 shrink-0 h-6">
+            {/* 左：纯白等宽时间码 (HH:MM:SS.mmm，悬停时分秒滚动加减) */}
+            <div className="flex items-center gap-1 font-mono text-[10px] whitespace-nowrap bg-black/50 px-1.5 py-0.5 rounded border border-white/5">
+              <TimecodeWheel
+                ms={seg.startMs}
+                stepMs={activeStepMs}
+                stepLabel={stepLabel}
+                readOnly={isStartLocked}
+                lockTooltip="视频物理起点 00:00:00 (不可微调)"
+                onNudge={(delta) => onNudgeStart(seg.id, delta)}
+              />
+              <ArrowRight className="w-2.5 h-2.5 text-zinc-500 shrink-0" />
+              <TimecodeWheel
+                ms={seg.endMs}
+                stepMs={activeStepMs}
+                stepLabel={stepLabel}
+                readOnly={isEndLocked}
+                lockTooltip="视频物理终点 (不可微调)"
+                onNudge={(delta) => onNudgeEnd(seg.id, delta)}
+              />
+            </div>
+
+            {/* 右：纯符号微调加减按钮 (无长文本，杜绝错位) */}
+            <div className="flex items-center gap-1 shrink-0 font-mono text-xs">
+              <button
+                disabled={isStartLocked}
+                onClick={() => onNudgeStart(seg.id, -activeStepMs)}
+                className={`w-5 h-5 rounded flex items-center justify-center border border-white/10 transition-colors font-bold ${
+                  isStartLocked
+                    ? 'opacity-20 cursor-not-allowed bg-white/5 text-zinc-600'
+                    : 'bg-white/5 hover:bg-white/15 text-zinc-300 hover:text-white active:scale-90'
+                }`}
+                title={isStartLocked ? '视频物理起点不可微调' : `左移入点 (步长 ${stepLabel})`}
+              >
+                -
+              </button>
+              <button
+                disabled={isEndLocked}
+                onClick={() => onNudgeEnd(seg.id, activeStepMs)}
+                className={`w-5 h-5 rounded flex items-center justify-center border border-white/10 transition-colors font-bold ${
+                  isEndLocked
+                    ? 'opacity-20 cursor-not-allowed bg-white/5 text-zinc-600'
+                    : 'bg-white/5 hover:bg-white/15 text-zinc-300 hover:text-white active:scale-90'
+                }`}
+                title={isEndLocked ? '视频物理终点不可微调' : `右移出点 (步长 ${stepLabel})`}
+              >
+                +
+              </button>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

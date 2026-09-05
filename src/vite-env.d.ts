@@ -8,7 +8,7 @@ export interface ElectronAPI {
   getConfig: () => Promise<AppConfig>;
   saveConfig: (config: Partial<AppConfig>) => Promise<AppConfig>;
   getConfigPath: () => Promise<string>;
-  resolveOutputPath: (videoPath: string, isConcat?: boolean) => Promise<string>;
+  resolveOutputPath: (videoPath: string, isConcat?: boolean, planTitle?: string) => Promise<string>;
 
   // 媒体探测与对话框
   openVideoDialog: () => Promise<string | null>;

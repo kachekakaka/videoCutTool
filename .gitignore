@@ -18,6 +18,7 @@ plans/
 .cache/
 cache/
 temp/
+videoCutTool_tmp/
 
 # 媒体文件与切片输出（遵循数据保密与防污染红线）
 *.mp4

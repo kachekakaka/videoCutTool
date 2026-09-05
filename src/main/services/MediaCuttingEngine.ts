@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { PlanRecord, CutResult, MediaRetentionPlan } from '../../shared/types';
 import { RetentionDraft } from '../../shared/RetentionDraft';
+import { formatTaskTimestamp } from '../../shared/timeUtils';
 import { KeyframeProber } from './KeyframeProber';
 
 export type PlanStatusListener = (event: {
@@ -47,9 +48,13 @@ export class MediaCuttingEngine {
     this.ffmpegPath = matched || 'ffmpeg';
 
     // 切片缓存统一存放至同级外部目录 ../videoCutTool_tmp/slices/
+    const baseCwd = process.cwd();
+    const fallbackTmp = path.basename(baseCwd).toLowerCase() === 'release'
+      ? path.resolve(baseCwd, '../../videoCutTool_tmp')
+      : path.resolve(baseCwd, '../videoCutTool_tmp');
     this.tmpDir = customSlicesDir
       ? path.resolve(customSlicesDir)
-      : path.resolve(process.cwd(), '../videoCutTool_tmp/slices');
+      : path.resolve(fallbackTmp, 'slices');
 
     if (!fs.existsSync(this.tmpDir)) {
       fs.mkdirSync(this.tmpDir, { recursive: true });
@@ -114,12 +119,17 @@ export class MediaCuttingEngine {
       // 3. 使用 RetentionDraft 重建不可变切片计划
       const draft = RetentionDraft.fromRecord(record, meta.durationMs);
       const isConcat = record.concatSingleFile !== false;
-      const safeOutput = this.resolveSafeSingleOutputPath(record.outputPath || record.sourcePath, record.sourcePath);
+      const safeOutput = this.resolveSafeSingleOutputPath(
+        record.outputPath || record.sourcePath,
+        record.sourcePath,
+        record.title
+      );
 
       const retentionPlan = draft.toPlan(meta.keyframes, {
         outputPath: safeOutput,
         concatToSingleFile: isConcat,
         stripOriginalCover: record.stripOriginalCover !== false,
+        title: record.title,
       });
 
       // 4. 执行剪辑
@@ -196,7 +206,7 @@ export class MediaCuttingEngine {
         const seg = plan.planSegments[0];
         const segStartMs = seg.safeRange?.startMs ?? (seg as any).startMs ?? 0;
         const segEndMs = seg.safeRange?.endMs ?? (seg as any).endMs ?? plan.durationMs;
-        const finalOutputPath = this.resolveSafeSingleOutputPath(plan.outputPath, plan.sourcePath);
+        const finalOutputPath = this.resolveSafeSingleOutputPath(plan.outputPath, plan.sourcePath, plan.title);
 
         await this.cutSingleSegment(
           plan.sourcePath,
@@ -216,7 +226,7 @@ export class MediaCuttingEngine {
       const baseName = path.basename(plan.sourcePath, ext);
 
       if (plan.concatToSingleFile) {
-        const finalOutputPath = this.resolveSafeSingleOutputPath(plan.outputPath, plan.sourcePath);
+        const finalOutputPath = this.resolveSafeSingleOutputPath(plan.outputPath, plan.sourcePath, plan.title);
         const tempSegments: string[] = [];
         const timestamp = Date.now();
 
@@ -259,7 +269,8 @@ export class MediaCuttingEngine {
           baseName,
           ext,
           plan.planSegments.length,
-          plan.sourcePath
+          plan.sourcePath,
+          plan.title
         );
 
         for (let i = 0; i < plan.planSegments.length; i++) {
@@ -292,29 +303,51 @@ export class MediaCuttingEngine {
     }
   }
 
-  public resolveSafeSingleOutputPath(candidatePath: string, sourcePath: string): string {
+  public resolveSafeSingleOutputPath(
+    candidatePath: string,
+    sourcePath: string,
+    planTitle?: string
+  ): string {
     const ext = path.extname(candidatePath) || path.extname(sourcePath) || '.mp4';
     const outDir = path.dirname(candidatePath);
-    let rawBase = path.basename(candidatePath, ext);
+    const rawSourceBase = path.basename(sourcePath, ext);
+    let rawCandidateBase = path.basename(candidatePath, ext);
     const resolvedSource = path.resolve(sourcePath);
 
     const isConflict = (p: string) => path.resolve(p) === resolvedSource || fs.existsSync(p);
 
-    if (!isConflict(candidatePath)) {
-      return candidatePath;
+    const cleanTitle = planTitle?.trim();
+    const hasCustomTitle = Boolean(
+      cleanTitle &&
+      cleanTitle !== rawSourceBase &&
+      !/^plan_\d+$/.test(cleanTitle)
+    );
+
+    // 如果 candidateBase 尚未带有 YYYYMMDD_HHmm 时间戳前缀，则主动补全
+    const hasTimestampPrefix = /^\d{8}_\d{4}_/.test(rawCandidateBase);
+    let baseWithPrefix = rawCandidateBase;
+
+    if (!hasTimestampPrefix) {
+      const timestamp = formatTaskTimestamp();
+      let prefix = `${timestamp}_`;
+      if (hasCustomTitle && !rawCandidateBase.includes(`[${cleanTitle}]`)) {
+        prefix += `[${cleanTitle}]`;
+      }
+      baseWithPrefix = `${prefix}${rawSourceBase}`;
+      if (!hasCustomTitle && !baseWithPrefix.endsWith('_cut')) {
+        baseWithPrefix += '_cut';
+      }
     }
 
-    let prefix = rawBase;
-    if (!prefix.endsWith('_cut') && !/_cut_\d+$/.test(prefix)) {
-      prefix = `${rawBase}_cut`;
-    } else if (/_cut_\d+$/.test(prefix)) {
-      prefix = prefix.replace(/_\d+$/, '');
+    const initial = path.join(outDir, `${baseWithPrefix}${ext}`);
+    if (!isConflict(initial)) {
+      return initial;
     }
 
     let counter = 1;
     while (true) {
       const suffix = `_${String(counter).padStart(2, '0')}`;
-      const safeCandidate = path.join(outDir, `${prefix}${suffix}${ext}`);
+      const safeCandidate = path.join(outDir, `${baseWithPrefix}${suffix}${ext}`);
       if (!isConflict(safeCandidate)) {
         return safeCandidate;
       }
@@ -324,15 +357,30 @@ export class MediaCuttingEngine {
 
   public resolveSafeSegmentPaths(
     outDir: string,
-    baseName: string,
+    rawSourceBase: string,
     ext: string,
     count: number,
-    sourcePath: string
+    sourcePath: string,
+    planTitle?: string
   ): string[] {
     const resolvedSource = path.resolve(sourcePath);
     const isConflict = (p: string) => path.resolve(p) === resolvedSource || fs.existsSync(p);
 
-    const defaultSeg1 = path.join(outDir, `${baseName}_seg01${ext}`);
+    const timestamp = formatTaskTimestamp();
+    const cleanTitle = planTitle?.trim();
+    const hasCustomTitle = Boolean(
+      cleanTitle &&
+      cleanTitle !== rawSourceBase &&
+      !/^plan_\d+$/.test(cleanTitle)
+    );
+
+    let prefixPart = `${timestamp}_`;
+    if (hasCustomTitle) {
+      prefixPart += `[${cleanTitle}]`;
+    }
+    const basePrefix = `${prefixPart}${rawSourceBase}`;
+
+    const defaultSeg1 = path.join(outDir, `${basePrefix}_seg01${ext}`);
     let batchSuffix = '';
 
     if (isConflict(defaultSeg1)) {
@@ -342,7 +390,7 @@ export class MediaCuttingEngine {
         let batchAllFree = true;
         for (let i = 0; i < count; i++) {
           const pad = String(i + 1).padStart(2, '0');
-          const segPath = path.join(outDir, `${baseName}_seg${pad}${candidateSuffix}${ext}`);
+          const segPath = path.join(outDir, `${basePrefix}_seg${pad}${candidateSuffix}${ext}`);
           if (isConflict(segPath)) {
             batchAllFree = false;
             break;
@@ -359,7 +407,7 @@ export class MediaCuttingEngine {
     const result: string[] = [];
     for (let i = 0; i < count; i++) {
       const pad = String(i + 1).padStart(2, '0');
-      result.push(path.join(outDir, `${baseName}_seg${pad}${batchSuffix}${ext}`));
+      result.push(path.join(outDir, `${basePrefix}_seg${pad}${batchSuffix}${ext}`));
     }
     return result;
   }
