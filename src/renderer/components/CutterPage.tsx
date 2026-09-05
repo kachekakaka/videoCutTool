@@ -15,7 +15,7 @@ import {
   Undo2,
   Redo2,
   FolderOpen,
-  ExternalLink,
+  FolderEdit,
   UploadCloud,
 } from 'lucide-react';
 
@@ -398,6 +398,10 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   // 打开输出目录
   const handleOpenOutputFolder = async () => {
     if (!window.electronAPI) return;
+    if (safeOutputPath) {
+      window.electronAPI.showItemInFolder(safeOutputPath);
+      return;
+    }
     if (metadata?.filePath) {
       try {
         const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath);
@@ -630,8 +634,34 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             </div>
           </div>
 
-          <div className="text-xs text-zinc-400">
-            按 <kbd className="bg-white/10 px-1.5 py-0.5 rounded text-[11px] font-mono text-zinc-200">C</kbd> 插入切点 · 点击卡片切换保留/丢弃 · 支持单段试听与微调
+          <div
+            className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-400 select-none"
+            title="常用快捷键指南：空格播放/暂停，C插入切点，方向键逐帧微调，Del删除切点，Ctrl+Z撤销，Ctrl+Y重做"
+          >
+            <span className="flex items-center gap-1" title="按空格键控制视频播放或暂停">
+              <kbd className="bg-white/10 text-zinc-200 px-1.5 py-0.5 rounded text-[11px] font-mono">空格</kbd> 播放/暂停
+            </span>
+            <span className="text-zinc-600">·</span>
+            <span className="flex items-center gap-1" title="按 C 键在当前播放游标处插入新切点">
+              <kbd className="bg-white/10 text-zinc-200 px-1.5 py-0.5 rounded text-[11px] font-mono">C</kbd> 插入切点
+            </span>
+            <span className="text-zinc-600">·</span>
+            <span className="flex items-center gap-1" title="左右方向键逐帧微调，按住 Shift 跳跃 1 秒">
+              <kbd className="bg-white/10 text-zinc-200 px-1.5 py-0.5 rounded text-[11px] font-mono">←</kbd>
+              <kbd className="bg-white/10 text-zinc-200 px-1.5 py-0.5 rounded text-[11px] font-mono">→</kbd> 逐帧微调
+            </span>
+            <span className="text-zinc-600">·</span>
+            <span className="flex items-center gap-1" title="按 Delete 或 Backspace 键移除时间轴上选中的切点">
+              <kbd className="bg-white/10 text-zinc-200 px-1.5 py-0.5 rounded text-[11px] font-mono">Del</kbd> 移除切点
+            </span>
+            <span className="text-zinc-600">·</span>
+            <span className="flex items-center gap-1" title="撤销上一步操作 (Ctrl+Z) 或重做 (Ctrl+Y)">
+              <kbd className="bg-white/10 text-zinc-200 px-1.5 py-0.5 rounded text-[11px] font-mono">Ctrl+Z</kbd> 撤销
+              <span className="text-zinc-500">/</span>
+              <kbd className="bg-white/10 text-zinc-200 px-1.5 py-0.5 rounded text-[11px] font-mono">Y</kbd> 重做
+            </span>
+            <span className="hidden xl:inline text-zinc-600">·</span>
+            <span className="text-zinc-400 hidden xl:inline" title="点击分段卡片可快速切换保留或丢弃决策">点击卡片切换保留/丢弃</span>
           </div>
         </div>
 
@@ -671,17 +701,29 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                 <span className="hidden sm:inline text-amber-400"> 个</span>
               </div>
 
-              {/* 实时预定产物文件名预览 */}
+              {/* 实时预定产物文件名预览与目录控制胶囊 */}
               {safeOutputPath && (
                 <div
-                  onClick={handleOpenOutputFolder}
-                  className="flex items-center gap-1.5 text-xs font-mono bg-black/40 px-2 py-1 rounded-lg border border-white/10 shrink min-w-0 cursor-pointer hover:border-white/25 transition-all"
-                  title={`点击在文件管理器中打开目标目录\n即将保存至: ${safeOutputPath}`}
+                  className="flex items-center bg-black/40 px-2.5 py-1 rounded-xl border border-white/10 shrink min-w-0 gap-1.5 group hover:border-white/25 transition-all"
                 >
-                  <span className="text-zinc-400 shrink-0">📁 预定:</span>
-                  <span className="text-sky-300 font-bold max-w-[80px] sm:max-w-[120px] 2xl:max-w-[180px] truncate">
-                    {safeOutputPath.split(/[\\/]/).pop()}
-                  </span>
+                  <button
+                    onClick={handleOpenOutputFolder}
+                    className="flex items-center gap-1.5 text-xs font-mono text-zinc-300 hover:text-white transition-colors truncate focus-visible:outline-none"
+                    title={`点击在系统资源管理器中打开目标目录\n预定保存完整路径: ${safeOutputPath}`}
+                  >
+                    <FolderOpen className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span className="text-zinc-400 shrink-0">预定:</span>
+                    <span className="text-sky-300 font-bold max-w-[90px] sm:max-w-[140px] 2xl:max-w-[220px] truncate">
+                      {safeOutputPath.split(/[\\/]/).pop()}
+                    </span>
+                  </button>
+                  <button
+                    onClick={handleSelectOutputDir}
+                    className="p-1 hover:bg-white/10 rounded text-zinc-400 hover:text-amber-400 transition-all shrink-0 border-l border-white/10 pl-1.5 ml-0.5"
+                    title="点击更换剪辑产物的保存目录"
+                  >
+                    <FolderEdit className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               )}
             </div>
@@ -716,24 +758,6 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
             {/* 右侧动作按钮组 */}
             <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 ml-auto lg:ml-0">
-              <div className="flex items-center bg-white/5 rounded-xl border border-white/10 overflow-hidden text-xs">
-                <button
-                  onClick={handleSelectOutputDir}
-                  className="px-2 sm:px-2.5 py-1.5 hover:bg-white/10 text-zinc-300 hover:text-white font-semibold flex items-center gap-1 transition-all focus-visible:ring-2 focus-visible:ring-blue-500 active:scale-95"
-                  title="点击选择/更换剪辑产物的输出目标目录"
-                >
-                  <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
-                  <span>输出目录</span>
-                </button>
-                <button
-                  onClick={handleOpenOutputFolder}
-                  className="p-1.5 hover:bg-white/10 text-zinc-400 hover:text-white transition-all border-l border-white/10 active:scale-95"
-                  title="在系统资源管理器中打开当前输出目录"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </button>
-              </div>
-
               <button
                 onClick={handleSavePlan}
                 className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-all border border-white/10 active:scale-95 shadow-md focus-visible:ring-2 focus-visible:ring-blue-500"

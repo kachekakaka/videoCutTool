@@ -19,15 +19,17 @@ import { formatTimecode } from './VideoPlayer';
 
 interface PlansPageProps {
   onLoadPlanIntoCutter: (plan: PlanRecord) => void;
+  isActive?: boolean;
 }
 
-export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) => {
+export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter, isActive }) => {
   const [plans, setPlans] = useState<PlanRecord[]>([]);
   const [filter, setFilter] = useState<'all' | 'ready' | 'processing' | 'completed' | 'failed'>('all');
   const [loading, setLoading] = useState(false);
   const [executingId, setExecutingId] = useState<string | null>(null);
   const [batchRunning, setBatchRunning] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [planToDelete, setPlanToDelete] = useState<PlanRecord | null>(null);
 
   const fetchPlans = async () => {
     setLoading(true);
@@ -43,22 +45,38 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
     }
   };
 
+  // 每次切换至本 Tab 时立即刷新方案列表，彻底根除跨 Tab 数据丢失假象
   useEffect(() => {
-    fetchPlans();
-
-    if (window.electronAPI) {
-      const unsubStatus = window.electronAPI.onPlanStatusChanged?.(() => {
-        fetchPlans();
-      });
-      const unsubCompleted = window.electronAPI.onPlanCompleted?.(() => {
-        fetchPlans();
-      });
-      return () => {
-        if (unsubStatus) unsubStatus();
-        if (unsubCompleted) unsubCompleted();
-      };
+    if (isActive) {
+      fetchPlans();
     }
+  }, [isActive]);
+
+  useEffect(() => {
+    if (!window.electronAPI) return;
+
+    const unsubStatus = window.electronAPI.onPlanStatusChanged?.(() => {
+      fetchPlans();
+    });
+    const unsubCompleted = window.electronAPI.onPlanCompleted?.(() => {
+      fetchPlans();
+    });
+    return () => {
+      if (unsubStatus) unsubStatus();
+      if (unsubCompleted) unsubCompleted();
+    };
   }, []);
+
+  // Esc 键关闭删除确认模态框
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && planToDelete) {
+        setPlanToDelete(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [planToDelete]);
 
   const handleExecuteSingle = async (planId: string) => {
     setExecutingId(planId);
@@ -88,11 +106,20 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
     }
   };
 
-  const handleDelete = async (planId: string) => {
-    if (window.confirm('确定要永久删除该方案记录吗？')) {
-      if (window.electronAPI) {
-        await window.electronAPI.deletePlan(planId);
+  const handleDeleteClick = (plan: PlanRecord) => {
+    setPlanToDelete(plan);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!planToDelete) return;
+    const targetId = planToDelete.id;
+    setPlanToDelete(null);
+    if (window.electronAPI) {
+      try {
+        await window.electronAPI.deletePlan(targetId);
         await fetchPlans();
+      } catch (err) {
+        console.error('删除方案失败:', err);
       }
     }
   };
@@ -439,7 +466,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
 
                       {/* 删除按钮 */}
                       <button
-                        onClick={() => handleDelete(plan.id)}
+                        onClick={() => handleDeleteClick(plan)}
                         className="p-1.5 rounded-lg bg-white/5 hover:bg-rose-500/15 text-rose-400/80 hover:text-rose-300 transition-colors focus-visible:ring-2 focus-visible:ring-rose-500/40"
                         title="删除方案"
                       >
@@ -453,6 +480,57 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
           </div>
         )}
       </div>
+
+      {/* 应用内置暗黑确认删除模态框（彻底消除白底系统弹窗） */}
+      {planToDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in select-none"
+          onClick={() => setPlanToDelete(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl bg-[#161b22] border border-rose-500/30 p-6 shadow-2xl text-left relative animate-in zoom-in-95"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-4">
+              <div className="w-10 h-10 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center shrink-0">
+                <AlertCircle className="w-5 h-5 text-rose-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-base font-bold text-white mb-1.5">
+                  确认删除方案记录？
+                </h3>
+                <p className="text-xs text-zinc-300 mb-2 leading-relaxed">
+                  即将永久删除方案记录：
+                  <span className="text-rose-300 font-mono font-semibold block mt-1 truncate" title={planToDelete.title}>
+                    「{planToDelete.title}」
+                  </span>
+                </p>
+                <p className="text-[11px] text-zinc-400 leading-normal">
+                  此操作仅移除方案管理中心内的配置卡片，绝不会删除您的原始视频文件。
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setPlanToDelete(null)}
+                className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-zinc-300 hover:text-white text-xs font-semibold transition-all focus-visible:ring-2 focus-visible:ring-blue-500 active:scale-95"
+              >
+                取消 (Esc)
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDelete}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all shadow-lg shadow-rose-600/30 active:scale-95 focus-visible:ring-2 focus-visible:ring-rose-400 flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>确认永久删除</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

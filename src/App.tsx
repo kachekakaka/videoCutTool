@@ -167,7 +167,10 @@ export const App: React.FC = () => {
           </div>
 
           <div className={activeTab === 'plans' ? 'flex flex-1 flex-col h-full overflow-hidden min-h-0' : 'hidden'}>
-            <PlansPage onLoadPlanIntoCutter={handleLoadPlanIntoCutter} />
+            <PlansPage
+              isActive={activeTab === 'plans'}
+              onLoadPlanIntoCutter={handleLoadPlanIntoCutter}
+            />
           </div>
 
           <div className={activeTab === 'settings' ? 'flex flex-1 flex-col h-full overflow-hidden min-h-0' : 'hidden'}>

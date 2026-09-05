@@ -137,7 +137,20 @@ ipcMain.handle('plan:delete', async (_event, id: string) => planManager.deletePl
 ipcMain.handle('plan:execute', async (_event, id: string) => planManager.executePlan(id));
 ipcMain.handle('plan:batchExecute', async () => planManager.batchExecute());
 ipcMain.handle('shell:showItemInFolder', async (_event, fullPath: string) => {
-  if (fullPath) shell.showItemInFolder(fullPath);
+  if (!fullPath) return;
+  try {
+    if (fs.existsSync(fullPath)) {
+      shell.showItemInFolder(fullPath);
+    } else {
+      const dir = path.extname(fullPath) ? path.dirname(fullPath) : fullPath;
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      shell.openPath(dir);
+    }
+  } catch (err) {
+    console.error('打开目录失败:', err);
+  }
 });
 
 ipcMain.handle('dialog:openVideo', async () => {
