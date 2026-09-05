@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import { AppConfig, MediaMetadata, PlanRecord } from '../src/shared/types';
+import { AppConfig, CompressConfig, MediaMetadata, PlanRecord, PreviewSample } from '../src/shared/types';
 
 contextBridge.exposeInMainWorld('electronAPI', {
   getPathForFile: (file: File): string => {
@@ -21,6 +21,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   probeMedia: (filePath: string): Promise<MediaMetadata> => ipcRenderer.invoke('media:probe', filePath),
   probeBasic: (filePath: string): Promise<MediaMetadata> => ipcRenderer.invoke('media:probeBasic', filePath),
   probeKeyframes: (filePath: string): Promise<number[]> => ipcRenderer.invoke('media:probeKeyframes', filePath),
+
+  // 降码与画质对比预览
+  previewCompressionSamples: (videoPath: string, timestampsMs: number[], config: CompressConfig): Promise<PreviewSample[]> =>
+    ipcRenderer.invoke('compress:previewSamples', videoPath, timestampsMs, config),
+  probeHardwareEncoder: () => ipcRenderer.invoke('compress:probeEncoder'),
 
   // 执行裁剪与后台引擎
   submitDraft: (record: PlanRecord): Promise<{ queued: boolean; active: boolean }> => ipcRenderer.invoke('engine:submitDraft', record),

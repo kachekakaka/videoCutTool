@@ -990,6 +990,14 @@
           <circle cx="12" cy="12" r="3"></circle>
         </svg>
       </div>
+
+      <div class="nav-item" id="tab-btn-compress" onclick="switchTab('compress')" title="智能降码与画质双模对比实验室">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+          <line x1="8" y1="21" x2="16" y2="21"></line>
+          <line x1="12" y1="17" x2="12" y2="21"></line>
+        </svg>
+      </div>
     </div>
 
     <div class="sidebar-footer">
@@ -1045,7 +1053,12 @@
           <canvas id="virtual-screen"></canvas>
           <div class="video-overlay-info">
             <span id="video-name-tag">示例影片: sample_movie.mp4</span>
-            <span style="color: #3fb950;">● 关键帧保全已激活 (绝不多删)</span>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="color: #3fb950;">● 关键帧保全已激活</span>
+              <button class="btn" onclick="switchTab('compress')" style="padding: 3px 8px; font-size: 11px; background: rgba(188, 140, 255, 0.2); border: 1px solid rgba(188, 140, 255, 0.4); color: #bc8cff; border-radius: 6px; cursor: pointer;">
+                🔍 就地画质对比
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1183,6 +1196,136 @@
       </div>
     </div>
 
+    <!-- Tab 4: 智能降码与画质双模对比实验室 -->
+    <div class="tab-page" id="tab-page-compress">
+      <div style="display: flex; flex-direction: column; gap: 18px;">
+        <!-- 最新就地内嵌架构提示条 -->
+        <div style="background: rgba(88, 166, 255, 0.1); border: 1px solid rgba(88, 166, 255, 0.3); border-radius: 12px; padding: 10px 16px; font-size: 12px; color: #58a6ff; display: flex; align-items: center; justify-content: space-between;">
+          <span>🎯 <b>最新视窗架构</b>：画质对比已直接就地内嵌至工作台主画布视窗，点击右上角 <code>[ 🎬 剪辑播放 | 🔍 画质对比 ]</code> 随时来回切换，绝不弹窗遮挡。</span>
+          <span style="color: #bc8cff; font-family: monospace;">视口坐标隔离 · 放大防丢把手 · 跨Tab状态保活</span>
+        </div>
+        <!-- 顶部预设卡片行 -->
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;">
+          <div class="compress-card active" onclick="selectPreset('balanced', this)" style="background: var(--bg-card); border: 1px solid var(--accent-blue); border-radius: 12px; padding: 14px; cursor: pointer; transition: all 0.2s;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+              <span style="font-size: 13px; font-weight: 700; color: #fff;">均衡 (推荐日常)</span>
+              <span style="font-size: 11px; padding: 2px 6px; border-radius: 6px; background: rgba(88, 166, 255, 0.2); color: #58a6ff; font-family: monospace;">CRF 22</span>
+            </div>
+            <p style="font-size: 11.5px; color: var(--text-muted); line-height: 1.4; margin-bottom: 10px;">肉眼近乎无损，体积缩减 35%~50%，强制音频无损拷贝</p>
+            <div style="display: flex; justify-content: space-between; font-size: 11px; font-family: monospace;">
+              <span style="color: #3fb950; font-weight: 600;">体积 -42.5%</span>
+              <span style="color: #bc8cff;">保真 92%+</span>
+            </div>
+          </div>
+
+          <div class="compress-card" onclick="selectPreset('high_quality', this)" style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 14px; cursor: pointer; transition: all 0.2s;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+              <span style="font-size: 13px; font-weight: 700; color: #fff;">高画质</span>
+              <span style="font-size: 11px; padding: 2px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.1); color: var(--text-main); font-family: monospace;">CRF 18</span>
+            </div>
+            <p style="font-size: 11.5px; color: var(--text-muted); line-height: 1.4; margin-bottom: 10px;">极致画质保留，微小细节完全保真，体积缩减 15%~35%</p>
+            <div style="display: flex; justify-content: space-between; font-size: 11px; font-family: monospace;">
+              <span style="color: #3fb950; font-weight: 600;">体积 -24.8%</span>
+              <span style="color: #bc8cff;">保真 97%+</span>
+            </div>
+          </div>
+
+          <div class="compress-card" onclick="selectPreset('high_compression', this)" style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 14px; cursor: pointer; transition: all 0.2s;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+              <span style="font-size: 13px; font-weight: 700; color: #fff;">高压缩 (HEVC)</span>
+              <span style="font-size: 11px; padding: 2px 6px; border-radius: 6px; background: rgba(188, 140, 255, 0.2); color: #bc8cff; font-family: monospace;">H.265 CRF 24</span>
+            </div>
+            <p style="font-size: 11.5px; color: var(--text-muted); line-height: 1.4; margin-bottom: 10px;">高效高密编码，体积极限缩减 50%~70%，长片首选</p>
+            <div style="display: flex; justify-content: space-between; font-size: 11px; font-family: monospace;">
+              <span style="color: #3fb950; font-weight: 600;">体积 -61.2%</span>
+              <span style="color: #bc8cff;">保真 86%+</span>
+            </div>
+          </div>
+
+          <div class="compress-card" onclick="selectPreset('scale_1080p', this)" style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 14px; cursor: pointer; transition: all 0.2s;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+              <span style="font-size: 13px; font-weight: 700; color: #fff;">降至 1080p</span>
+              <span style="font-size: 11px; padding: 2px 6px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; font-family: monospace;">限宽1920</span>
+            </div>
+            <p style="font-size: 11.5px; color: var(--text-muted); line-height: 1.4; margin-bottom: 10px;">4K/2K 超高清专享，限宽 1920 消除多余负荷</p>
+            <div style="display: flex; justify-content: space-between; font-size: 11px; font-family: monospace;">
+              <span style="color: #3fb950; font-weight: 600;">体积 -55.0%</span>
+              <span style="color: #bc8cff;">保真 94%+</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 对比视窗控制工具条 -->
+        <div style="display: flex; align-items: center; justify-content: space-between; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 10px 16px;">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-size: 13px; font-weight: 600; color: #fff;">画质对比模式:</span>
+            <div class="toggle-group" style="width: 290px;">
+              <button class="btn-toggle-option active" id="btn-mode-split" onclick="setPreviewMode('split')">
+                ↔ 卷帘对比 (video-compare)
+              </button>
+              <button class="btn-toggle-option" id="btn-mode-side" onclick="setPreviewMode('side')">
+                ⧉ 左右并排 (Simple-FFMPEG)
+              </button>
+            </div>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 14px;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 12px; color: var(--text-muted);">场景切换:</span>
+              <button class="btn" id="scene-btn-1" style="padding: 4px 10px; font-size: 11px; background: rgba(88, 166, 255, 0.2); color: #fff;" onclick="setSampleScene(1)">场景 1</button>
+              <button class="btn" id="scene-btn-2" style="padding: 4px 10px; font-size: 11px;" onclick="setSampleScene(2)">场景 2</button>
+              <button class="btn" id="scene-btn-3" style="padding: 4px 10px; font-size: 11px;" onclick="setSampleScene(3)">场景 3</button>
+            </div>
+
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 12px; color: var(--text-muted);">细节放大:</span>
+              <button class="btn" id="zoom-btn-1" style="padding: 4px 8px; font-size: 11px; background: rgba(255,255,255,0.15);" onclick="setZoom(1)">100%</button>
+              <button class="btn" id="zoom-btn-2" style="padding: 4px 8px; font-size: 11px;" onclick="setZoom(2)">200%</button>
+              <button class="btn" id="zoom-btn-4" style="padding: 4px 8px; font-size: 11px;" onclick="setZoom(4)">400%</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 交互展示区 -->
+        <div style="position: relative; width: 100%; height: 480px;">
+          <!-- 卷帘对比视图 -->
+          <div id="view-split" style="width: 100%; height: 100%; position: relative; overflow: hidden; background: #000; border-radius: 12px; border: 1px solid var(--border-subtle);">
+            <canvas id="canvas-orig" style="width: 100%; height: 100%; position: absolute; top: 0; left: 0;"></canvas>
+            <div id="split-layer" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; overflow: hidden; clip-path: polygon(50% 0, 100% 0, 100% 100%, 50% 100%);">
+              <canvas id="canvas-comp" style="width: 100%; height: 100%;"></canvas>
+            </div>
+            <div id="split-handle" style="position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #fff; box-shadow: 0 0 10px #fff; cursor: ew-resize;">
+              <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 28px; height: 28px; border-radius: 50%; background: #fff; color: #000; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">↔</div>
+            </div>
+            <div style="position: absolute; top: 12px; left: 14px; background: rgba(0,0,0,0.7); padding: 4px 10px; border-radius: 6px; font-size: 12px; color: #58a6ff; font-family: monospace;">
+              ● 原画 (未降码)
+            </div>
+            <div style="position: absolute; top: 12px; right: 14px; background: rgba(0,0,0,0.7); padding: 4px 10px; border-radius: 6px; font-size: 12px; color: #bc8cff; font-family: monospace;" id="split-tag-comp">
+              ● 降码测试 (CRF 22)
+            </div>
+          </div>
+
+          <!-- 左右并排视图 -->
+          <div id="view-side" style="display: none; width: 100%; height: 100%; grid-template-columns: 1fr 1fr; gap: 14px;">
+            <div style="position: relative; background: #000; border-radius: 12px; border: 1px solid var(--border-subtle); overflow: hidden; display: flex; flex-direction: column;">
+              <div style="padding: 8px 12px; background: rgba(255,255,255,0.05); border-bottom: 1px solid var(--border-subtle); font-size: 12px; color: #58a6ff; font-family: monospace; display: flex; justify-content: space-between;">
+                <span>原片画质</span>
+                <span style="color: var(--text-muted);">单帧: 1.82 MB</span>
+              </div>
+              <canvas id="canvas-side-orig" style="flex: 1; width: 100%; height: 100%;"></canvas>
+            </div>
+            <div style="position: relative; background: #000; border-radius: 12px; border: 1px solid var(--border-subtle); overflow: hidden; display: flex; flex-direction: column;">
+              <div style="padding: 8px 12px; background: rgba(255,255,255,0.05); border-bottom: 1px solid var(--border-subtle); font-size: 12px; color: #bc8cff; font-family: monospace; display: flex; justify-content: space-between;">
+                <span id="side-tag-comp">降码压制 (CRF 22)</span>
+                <span style="color: #3fb950;">单帧: 1.05 MB (-42.5%)</span>
+              </div>
+              <canvas id="canvas-side-comp" style="flex: 1; width: 100%; height: 100%;"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 底部 Dock 状态栏：内部与 1360px 轴线完全对齐 -->
     <div class="dock-footer" id="dock-footer">
       <div class="dock-inner">
@@ -1288,7 +1431,8 @@
       const headings = {
         cutter: '视频裁剪工作台',
         plans: '方案管理中心 (Plan Manager)',
-        settings: '系统配置与输出偏好'
+        settings: '系统配置与输出偏好',
+        compress: '智能降码预设与画质双模对比实验室'
       };
       document.getElementById('page-heading').innerText = headings[tabId];
 
@@ -1297,6 +1441,7 @@
       document.getElementById('dock-footer').style.display = isCutter ? 'flex' : 'none';
 
       if (tabId === 'plans') renderPlansList();
+      if (tabId === 'compress') initCompressLab();
     }
 
     function formatTime(ms) {
@@ -1793,6 +1938,185 @@
 
     function triggerExecution() {
       alert(`🚀 无损剪辑开始！\n\n已锁定保留正片。\n调用 FFmpeg 流拷贝 (-c copy) 极速生成视频！\n关键帧保全机制已激活：绝不多删一帧正片！`);
+    }
+
+    // ==========================================
+    // 智能降码与画质对比实验室 (A/B 测试交互)
+    // ==========================================
+    let labState = {
+      preset: 'balanced',
+      mode: 'split',
+      zoom: 1,
+      scene: 1,
+      splitPercent: 50,
+      isDragging: false
+    };
+
+    function selectPreset(preset, el) {
+      labState.preset = preset;
+      document.querySelectorAll('.compress-card').forEach(c => {
+        c.style.borderColor = 'var(--border-subtle)';
+        c.classList.remove('active');
+      });
+      el.style.borderColor = 'var(--accent-blue)';
+      el.classList.add('active');
+
+      const tags = {
+        balanced: 'CRF 22',
+        high_quality: 'CRF 18',
+        high_compression: 'H.265 CRF 24',
+        scale_1080p: '1080p CRF 18'
+      };
+      document.getElementById('split-tag-comp').innerText = `● 降码测试 (${tags[preset]})`;
+      document.getElementById('side-tag-comp').innerText = `降码压制 (${tags[preset]})`;
+      drawLabCanvases();
+    }
+
+    function setPreviewMode(mode) {
+      labState.mode = mode;
+      document.getElementById('btn-mode-split').classList.toggle('active', mode === 'split');
+      document.getElementById('btn-mode-side').classList.toggle('active', mode === 'side');
+      document.getElementById('view-split').style.display = mode === 'split' ? 'block' : 'none';
+      document.getElementById('view-side').style.display = mode === 'side' ? 'grid' : 'none';
+      drawLabCanvases();
+    }
+
+    function setZoom(z) {
+      labState.zoom = z;
+      [1, 2, 4].forEach(val => {
+        const btn = document.getElementById(`zoom-btn-${val}`);
+        if (btn) btn.style.background = (val === z) ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.05)';
+      });
+      drawLabCanvases();
+    }
+
+    function setSampleScene(s) {
+      labState.scene = s;
+      [1, 2, 3].forEach(val => {
+        const btn = document.getElementById(`scene-btn-${val}`);
+        if (btn) {
+          btn.style.background = (val === s) ? 'rgba(88, 166, 255, 0.25)' : 'rgba(255,255,255,0.05)';
+          btn.style.color = (val === s) ? '#fff' : 'var(--text-muted)';
+        }
+      });
+      drawLabCanvases();
+    }
+
+    function drawLabCanvases() {
+      const origCanvases = [document.getElementById('canvas-orig'), document.getElementById('canvas-side-orig')];
+      const compCanvases = [document.getElementById('canvas-comp'), document.getElementById('canvas-side-comp')];
+
+      origCanvases.forEach(c => {
+        if (!c) return;
+        const ctx = c.getContext('2d');
+        c.width = 960;
+        c.height = 540;
+        renderLabScene(ctx, false, labState.scene, labState.zoom);
+      });
+
+      compCanvases.forEach(c => {
+        if (!c) return;
+        const ctx = c.getContext('2d');
+        c.width = 960;
+        c.height = 540;
+        renderLabScene(ctx, true, labState.scene, labState.zoom);
+      });
+    }
+
+    function renderLabScene(ctx, isCompressed, scene, zoom) {
+      const w = 960;
+      const h = 540;
+
+      // 背景渐变
+      const grad = ctx.createLinearGradient(0, 0, w, h);
+      if (scene === 1) {
+        grad.addColorStop(0, '#1a233a');
+        grad.addColorStop(1, '#0d1117');
+      } else if (scene === 2) {
+        grad.addColorStop(0, '#2d1b36');
+        grad.addColorStop(1, '#130d1a');
+      } else {
+        grad.addColorStop(0, '#1b332b');
+        grad.addColorStop(1, '#0c1613');
+      }
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+
+      // 绘制高频网格线条
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x < w; x += 40 * zoom) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+      }
+      for (let y = 0; y < h; y += 40 * zoom) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+      }
+
+      // 绘制测试主体几何图形与文字细节
+      ctx.save();
+      ctx.translate(w / 2, h / 2);
+      ctx.scale(zoom, zoom);
+
+      // 圆形高光
+      ctx.beginPath();
+      ctx.arc(0, 0, 80, 0, Math.PI * 2);
+      ctx.fillStyle = isCompressed ? '#7952b3' : '#58a6ff';
+      ctx.fill();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#fff';
+      ctx.stroke();
+
+      // 精细文字排版（用于检验边缘抗锯齿与量化失真）
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 22px ui-monospace, Consolas, monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(isCompressed ? `COMPRESSED (${labState.preset.toUpperCase()})` : 'ORIGINAL (UNCOMPRESSED)', 0, -15);
+
+      ctx.font = '14px ui-monospace, Consolas, monospace';
+      ctx.fillStyle = isCompressed ? '#bc8cff' : '#79c0ff';
+      ctx.fillText(`SCENE #${scene} · ZOOM ${zoom}X · 1080P REFERENCE`, 0, 20);
+
+      // 模拟压缩量化微噪块
+      if (isCompressed) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
+        for (let i = -100; i < 100; i += 16) {
+          ctx.fillRect(i, 40, 14, 8);
+        }
+      }
+
+      ctx.restore();
+    }
+
+    function initCompressLab() {
+      const splitBox = document.getElementById('view-split');
+      const splitLayer = document.getElementById('split-layer');
+      const splitHandle = document.getElementById('split-handle');
+
+      if (!splitBox) return;
+
+      const updateSplit = (clientX) => {
+        const rect = splitBox.getBoundingClientRect();
+        let pct = ((clientX - rect.left) / rect.width) * 100;
+        pct = Math.max(5, Math.min(95, pct));
+        labState.splitPercent = pct;
+        splitLayer.style.clipPath = `polygon(${pct}% 0, 100% 0, 100% 100%, ${pct}% 100%)`;
+        splitHandle.style.left = `${pct}%`;
+      };
+
+      splitHandle.onmousedown = (e) => {
+        labState.isDragging = true;
+        e.preventDefault();
+      };
+
+      window.addEventListener('mousemove', (e) => {
+        if (labState.isDragging) updateSplit(e.clientX);
+      });
+
+      window.addEventListener('mouseup', () => {
+        labState.isDragging = false;
+      });
+
+      drawLabCanvases();
     }
 
     window.addEventListener('resize', resizeTimeline);

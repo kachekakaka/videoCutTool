@@ -1,4 +1,4 @@
-import { Segment, RetentionDecision, MediaRetentionPlan, PlanRecord } from './types';
+import { Segment, RetentionDecision, MediaRetentionPlan, PlanRecord, CompressConfig } from './types';
 import { planRetention } from './RetentionPlanner';
 
 export interface DraftSnapshot {
@@ -6,6 +6,7 @@ export interface DraftSnapshot {
   decisions: Record<string, RetentionDecision>;
   concatSingleFile: boolean;
   stripOriginalCover: boolean;
+  compress?: CompressConfig;
 }
 
 /**
@@ -20,6 +21,7 @@ export class RetentionDraft {
   private intervals: Array<{ startMs: number; endMs: number; decision: RetentionDecision }> = [];
   public concatSingleFile: boolean = true;
   public stripOriginalCover: boolean = true;
+  public compress?: CompressConfig;
 
   constructor(mediaPath: string, totalDurationMs: number) {
     this.mediaPath = mediaPath;
@@ -245,6 +247,7 @@ export class RetentionDraft {
       concatToSingleFile?: boolean;
       stripOriginalCover?: boolean;
       title?: string;
+      compress?: CompressConfig;
     }
   ): MediaRetentionPlan {
     const isConcat = options.concatSingleFile ?? options.concatToSingleFile ?? this.concatSingleFile;
@@ -262,6 +265,9 @@ export class RetentionDraft {
     if (options.title) {
       plan.title = options.title;
     }
+    if (options.compress || this.compress) {
+      plan.compress = options.compress ? { ...options.compress } : this.compress ? { ...this.compress } : undefined;
+    }
     return plan;
   }
 
@@ -272,6 +278,7 @@ export class RetentionDraft {
     id?: string;
     title?: string;
     outputPath?: string;
+    compress?: CompressConfig;
   }): PlanRecord {
     const segments = this.getSegments();
     const decisions: Record<string, RetentionDecision> = {};
@@ -281,6 +288,7 @@ export class RetentionDraft {
 
     const title = options?.title || this.mediaPath.split(/[\\/]/).pop() || '未命名剪辑方案';
     const planId = options?.id || `plan_${Date.now()}`;
+    const compress = options?.compress || this.compress;
 
     return {
       id: planId,
@@ -297,6 +305,7 @@ export class RetentionDraft {
       decisions,
       concatSingleFile: this.concatSingleFile,
       stripOriginalCover: this.stripOriginalCover,
+      compress: compress ? { ...compress } : undefined,
     };
   }
 
@@ -307,6 +316,9 @@ export class RetentionDraft {
     const draft = new RetentionDraft(record.sourcePath, totalDurationMs);
     draft.concatSingleFile = record.concatSingleFile ?? true;
     draft.stripOriginalCover = record.stripOriginalCover ?? true;
+    if (record.compress) {
+      draft.compress = { ...record.compress };
+    }
 
     draft.rebuildFromCutsAndDecisions(record.cuts || [], record.decisions || {});
     return draft;
@@ -325,6 +337,7 @@ export class RetentionDraft {
       decisions,
       concatSingleFile: this.concatSingleFile,
       stripOriginalCover: this.stripOriginalCover,
+      compress: this.compress ? { ...this.compress } : undefined,
     };
   }
 
@@ -334,6 +347,7 @@ export class RetentionDraft {
   public restore(snapshot: DraftSnapshot): void {
     this.concatSingleFile = snapshot.concatSingleFile;
     this.stripOriginalCover = snapshot.stripOriginalCover;
+    this.compress = snapshot.compress ? { ...snapshot.compress } : undefined;
     this.rebuildFromCutsAndDecisions(snapshot.cuts || [], snapshot.decisions || {});
   }
 

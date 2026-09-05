@@ -67,6 +67,17 @@ export interface PlanSegment {
   sourceKeyframeMs: number;
 }
 
+export type CompressPresetId = 'high_quality' | 'balanced' | 'high_compression' | 'scale_1080p' | 'custom';
+
+export interface CompressConfig {
+  enabled: boolean;
+  preset: CompressPresetId;
+  crf?: number;         // 18 ~ 35 (默认 22)
+  maxHeight?: number;   // 分辨率限制 (如 1080, 720)
+  encoder?: 'auto' | 'cpu' | 'nvenc' | 'qsv';
+  hardwareAcceleration?: boolean; // 硬件加速开关 (默认 true)
+}
+
 export interface MediaRetentionPlan {
   version: '1.0';
   title?: string;
@@ -78,6 +89,7 @@ export interface MediaRetentionPlan {
   planSegments: PlanSegment[];
   totalKeptDurationMs: number;
   blockers: string[];
+  compress?: CompressConfig;
 }
 
 export type ExecutionStatus = 'ready' | 'processing' | 'completed' | 'failed';
@@ -97,6 +109,7 @@ export interface PlanRecord {
   decisions: Record<string, RetentionDecision>;
   concatSingleFile?: boolean;
   stripOriginalCover?: boolean;
+  compress?: CompressConfig;
   error?: string;
 }
 
@@ -105,4 +118,16 @@ export interface CutResult {
   outputPath: string;
   durationMs?: number;
   error?: string;
+}
+
+/**
+ * 降码画质 A/B 对比抽样画格数据契约 (Visual Compression Preview Sample)
+ */
+export interface PreviewSample {
+  index: number;
+  timestampMs: number;
+  originalBase64: string;
+  compressedBase64: string;
+  originalSizeBytes: number;
+  compressedSizeBytes: number;
 }

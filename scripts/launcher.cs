@@ -28,7 +28,7 @@ namespace VideoCutToolLauncher
 
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = targetExe;
-                psi.WorkingDirectory = baseDir;
+                psi.WorkingDirectory = Path.Combine(baseDir, "app");
                 psi.Arguments = string.Join(" ", args);
                 psi.UseShellExecute = false;
                 psi.EnvironmentVariables["VCT_WORKSPACE_DIR"] = baseDir;

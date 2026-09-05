@@ -11,9 +11,15 @@ interface SidebarProps {
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, plansCount = 0 }) => {
   return (
-    <aside className="w-[68px] h-full bg-[#090b10] border-r border-white/10 flex flex-col items-center py-5 shrink-0 z-50 select-none">
+    <aside
+      className="w-[68px] h-full bg-[#090b10] border-r border-white/10 flex flex-col items-center py-5 shrink-0 z-50 select-none"
+      style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+    >
       {/* 竖向导航 Tab */}
-      <nav className="flex flex-col gap-3.5 flex-1 w-full items-center">
+      <nav
+        className="flex flex-col gap-3.5 flex-1 w-full items-center"
+        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      >
         <button
           onClick={() => onTabChange('cutter')}
           className={`w-11 h-11 rounded-xl flex items-center justify-center transition-all relative ${

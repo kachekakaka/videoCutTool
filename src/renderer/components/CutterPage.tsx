@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { MediaMetadata, RetentionDecision, PlanRecord } from '../../shared/types';
+import { MediaMetadata, RetentionDecision, PlanRecord, CompressConfig } from '../../shared/types';
+import { COMPRESS_PRESETS } from '../../shared/compressPresets';
+import { VideoCompareView, PreviewSample } from './VideoCompareView';
 import { VideoPlayer, VideoPlayerRef, formatTimecode } from './VideoPlayer';
 import { Timeline } from './Timeline';
 import { SegmentCardsGrid } from './SegmentCardsGrid';
@@ -17,6 +19,13 @@ import {
   FolderOpen,
   FolderEdit,
   UploadCloud,
+  Zap,
+  Settings,
+  Sparkles,
+  Sliders,
+  Eye,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 interface CutterPageProps {
@@ -81,6 +90,17 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [planTitleInput, setPlanTitleInput] = useState('');
   const [saveMode, setSaveMode] = useState<'update' | 'new'>('update');
+  const [showNoCutWarningModal, setShowNoCutWarningModal] = useState(false);
+
+  // 降码设置面板与就地画质对比视窗状态
+  const [showCompressSettings, setShowCompressSettings] = useState(false);
+  const [mainViewportMode, setMainViewportMode] = useState<'player' | 'compare'>('player');
+  const [showAdvancedCompress, setShowAdvancedCompress] = useState(false);
+
+  // 画质对比抽样画格、选中的场景页码及视图模式常驻工作台（跨 Tab / 跨视窗绝不丢失）
+  const [cachedCompareSamples, setCachedCompareSamples] = useState<PreviewSample[]>([]);
+  const [currentCompareSampleIndex, setCurrentCompareSampleIndex] = useState<number>(0);
+  const [compareViewMode, setCompareViewMode] = useState<'split' | 'side-by-side'>('split');
 
   // 从领域模型派生数据（受 draftVersion 驱动响应式刷新）
   const cuts = useMemo(() => (draft ? draft.getCuts() : []), [draft, draftVersion]);
@@ -89,6 +109,60 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const discardedDurationMs = useMemo(() => (draft ? draft.getDiscardedDurationMs() : 0), [draft, draftVersion]);
   const concatSingleFile = draft ? draft.concatSingleFile : true;
   const stripOriginalCover = draft ? draft.stripOriginalCover : true;
+
+  // 降码模式状态与当前配置派生
+  const isCompressMode = Boolean(draft?.compress?.enabled);
+  const currentCompressConfig = useMemo<CompressConfig>(() => {
+    return draft?.compress || {
+      enabled: false,
+      preset: 'balanced',
+      crf: 22,
+      hardwareAcceleration: true,
+    };
+  }, [draft, draftVersion]);
+
+  // 计算用于画质对比抽样的代表性时间戳 (自适应保证至少 3 个场景)
+  const sampleTimestamps = useMemo(() => {
+    const keptSegs = segments.filter((s) => s.decision === 'keep');
+    if (keptSegs.length === 0) {
+      const dur = metadata?.durationMs || 10000;
+      return [Math.round(dur * 0.2), Math.round(dur * 0.5), Math.round(dur * 0.8)];
+    }
+    // 只有 1 个保留分段时（比如未打切点全片保留，或单段较长）：在段内均匀抽取 20%、50%、80% 处的 3 帧
+    if (keptSegs.length === 1) {
+      const seg = keptSegs[0];
+      const span = seg.endMs - seg.startMs;
+      return [
+        Math.round(seg.startMs + span * 0.2),
+        Math.round(seg.startMs + span * 0.5),
+        Math.round(seg.startMs + span * 0.8),
+      ];
+    }
+    // 有 2 个保留分段时：段 1 抽 1 帧 (50%)，段 2 抽 2 帧 (35%, 70%)，凑足 3 帧
+    if (keptSegs.length === 2) {
+      const s1 = keptSegs[0];
+      const s2 = keptSegs[1];
+      const span1 = s1.endMs - s1.startMs;
+      const span2 = s2.endMs - s2.startMs;
+      return [
+        Math.round(s1.startMs + span1 * 0.5),
+        Math.round(s2.startMs + span2 * 0.35),
+        Math.round(s2.startMs + span2 * 0.7),
+      ];
+    }
+    // 3 个或以上保留段时：每个段落取中央中点，最多取 5 帧
+    return keptSegs.map((s) => Math.round((s.startMs + s.endMs) / 2)).slice(0, 5);
+  }, [segments, metadata?.durationMs]);
+
+  // 切点或保留分段变动导致抽样时间戳改变时，清空抽样帧缓存，触发按新时间戳重新抽取
+  const prevTimestampsKeyRef = useRef<string>('');
+  useEffect(() => {
+    const key = sampleTimestamps.join(',');
+    if (prevTimestampsKeyRef.current && prevTimestampsKeyRef.current !== key) {
+      setCachedCompareSamples([]);
+    }
+    prevTimestampsKeyRef.current = key;
+  }, [sampleTimestamps]);
 
   // 实时推导预定安全产物路径
   useEffect(() => {
@@ -156,10 +230,28 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     setDraftVersion((v) => v + 1);
   }, [draft, future]);
 
-  // 全局快捷键监听撤销与重做
+  // 全局快捷键监听撤销、重做与弹窗 Esc 关闭
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) return;
+
+      if (e.key === 'Escape') {
+        if (showNoCutWarningModal) {
+          e.preventDefault();
+          setShowNoCutWarningModal(false);
+          return;
+        }
+        if (showSaveModal) {
+          e.preventDefault();
+          setShowSaveModal(false);
+          return;
+        }
+        if (mainViewportMode === 'compare') {
+          e.preventDefault();
+          setMainViewportMode('player');
+          return;
+        }
+      }
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
@@ -175,7 +267,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUndo, handleRedo]);
+  }, [handleUndo, handleRedo, showNoCutWarningModal, showSaveModal, mainViewportMode]);
 
   // 双保险文件选择唤起逻辑 (Electron 原生对话框 + HTML5 文件选择器兜底)
   const handleChooseFile = async (e?: React.MouseEvent) => {
@@ -243,6 +335,9 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         setCurrentTimeMs(0);
         setHistory([]);
         setFuture([]);
+        setCachedCompareSamples([]); // 彻底清空旧视频的画质对比抽样缓存
+        setCurrentCompareSampleIndex(0);
+        setMainViewportMode('player');
 
         let newDraft: RetentionDraft;
         if (recordToLoad && recordToLoad.sourcePath === filePath) {
@@ -387,6 +482,41 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     });
   };
 
+  // 切换导出模式 (无损秒切 vs 智能降码)
+  const handleToggleExportMode = (mode: 'lossless' | 'compress') => {
+    commitDraftChange((d) => {
+      if (mode === 'lossless') {
+        d.compress = undefined;
+        setShowCompressSettings(false);
+        setMainViewportMode('player');
+      } else {
+        d.compress = d.compress || {
+          enabled: true,
+          preset: 'balanced',
+          crf: 22,
+          hardwareAcceleration: true,
+        };
+        d.compress.enabled = true;
+      }
+    });
+  };
+
+  // 更新降码配置项
+  const handleUpdateCompressConfig = (updater: (cfg: CompressConfig) => void) => {
+    setCachedCompareSamples([]); // 配置变更时清空抽样帧缓存，按新配置增量重新抽取
+    commitDraftChange((d) => {
+      if (!d.compress) {
+        d.compress = {
+          enabled: true,
+          preset: 'balanced',
+          crf: 22,
+          hardwareAcceleration: true,
+        };
+      }
+      updater(d.compress);
+    });
+  };
+
   // 切换首帧封面剥离偏好
   const handleToggleCover = (val: boolean) => {
     commitDraftChange((d) => {
@@ -450,7 +580,13 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   };
 
   // 立即执行剪辑（秒级移交后台异步引擎，不阻塞工作台）
-  const handleExecuteCut = async () => {
+  const handleExecuteCut = async (forceBypassNoCutCheck = false) => {
+    // 无损秒切防呆拦截：若未开启降码、且未设切点（只有 1 个保留分段），不处理并弹窗提醒
+    if (!forceBypassNoCutCheck && !isCompressMode && cuts.length === 0 && segments.length === 1 && segments[0].decision === 'keep') {
+      setShowNoCutWarningModal(true);
+      return;
+    }
+
     setExecuting(true);
     setNotice(null);
 
@@ -635,18 +771,51 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   return (
     <div className="flex-1 h-full overflow-hidden px-4 sm:px-6 xl:px-8 py-3 flex flex-col relative min-h-0">
       <div className="w-full max-w-[1360px] mx-auto space-y-2 flex-1 flex flex-col min-h-0">
-        {/* 1. 纯净视频画面视窗 */}
-        <VideoPlayer
-          ref={playerRef}
-          videoPath={metadata.filePath}
-          durationMs={metadata.durationMs}
-          onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
-          onPlayStateChange={(playing) => setIsPlaying(playing)}
-          onInsertCut={handleInsertCut}
-          aspectRatioMode={aspectRatioMode}
-          auditionRange={auditionRange}
-          onAuditionEnd={() => setAuditionRange(null)}
-        />
+        {/* 1. 纯净视频画面视窗 / 降码画质 A/B 对比就地视窗 */}
+        {mainViewportMode === 'player' ? (
+          <div className="relative flex-1 min-h-0 flex flex-col">
+            <VideoPlayer
+              ref={playerRef}
+              videoPath={metadata.filePath}
+              durationMs={metadata.durationMs}
+              onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
+              onPlayStateChange={(playing) => setIsPlaying(playing)}
+              onInsertCut={handleInsertCut}
+              aspectRatioMode={aspectRatioMode}
+              auditionRange={auditionRange}
+              onAuditionEnd={() => setAuditionRange(null)}
+            />
+            {/* 降码模式下右上角提供就地画质对比切换药丸 */}
+            {isCompressMode && (
+              <div className="absolute top-3 right-3 z-20 flex items-center">
+                <button
+                  onClick={() => setMainViewportMode('compare')}
+                  className="px-3 py-1.5 rounded-xl bg-black/75 hover:bg-black/90 text-purple-300 hover:text-white border border-purple-500/40 text-xs font-semibold flex items-center gap-1.5 backdrop-blur-md shadow-xl transition-all hover:scale-105 active:scale-95"
+                  title="就地进入降码画质 A/B 对比视窗（支持卷帘与并排放大检视）"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                  <span>画质对比 (A/B)</span>
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="relative flex-1 min-h-0 bg-black rounded-2xl overflow-hidden border border-white/10 shadow-2xl flex flex-col">
+            <VideoCompareView
+              videoPath={metadata.filePath}
+              config={currentCompressConfig}
+              sampleTimestampsMs={sampleTimestamps}
+              cachedSamples={cachedCompareSamples}
+              currentSampleIndex={currentCompareSampleIndex}
+              onSampleIndexChange={setCurrentCompareSampleIndex}
+              onSamplesLoaded={setCachedCompareSamples}
+              onSwitchToPlayer={() => setMainViewportMode('player')}
+              viewMode={compareViewMode}
+              onViewModeChange={setCompareViewMode}
+              aspectRatioMode={aspectRatioMode}
+            />
+          </div>
+        )}
 
         {/* 2. 主时间轴控制台 */}
         <div className="shrink-0">
@@ -877,7 +1046,220 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             </div>
 
             {/* 右侧动作按钮组 */}
-            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 ml-auto lg:ml-0">
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 ml-auto lg:ml-0 relative">
+              {/* 模式选择胶囊：无损秒切 vs 智能降码 */}
+              <div className="flex items-center bg-black/40 border border-white/10 p-0.5 rounded-xl text-xs font-medium">
+                <button
+                  onClick={() => handleToggleExportMode('lossless')}
+                  className={`px-2.5 py-1 rounded-lg flex items-center gap-1 transition-all ${
+                    !isCompressMode
+                      ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/30 shadow-sm'
+                      : 'text-zinc-400 hover:text-white'
+                  }`}
+                  title="无损流复制秒级导出，100% 保持原始画质与原声"
+                >
+                  <Zap className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>无损秒切</span>
+                </button>
+                <button
+                  onClick={() => handleToggleExportMode('compress')}
+                  className={`px-2.5 py-1 rounded-lg flex items-center gap-1 transition-all ${
+                    isCompressMode
+                      ? 'bg-purple-500/20 text-purple-300 font-bold border border-purple-500/30 shadow-sm'
+                      : 'text-zinc-400 hover:text-white'
+                  }`}
+                  title="智能降码压制，大幅缩减文件体积并强制保留无损音频"
+                >
+                  <span>📦</span>
+                  <span>智能降码</span>
+                </button>
+              </div>
+
+              {/* 若开启了智能降码，显示设置按钮 */}
+              {isCompressMode && (
+                <button
+                  onClick={() => setShowCompressSettings(!showCompressSettings)}
+                  className={`p-1.5 rounded-xl border text-xs flex items-center gap-1 transition-all active:scale-95 ${
+                    showCompressSettings
+                      ? 'bg-purple-600 text-white border-purple-400 shadow-md shadow-purple-600/30'
+                      : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white border-white/10'
+                  }`}
+                  title="点击展开智能降码参数微调与画质对比预览"
+                >
+                  <Settings className="w-3.5 h-3.5" />
+                </button>
+              )}
+
+              {/* 智能降码渐进式参数面板 Popover */}
+              {isCompressMode && showCompressSettings && (
+                <div
+                  className="absolute bottom-12 right-0 z-40 w-[380px] bg-[#161a24] border border-white/15 rounded-2xl shadow-2xl p-4 flex flex-col gap-3.5 backdrop-blur-xl animate-in fade-in zoom-in-95 select-none"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="flex items-center justify-between pb-2 border-b border-white/10">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-purple-400" />
+                      <span className="text-xs font-bold text-white">智能降码预设与画质微调</span>
+                    </div>
+                    <button
+                      onClick={() => setShowCompressSettings(false)}
+                      className="text-zinc-400 hover:text-white text-xs px-1 hover:bg-white/10 rounded transition-colors"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  {/* 四档经典预设选择卡片 */}
+                  <div className="grid grid-cols-2 gap-2">
+                    {(['high_quality', 'balanced', 'high_compression', 'scale_1080p'] as const).map((pid) => {
+                      const meta = COMPRESS_PRESETS[pid];
+                      const isSelected = currentCompressConfig.preset === pid;
+                      return (
+                        <button
+                          key={pid}
+                          onClick={() => {
+                            handleUpdateCompressConfig((cfg) => {
+                              cfg.preset = pid;
+                              cfg.crf = meta.defaultCrf;
+                              if (pid === 'scale_1080p') {
+                                cfg.maxHeight = 1080;
+                              } else {
+                                delete cfg.maxHeight;
+                              }
+                            });
+                          }}
+                          className={`p-2.5 rounded-xl border text-left transition-all flex flex-col justify-between ${
+                            isSelected
+                              ? 'bg-purple-600/20 border-purple-500/50 shadow-md shadow-purple-500/10 ring-1 ring-purple-500'
+                              : 'bg-black/30 border-white/10 hover:border-white/20 hover:bg-white/5'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className={`text-xs font-bold ${isSelected ? 'text-purple-300' : 'text-zinc-200'}`}>
+                              {meta.title}
+                            </span>
+                            {isSelected && <CheckCircle2 className="w-3.5 h-3.5 text-purple-400" />}
+                          </div>
+                          <span className="text-[10px] text-zinc-400 mt-1 line-clamp-1">{meta.summary}</span>
+                          <div className="mt-1.5 flex items-center justify-between text-[10px] font-mono">
+                            <span className="text-emerald-400">-{meta.sizeReduceMin}~{meta.sizeReduceMax}% 体积</span>
+                            <span className="text-purple-300">保真 {meta.qualityRetainMin}%+</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* 高级参数折叠切换 */}
+                  <div className="pt-1 border-t border-white/5 flex flex-col gap-2">
+                    <button
+                      onClick={() => setShowAdvancedCompress(!showAdvancedCompress)}
+                      className="flex items-center justify-between text-[11px] text-zinc-400 hover:text-white transition-colors py-1"
+                    >
+                      <span className="flex items-center gap-1">
+                        <Sliders className="w-3.5 h-3.5" />
+                        <span>高级参数微调 (CRF / 分辨率 / 硬件加速)</span>
+                      </span>
+                      {showAdvancedCompress ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                    </button>
+
+                    {showAdvancedCompress && (
+                      <div className="p-2.5 rounded-xl bg-black/40 border border-white/10 space-y-3 animate-in fade-in">
+                        {/* CRF 调节滑块 */}
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-zinc-400">量化参数 CRF:</span>
+                            <span className="font-mono text-purple-300 font-bold">
+                              {currentCompressConfig.crf ?? 22} (越小画质越好)
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min="18"
+                            max="35"
+                            value={currentCompressConfig.crf ?? 22}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value, 10);
+                              handleUpdateCompressConfig((cfg) => {
+                                cfg.crf = val;
+                                cfg.preset = 'custom';
+                              });
+                            }}
+                            className="w-full accent-purple-500 cursor-pointer"
+                          />
+                          <div className="flex justify-between text-[9px] text-zinc-500 font-mono">
+                            <span>18 极佳</span>
+                            <span>22 均衡推荐</span>
+                            <span>28 适中</span>
+                            <span>35 极简</span>
+                          </div>
+                        </div>
+
+                        {/* 分辨率限高选择 */}
+                        <div className="space-y-1">
+                          <span className="text-[11px] text-zinc-400 block">分辨率限制:</span>
+                          <div className="grid grid-cols-3 gap-1.5 text-xs font-mono">
+                            {[
+                              { label: '原分辨率', val: undefined },
+                              { label: '限高 1080p', val: 1080 },
+                              { label: '限高 720p', val: 720 },
+                            ].map((opt) => {
+                              const isCur = currentCompressConfig.maxHeight === opt.val;
+                              return (
+                                <button
+                                  key={opt.label}
+                                  onClick={() => {
+                                    handleUpdateCompressConfig((cfg) => {
+                                      if (opt.val) cfg.maxHeight = opt.val;
+                                      else delete cfg.maxHeight;
+                                    });
+                                  }}
+                                  className={`py-1 rounded-lg border text-[10px] transition-all ${
+                                    isCur
+                                      ? 'bg-purple-600 text-white font-bold border-purple-400'
+                                      : 'bg-black/30 border-white/10 text-zinc-400 hover:text-white'
+                                  }`}
+                                >
+                                  {opt.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* 硬件加速开关 */}
+                        <label className="flex items-center gap-2 cursor-pointer text-[11px] text-zinc-300 pt-1">
+                          <input
+                            type="checkbox"
+                            checked={currentCompressConfig.hardwareAcceleration !== false}
+                            onChange={(e) => {
+                              handleUpdateCompressConfig((cfg) => {
+                                cfg.hardwareAcceleration = e.target.checked;
+                              });
+                            }}
+                            className="w-3.5 h-3.5 accent-purple-500 cursor-pointer"
+                          />
+                          <span>优先启用 GPU 硬件加速 (NVENC / QSV)</span>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 【🔍 预览画质与细节对比】核心入口 */}
+                  <button
+                    onClick={() => {
+                      setShowCompressSettings(false);
+                      setMainViewportMode('compare');
+                    }}
+                    className="w-full py-2 rounded-xl bg-purple-600/30 hover:bg-purple-600/50 text-purple-200 hover:text-white border border-purple-500/40 text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-md active:scale-98"
+                  >
+                    <Eye className="w-3.5 h-3.5" />
+                    <span>{mainViewportMode === 'compare' ? '当前正处于对比视窗' : '就地画质对比 (抽样 3~5 帧)'}</span>
+                  </button>
+                </div>
+              )}
+
+              {/* 存为方案按钮 */}
               <button
                 onClick={handleOpenSaveModal}
                 className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-all border border-white/10 active:scale-95 shadow-md focus-visible:ring-2 focus-visible:ring-blue-500"
@@ -887,16 +1269,26 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                 <span>{currentPlanId ? '保存方案' : '存为方案'}</span>
               </button>
 
+              {/* 主执行按钮：根据模式联动文案与渐变色 */}
               <button
                 disabled={executing || keptDurationMs === 0}
-                onClick={handleExecuteCut}
-                className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-lg shadow-emerald-500/20 active:scale-95 border border-emerald-400/30 focus-visible:ring-2 focus-visible:ring-emerald-400 shrink-0 whitespace-nowrap"
-                title="将当前方案移交后台异步引擎无损剪辑，完成后弹出通知"
+                onClick={() => handleExecuteCut()}
+                className={`px-2.5 sm:px-3 py-1.5 rounded-xl text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-lg active:scale-95 shrink-0 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
+                  isCompressMode
+                    ? 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 shadow-purple-500/20 border border-purple-400/30 focus-visible:ring-purple-400'
+                    : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-emerald-500/20 border border-emerald-400/30 focus-visible:ring-emerald-400'
+                }`}
+                title={isCompressMode ? "将保留片段合并后单次整体降码压制，完成后弹出通知" : "将当前方案移交后台异步引擎无损剪辑，完成后弹出通知"}
               >
                 {executing ? (
                   <>
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     <span>提交中...</span>
+                  </>
+                ) : isCompressMode ? (
+                  <>
+                    <Rocket className="w-3.5 h-3.5" />
+                    <span>降码导出</span>
                   </>
                 ) : (
                   <>
@@ -1017,6 +1409,14 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                   <span>保留分段: {segments.filter((s) => s.decision === 'keep').length} / {segments.length} 段</span>
                   <span>保留时长: {formatTimecode(keptDurationMs, false)}</span>
                 </div>
+                <div className="mt-1.5 text-[11px] text-zinc-400 bg-white/5 px-3 py-1.5 rounded-xl flex items-center justify-between font-mono">
+                  <span>导出模式:</span>
+                  <span className={isCompressMode ? 'text-purple-300 font-bold' : 'text-cyan-300 font-bold'}>
+                    {isCompressMode
+                      ? `📦 智能降码 (${currentCompressConfig.preset === 'custom' ? '自定义' : COMPRESS_PRESETS[currentCompressConfig.preset]?.title || '降码'} CRF ${currentCompressConfig.crf ?? 22})`
+                      : '⚡ 无损秒切'}
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -1041,6 +1441,78 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           </div>
         </div>
       )}
+
+      {/* 8. 无损单段防呆拦截弹窗 */}
+      {showNoCutWarningModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in"
+          onClick={() => setShowNoCutWarningModal(false)}
+        >
+          <div
+            className="w-full max-w-md bg-[#161b22] border border-amber-500/30 rounded-2xl p-6 shadow-2xl animate-in zoom-in-95 select-none"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-4">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                <AlertCircle className="w-5 h-5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-base font-bold text-white mb-1.5">
+                  未检测到任何裁剪点
+                </h3>
+                <p className="text-xs text-zinc-300 leading-relaxed mb-3">
+                  当前视频处于<b>全片保留</b>状态，且未开启降码压缩，直接导出仅相当于原样复制一次文件，没有实际内容被裁剪。
+                </p>
+
+                <div className="bg-black/40 border border-white/10 rounded-xl p-3 text-xs space-y-2 text-zinc-400">
+                  <div className="flex items-start gap-2 text-zinc-300">
+                    <span className="text-blue-400 font-bold">•</span>
+                    <span><b>若要裁剪废片</b>：请在播放器或时间轴上按 <kbd className="bg-white/10 text-white px-1 py-0.5 rounded font-mono text-[10px]">C</kbd> 键插入切点，并点击不需要的段落将其标记为丢弃。</span>
+                  </div>
+                  <div className="flex items-start gap-2 text-zinc-300">
+                    <span className="text-purple-400 font-bold">•</span>
+                    <span><b>若要压缩全片</b>：可一键切换为「智能降码」模式，将整部视频直接压制瘦身。</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setShowNoCutWarningModal(false)}
+                className="px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white text-xs font-semibold transition-all active:scale-95"
+              >
+                我知道了 (Esc)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNoCutWarningModal(false);
+                  handleToggleExportMode('compress');
+                }}
+                className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition-all shadow-lg shadow-purple-600/30 active:scale-95 flex items-center gap-1.5"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>切换至智能降码</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNoCutWarningModal(false);
+                  handleExecuteCut(true);
+                }}
+                className="px-3 py-2 rounded-xl bg-transparent hover:bg-white/5 text-zinc-400 hover:text-zinc-200 text-[11px] font-medium transition-all"
+                title="执意将未裁剪的原片直接复制导出到输出目录"
+              >
+                依然全片导出
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+
     </div>
   );
 };

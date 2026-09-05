@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { PlanRecord } from '../../shared/types';
+import { COMPRESS_PRESETS } from '../../shared/compressPresets';
 import {
   FolderKanban,
   CheckCircle2,
@@ -14,6 +15,7 @@ import {
   Loader2,
   Check,
   AlertCircle,
+  Zap,
 } from 'lucide-react';
 import { formatTimecode } from './VideoPlayer';
 
@@ -302,28 +304,47 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter, isAc
                         </h3>
                       </div>
 
-                      {/* 状态徽章 */}
-                      {isCompleted ? (
-                        <span className="shrink-0 text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-bold">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>已完成剪辑</span>
-                        </span>
-                      ) : isProcessing ? (
-                        <span className="shrink-0 text-xs bg-blue-500/20 text-blue-300 border border-blue-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-bold animate-pulse">
-                          <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
-                          <span>⚡ 后台剪辑中...</span>
-                        </span>
-                      ) : isFailed ? (
-                        <span className="shrink-0 text-xs bg-rose-500/20 text-rose-300 border border-rose-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-medium">
-                          <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
-                          <span>✖ 执行失败</span>
-                        </span>
-                      ) : (
-                        <span className="shrink-0 text-xs bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-medium">
-                          <Clock className="w-3.5 h-3.5 text-amber-400" />
-                          <span>⏳ 待执行</span>
-                        </span>
-                      )}
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {/* 导出模式属性徽章 */}
+                        {plan.compress?.enabled ? (
+                          <span className="text-[11px] bg-purple-500/15 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full flex items-center gap-1 font-mono font-medium" title={plan.compress.preset === 'custom' ? '自定义 CRF 压缩' : COMPRESS_PRESETS[plan.compress.preset]?.summary}>
+                            <span>📦</span>
+                            <span>
+                              {plan.compress.preset === 'custom'
+                                ? `自定义 (CRF ${plan.compress.crf ?? 22})`
+                                : `${COMPRESS_PRESETS[plan.compress.preset]?.title || '降码'} (CRF ${plan.compress.crf ?? COMPRESS_PRESETS[plan.compress.preset]?.defaultCrf ?? 22})`}
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="text-[11px] bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 px-2 py-0.5 rounded-full flex items-center gap-1 font-mono font-medium" title="无损流复制秒级导出">
+                            <Zap className="w-3 h-3 text-cyan-400" />
+                            <span>无损秒切</span>
+                          </span>
+                        )}
+
+                        {/* 状态徽章 */}
+                        {isCompleted ? (
+                          <span className="text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-bold">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>已完成</span>
+                          </span>
+                        ) : isProcessing ? (
+                          <span className="text-xs bg-blue-500/20 text-blue-300 border border-blue-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-bold animate-pulse">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
+                            <span>处理中...</span>
+                          </span>
+                        ) : isFailed ? (
+                          <span className="text-xs bg-rose-500/20 text-rose-300 border border-rose-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-medium">
+                            <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
+                            <span>失败</span>
+                          </span>
+                        ) : (
+                          <span className="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-medium">
+                            <Clock className="w-3.5 h-3.5 text-amber-400" />
+                            <span>待执行</span>
+                          </span>
+                        )}
+                      </div>
                     </div>
 
                     {/* 失败原因提示 */}

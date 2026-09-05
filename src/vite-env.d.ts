@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import { AppConfig, MediaMetadata, MediaRetentionPlan, CutResult, PlanRecord } from './shared/types';
+import { AppConfig, MediaMetadata, MediaRetentionPlan, CutResult, PlanRecord, CompressConfig } from './shared/types';
 
 export interface ElectronAPI {
   getPathForFile: (file: File) => string;
@@ -16,6 +16,21 @@ export interface ElectronAPI {
   probeMedia: (filePath: string) => Promise<MediaMetadata>;
   probeBasic: (filePath: string) => Promise<MediaMetadata>;
   probeKeyframes: (filePath: string) => Promise<number[]>;
+
+  // 降码与画质对比预览
+  previewCompressionSamples: (
+    videoPath: string,
+    timestampsMs: number[],
+    config: CompressConfig
+  ) => Promise<Array<{
+    index: number;
+    timestampMs: number;
+    originalBase64: string;
+    compressedBase64: string;
+    originalSizeBytes: number;
+    compressedSizeBytes: number;
+  }>>;
+  probeHardwareEncoder: () => Promise<'cpu' | 'nvenc' | 'qsv'>;
 
   // 剪辑执行与后台引擎
   submitDraft: (record: PlanRecord) => Promise<{ queued: boolean; active: boolean }>;

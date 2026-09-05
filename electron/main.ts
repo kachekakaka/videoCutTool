@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, protocol, shell, Menu } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, protocol, shell, Menu, nativeTheme } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import { Readable } from 'stream';
@@ -7,7 +7,8 @@ import { ConfigService } from '../src/main/services/ConfigService';
 import { KeyframeProber } from '../src/main/services/KeyframeProber';
 import { MediaCuttingEngine } from '../src/main/services/MediaCuttingEngine';
 import { PlanManager } from '../src/main/services/PlanManager';
-import { AppConfig, PlanRecord } from '../src/shared/types';
+import { CompressionPreviewService } from '../src/main/services/CompressionPreviewService';
+import { AppConfig, PlanRecord, CompressConfig } from '../src/shared/types';
 
 // 全局彻底移除应用菜单，防止 Windows 下用户按 Alt 键唤出原生菜单栏
 Menu.setApplicationMenu(null);
@@ -42,6 +43,9 @@ app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 app.commandLine.appendSwitch('disable-http-cache');
 app.commandLine.appendSwitch('no-sandbox');
 
+// 强制原生深色沉浸主题
+nativeTheme.themeSource = 'dark';
+
 // 探测基准物理宿主目录
 const hostDir = process.env.VCT_WORKSPACE_DIR || process.env.PORTABLE_EXECUTABLE_DIR || (app.isPackaged ? path.dirname(app.getPath('exe')) : process.cwd());
 
@@ -69,6 +73,7 @@ let configService: ConfigService;
 let prober: KeyframeProber;
 let cuttingEngine: MediaCuttingEngine;
 let planManager: PlanManager;
+let previewService: CompressionPreviewService;
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -90,6 +95,12 @@ function createWindow() {
     center: true,
     autoHideMenuBar: true,
     title: 'VideoCutTool - 无损视频裁剪工具',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#090b10', // 顶栏深色基调，完美浑然一体
+      symbolColor: '#94a3b8', // 控制按钮图标颜色
+      height: 38,
+    },
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
@@ -111,10 +122,22 @@ function createWindow() {
 
   // 首帧渲染就绪后瞬间光滑呈现，彻底消除白屏与黑框闪烁
   mainWindow.once('ready-to-show', () => {
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isVisible()) {
       mainWindow.show();
       mainWindow.focus();
     }
+  });
+
+  // 兜底防御：防止特定显卡或高负载环境下 ready-to-show 漏发导致窗口未显现
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isVisible()) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  }, 600);
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+    console.error('[Window Error] 页面加载失败:', errorCode, errorDescription);
   });
 
   mainWindow.on('closed', () => {
@@ -145,6 +168,12 @@ ipcMain.handle('config:resolveOutputPath', async (_event, videoPath: string, isC
 ipcMain.handle('media:probe', async (_event, filePath: string) => prober.probe(filePath));
 ipcMain.handle('media:probeBasic', async (_event, filePath: string) => prober.probeBasic(filePath));
 ipcMain.handle('media:probeKeyframes', async (_event, filePath: string) => prober.probeKeyframes(filePath));
+
+// 降码画质抽样对比与硬件探测
+ipcMain.handle('compress:previewSamples', async (_event, videoPath: string, timestampsMs: number[], config: CompressConfig) => {
+  return previewService.generatePreviewSamples(videoPath, timestampsMs, config);
+});
+ipcMain.handle('compress:probeEncoder', async () => cuttingEngine.probeEncoderSupport());
 
 // 剪辑引擎与后台任务
 ipcMain.handle('engine:submitDraft', async (_event, record: PlanRecord) => planManager.submitDraft(record));
@@ -245,9 +274,11 @@ app.whenReady().then(async () => {
 
   const currentConfig = configService.getConfig();
   const tempSlicesDir = path.resolve(getExternalTmpDir(exeDir), 'slices');
+  const tempPreviewDir = path.resolve(getExternalTmpDir(exeDir), 'preview_cache');
   prober = new KeyframeProber(currentConfig.ffprobePath, exeDir);
   cuttingEngine = new MediaCuttingEngine(currentConfig.ffmpegPath, tempSlicesDir);
   planManager = new PlanManager(configService.getDataDirectory(), cuttingEngine, prober);
+  previewService = new CompressionPreviewService(currentConfig.ffmpegPath, tempPreviewDir);
 
   // 绑定引擎状态变动至渲染层窗口广播
   cuttingEngine.setStatusListener((event) => {

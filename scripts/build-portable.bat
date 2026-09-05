@@ -8,6 +8,8 @@ echo ========================================================
 echo.
 
 echo [1/4] Clean old build and backup workspace.json...
+taskkill /f /im VideoCutTool.exe >nul 2>&1
+ping 127.0.0.1 -n 2 >nul
 if exist "release\workspace.json" copy /y "release\workspace.json" "%TEMP%\vct_workspace_backup.json" >nul
 if exist "release\app" rmdir /s /q "release\app"
 if exist "release\win-unpacked" rmdir /s /q "release\win-unpacked"
@@ -29,6 +31,8 @@ if %errorlevel% neq 0 (
 
 echo.
 echo [3/4] Organizing release\app and compiling native launcher...
+taskkill /f /im VideoCutTool.exe >nul 2>&1
+if exist "release\app" rmdir /s /q "release\app"
 if exist "release\win-unpacked" move /y "release\win-unpacked" "release\app" >nul
 if exist "release\builder-debug.yml" del /f /q "release\builder-debug.yml"
 

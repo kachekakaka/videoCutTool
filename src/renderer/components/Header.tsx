@@ -15,10 +15,13 @@ export const Header: React.FC<HeaderProps> = ({
   currentVideoName,
 }) => {
   return (
-    <header className="h-14 border-b border-white/10 px-4 sm:px-6 xl:px-8 flex items-center bg-[#090b10]/60 backdrop-blur-md shrink-0">
+    <header
+      className="h-14 border-b border-white/10 px-4 sm:px-6 xl:px-8 flex items-center bg-[#090b10] backdrop-blur-md shrink-0 select-none"
+      style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+    >
       {/* 严格对齐至 1360px 统一中轴 */}
       <div className="w-full max-w-[1360px] mx-auto flex items-center justify-between gap-2">
-        <div className="flex items-center gap-3 min-w-0">
+        <div className="flex items-center gap-3 min-w-0" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           <span className="text-sm font-bold text-white tracking-wide shrink-0">{activeTabTitle}</span>
           {currentVideoName && (
             <span className="text-xs text-zinc-400 bg-white/5 border border-white/10 px-2.5 py-1 rounded-md font-mono truncate max-w-[180px] md:max-w-[280px] xl:max-w-[420px]">
@@ -27,7 +30,11 @@ export const Header: React.FC<HeaderProps> = ({
           )}
         </div>
 
-        <div className="flex items-center gap-2.5">
+        {/* 右侧动作区：留出 pr-36 (约144px) 避开右上角原生窗口控制按钮 */}
+        <div
+          className="flex items-center gap-2.5 pr-36"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
           {onOpenOutputFolder && (
             <button
               onClick={onOpenOutputFolder}

@@ -92,3 +92,11 @@ _Avoid_: Export filename rule, cut name format, naming template
 The automated filesystem protection mechanism that appends an incremental numeric suffix (`_01`, `_02`) whenever a target output path already exists on disk, guaranteeing zero overwrite of previously exported media.
 _Avoid_: Overwrite prevention, deduplication, auto-rename
 
+**Compression Preset**:
+The curated encoding profile (`high_quality`, `balanced`, `high_compression`, `scale_1080p`) governing rate control (CRF), resolution limits, and encoder selection while strictly preserving original audio via stream copy.
+_Avoid_: Transcode profile, export preset, quality mode
+
+**Visual Compression Preview**:
+The rapid on-demand A/B verification interface extracting representative keyframe samples from kept media intervals, presenting interactive split-slider and side-by-side comparisons between original and encoded frames prior to final rendering.
+_Avoid_: Sample viewer, quality test, transcode check
+

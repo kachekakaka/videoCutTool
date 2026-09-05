@@ -1,9 +1,10 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
-import { PlanRecord, CutResult, MediaRetentionPlan } from '../../shared/types';
+import { PlanRecord, CutResult, MediaRetentionPlan, CompressConfig } from '../../shared/types';
 import { RetentionDraft } from '../../shared/RetentionDraft';
 import { formatTaskTimestamp } from '../../shared/timeUtils';
+import { buildCompressArgs } from '../../shared/compressPresets';
 import { KeyframeProber } from './KeyframeProber';
 
 export type PlanStatusListener = (event: {
@@ -16,7 +17,7 @@ export type PlanStatusListener = (event: {
 
 /**
  * MediaCuttingEngine: 后台异步剪辑执行引擎
- * 负责单任务串行 FIFO 队列调度、无损流复制执行、临时切片生命周期 GC 与方案状态机跃迁
+ * 负责单任务串行 FIFO 队列调度、无损流复制执行、智能先切后压、临时切片生命周期 GC 与方案状态机跃迁
  */
 export class MediaCuttingEngine {
   private ffmpegPath: string;
@@ -26,6 +27,7 @@ export class MediaCuttingEngine {
   private activePlanId: string | null = null;
   private onStatusChange?: PlanStatusListener;
   private savePlanFn?: (record: PlanRecord) => void;
+  private cachedEncoder?: 'cpu' | 'nvenc' | 'qsv';
 
   constructor(
     preferredPath?: string,
@@ -185,7 +187,83 @@ export class MediaCuttingEngine {
   }
 
   /**
-   * 底层无损流复制执行器
+   * 探测硬件加速编码器支持情况 (优先探测 NVENC)
+   */
+  public async probeEncoderSupport(): Promise<'cpu' | 'nvenc' | 'qsv'> {
+    if (this.cachedEncoder) {
+      return this.cachedEncoder;
+    }
+
+    return new Promise((resolve) => {
+      const proc = spawn(this.ffmpegPath, ['-encoders']);
+      let stdout = '';
+      proc.stdout.on('data', (d) => (stdout += d));
+      proc.on('close', (code) => {
+        if (code === 0 && (stdout.includes('h264_nvenc') || stdout.includes('nvenc'))) {
+          // 运行一个超轻量的空编码测试，校验真实可用性
+          const testProc = spawn(this.ffmpegPath, [
+            '-f', 'lavfi',
+            '-i', 'color=c=black:s=64x64:d=0.04',
+            '-c:v', 'h264_nvenc',
+            '-f', 'null',
+            '-',
+          ]);
+          testProc.on('close', (testCode) => {
+            if (testCode === 0) {
+              this.cachedEncoder = 'nvenc';
+              resolve('nvenc');
+            } else {
+              this.cachedEncoder = 'cpu';
+              resolve('cpu');
+            }
+          });
+          testProc.on('error', () => {
+            this.cachedEncoder = 'cpu';
+            resolve('cpu');
+          });
+        } else {
+          this.cachedEncoder = 'cpu';
+          resolve('cpu');
+        }
+      });
+      proc.on('error', () => {
+        this.cachedEncoder = 'cpu';
+        resolve('cpu');
+      });
+    });
+  }
+
+  /**
+   * 单次整体降码压制成片
+   * 铁律：音频统一强制无损流复制 (-c:a copy)，绝不重新编码音频
+   */
+  public async compressFile(
+    inputPath: string,
+    outputPath: string,
+    config: CompressConfig,
+    resolvedEncoder: 'cpu' | 'nvenc' | 'qsv' = 'cpu'
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const args = buildCompressArgs(inputPath, outputPath, config, resolvedEncoder);
+      const proc = spawn(this.ffmpegPath, args);
+      let stderr = '';
+
+      proc.stderr.on('data', (chunk) => (stderr += chunk));
+
+      proc.on('close', (code) => {
+        if (code === 0 && fs.existsSync(outputPath)) {
+          resolve();
+        } else {
+          reject(new Error(`FFmpeg 降码压制失败 (code ${code}): ${stderr}`));
+        }
+      });
+
+      proc.on('error', (err) => reject(err));
+    });
+  }
+
+  /**
+   * 底层剪辑执行器（支持无损流复制与智能先切后压）
    */
   public async executeRawPlan(plan: MediaRetentionPlan): Promise<CutResult> {
     if (plan.planSegments.length === 0) {
@@ -201,6 +279,11 @@ export class MediaCuttingEngine {
       fs.mkdirSync(outDir, { recursive: true });
     }
 
+    const needCompress = Boolean(plan.compress?.enabled);
+    const encoder = needCompress
+      ? (plan.compress?.hardwareAcceleration === false ? 'cpu' : await this.probeEncoderSupport())
+      : 'cpu';
+
     try {
       if (plan.planSegments.length === 1) {
         const seg = plan.planSegments[0];
@@ -208,13 +291,33 @@ export class MediaCuttingEngine {
         const segEndMs = seg.safeRange?.endMs ?? (seg as any).endMs ?? plan.durationMs;
         const finalOutputPath = this.resolveSafeSingleOutputPath(plan.outputPath, plan.sourcePath, plan.title);
 
-        await this.cutSingleSegment(
-          plan.sourcePath,
-          segStartMs,
-          segEndMs,
-          finalOutputPath,
-          plan.stripOriginalCover !== false
-        );
+        if (!needCompress) {
+          await this.cutSingleSegment(
+            plan.sourcePath,
+            segStartMs,
+            segEndMs,
+            finalOutputPath,
+            plan.stripOriginalCover !== false
+          );
+        } else {
+          // 先切后压：先无损秒切出临时片段，再单次整体压制
+          const ext = path.extname(plan.sourcePath) || '.mp4';
+          const intermediate = path.join(this.tmpDir, `slice_raw_${Date.now()}_0${ext}`);
+          try {
+            await this.cutSingleSegment(
+              plan.sourcePath,
+              segStartMs,
+              segEndMs,
+              intermediate,
+              plan.stripOriginalCover !== false
+            );
+            await this.compressFile(intermediate, finalOutputPath, plan.compress!, encoder);
+          } finally {
+            try {
+              if (fs.existsSync(intermediate)) fs.unlinkSync(intermediate);
+            } catch {}
+          }
+        }
 
         return {
           success: true,
@@ -229,6 +332,7 @@ export class MediaCuttingEngine {
         const finalOutputPath = this.resolveSafeSingleOutputPath(plan.outputPath, plan.sourcePath, plan.title);
         const tempSegments: string[] = [];
         const timestamp = Date.now();
+        const intermediate = needCompress ? path.join(this.tmpDir, `slice_concat_raw_${timestamp}${ext}`) : null;
 
         try {
           for (let i = 0; i < plan.planSegments.length; i++) {
@@ -247,7 +351,13 @@ export class MediaCuttingEngine {
             );
           }
 
-          await this.concatSegments(tempSegments, finalOutputPath);
+          if (!needCompress) {
+            await this.concatSegments(tempSegments, finalOutputPath);
+          } else {
+            // 先无损合并为单一临时成片，再整体单次压制，彻底杜绝爆音与音画不同步
+            await this.concatSegments(tempSegments, intermediate!);
+            await this.compressFile(intermediate!, finalOutputPath, plan.compress!, encoder);
+          }
 
           return {
             success: true,
@@ -261,6 +371,11 @@ export class MediaCuttingEngine {
             } catch {
               // 忽略临时文件释放异常
             }
+          }
+          if (intermediate) {
+            try {
+              if (fs.existsSync(intermediate)) fs.unlinkSync(intermediate);
+            } catch {}
           }
         }
       } else {
@@ -279,13 +394,31 @@ export class MediaCuttingEngine {
           const segEndMs = seg.safeRange?.endMs ?? (seg as any).endMs ?? plan.durationMs;
           const destPath = finalDestPaths[i];
 
-          await this.cutSingleSegment(
-            plan.sourcePath,
-            segStartMs,
-            segEndMs,
-            destPath,
-            plan.stripOriginalCover !== false
-          );
+          if (!needCompress) {
+            await this.cutSingleSegment(
+              plan.sourcePath,
+              segStartMs,
+              segEndMs,
+              destPath,
+              plan.stripOriginalCover !== false
+            );
+          } else {
+            const intermediate = path.join(this.tmpDir, `slice_seg_raw_${Date.now()}_${i}${ext}`);
+            try {
+              await this.cutSingleSegment(
+                plan.sourcePath,
+                segStartMs,
+                segEndMs,
+                intermediate,
+                plan.stripOriginalCover !== false
+              );
+              await this.compressFile(intermediate, destPath, plan.compress!, encoder);
+            } finally {
+              try {
+                if (fs.existsSync(intermediate)) fs.unlinkSync(intermediate);
+              } catch {}
+            }
+          }
         }
 
         return {
