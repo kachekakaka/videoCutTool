@@ -159,6 +159,7 @@ export const App: React.FC = () => {
           {/* 工作台组件保持常驻，切换 Tab 时使用 hidden，保障切点草稿与视频播放进度不丢失 */}
           <div className={activeTab === 'cutter' ? 'flex flex-1 flex-col h-full overflow-hidden min-h-0' : 'hidden'}>
             <CutterPage
+              isActive={activeTab === 'cutter'}
               onOpenVideo={handleOpenVideo}
               initialVideoPath={currentVideoPath}
               loadedPlanRecord={loadedPlan}

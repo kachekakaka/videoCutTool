@@ -1,48 +1,168 @@
-import React from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { Segment, RetentionDecision } from '../../shared/types';
 import { Play, ArrowRight, Clock, Trash2 } from 'lucide-react';
-import { formatTimecode } from './VideoPlayer';
 
 interface SegmentCardsGridProps {
   segments: Segment[];
+  currentTimeMs?: number;
   auditionRange?: { startMs: number; endMs: number } | null;
+  stepMs?: number;
+  onStepMsChange?: (step: number) => void;
   onToggleDecision: (segmentId: string, decision: RetentionDecision) => void;
   onAudition: (startMs: number, endMs: number) => void;
   onNudgeStart: (segmentId: string, deltaMs: number) => void;
   onNudgeEnd: (segmentId: string, deltaMs: number) => void;
   onMergeWithPrevious?: (segmentId: string) => void;
+  onSeek?: (timeMs: number) => void;
 }
+
+const STEP_OPTIONS = [100, 1000, 5000, 10000]; // 0.1s, 1s, 5s, 10s
+
+const formatStepLabel = (ms: number): string => {
+  if (ms < 1000) return `${ms / 1000}s`;
+  return `${ms / 1000}s`;
+};
+
+// 交互式时分秒毫秒微调组件
+interface TimecodeWheelProps {
+  ms: number;
+  stepMs: number;
+  stepLabel: string;
+  onNudge: (deltaMs: number) => void;
+}
+
+const TimecodeWheel: React.FC<TimecodeWheelProps> = ({ ms, stepMs, stepLabel, onNudge }) => {
+  const safeMs = Math.max(0, isNaN(ms) ? 0 : ms);
+  const totalSeconds = Math.floor(safeMs / 1000);
+  const milliseconds = Math.floor(safeMs % 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  const pad = (n: number, z = 2) => ('00' + n).slice(-z);
+  const padMs = ('000' + milliseconds).slice(-3);
+
+  const handleWheelOnUnit = (e: React.WheelEvent, unitDelta: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // 滚轮向上增加，向下减少
+    const delta = e.deltaY < 0 ? unitDelta : -unitDelta;
+    onNudge(delta);
+  };
+
+  return (
+    <span className="inline-flex items-center select-none font-mono text-[10px] text-[#f0f6fc]">
+      {/* 小时 */}
+      <span
+        onWheel={(e) => handleWheelOnUnit(e, 3600000)}
+        className="hover:bg-blue-500/30 hover:text-blue-200 rounded px-0.5 cursor-ns-resize transition-colors"
+        title="鼠标滚轮微调小时 (±1h)"
+      >
+        {pad(hours)}
+      </span>
+      <span className="text-zinc-500">:</span>
+      {/* 分钟 */}
+      <span
+        onWheel={(e) => handleWheelOnUnit(e, 60000)}
+        className="hover:bg-blue-500/30 hover:text-blue-200 rounded px-0.5 cursor-ns-resize transition-colors"
+        title="鼠标滚轮微调分钟 (±1m)"
+      >
+        {pad(minutes)}
+      </span>
+      <span className="text-zinc-500">:</span>
+      {/* 秒 */}
+      <span
+        onWheel={(e) => handleWheelOnUnit(e, 1000)}
+        className="hover:bg-blue-500/30 hover:text-blue-200 font-semibold text-white rounded px-0.5 cursor-ns-resize transition-colors"
+        title="鼠标滚轮微调秒 (±1s)"
+      >
+        {pad(seconds)}
+      </span>
+      <span className="text-zinc-500">.</span>
+      {/* 毫秒 */}
+      <span
+        onWheel={(e) => handleWheelOnUnit(e, stepMs)}
+        className="text-zinc-400 hover:bg-blue-500/30 hover:text-blue-200 rounded px-0.5 cursor-ns-resize transition-colors"
+        title={`鼠标滚轮微调毫秒 (±${stepLabel})`}
+      >
+        {padMs}
+      </span>
+    </span>
+  );
+};
 
 export const SegmentCardsGrid: React.FC<SegmentCardsGridProps> = ({
   segments,
+  currentTimeMs,
   auditionRange,
+  stepMs: controlledStepMs,
+  onStepMsChange,
   onToggleDecision,
   onAudition,
   onNudgeStart,
   onNudgeEnd,
   onMergeWithPrevious,
+  onSeek,
 }) => {
+  // 步长状态：支持受控与非受控
+  const [internalStepMs, setInternalStepMs] = useState(100);
+  const activeStepMs = controlledStepMs ?? internalStepMs;
+
+  const handleCycleStep = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const curIdx = STEP_OPTIONS.indexOf(activeStepMs);
+    const nextIdx = (curIdx + 1) % STEP_OPTIONS.length;
+    const nextStep = STEP_OPTIONS[nextIdx];
+    if (onStepMsChange) {
+      onStepMsChange(nextStep);
+    } else {
+      setInternalStepMs(nextStep);
+    }
+  };
+
+  const stepLabel = formatStepLabel(activeStepMs);
+
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5 items-stretch">
       {segments.map((seg, idx) => {
         const isKept = seg.decision === 'keep';
         const durationSec = (seg.durationMs / 1000).toFixed(1);
         const canMerge = idx > 0 && onMergeWithPrevious;
+
+        // 判定试听状态
         const isAuditioning = Boolean(
           auditionRange &&
           Math.abs(seg.startMs - auditionRange.startMs) < 100 &&
           Math.abs(seg.endMs - auditionRange.endMs) < 100
         );
 
+        // 判定当前播放指针所在分段（末尾段特殊包含尾帧）
+        const isLast = idx === segments.length - 1;
+        const isPlayheadActive =
+          currentTimeMs !== undefined &&
+          currentTimeMs >= seg.startMs &&
+          (isLast ? currentTimeMs <= seg.endMs : currentTimeMs < seg.endMs);
+
+        // 自动聚焦引用
+        const cardRef = useRef<HTMLDivElement | null>(null);
+        useEffect(() => {
+          if (isPlayheadActive && cardRef.current) {
+            cardRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+          }
+        }, [isPlayheadActive]);
+
         return (
           <div
             key={seg.id}
-            className={`flex flex-col justify-between rounded-xl px-3 py-2 border transition-all shadow-md relative group h-[72px] select-none ${
+            ref={cardRef}
+            className={`flex flex-col justify-between rounded-xl px-2.5 py-1.5 border transition-all shadow-md relative group h-[74px] select-none ${
               isAuditioning
-                ? 'bg-[#12281e]/95 border-emerald-400 ring-2 ring-emerald-400/60 shadow-[0_0_15px_rgba(52,211,153,0.3)] animate-pulse'
+                ? 'bg-[#12281e]/95 border-emerald-400 ring-2 ring-emerald-400/70 shadow-[0_0_15px_rgba(52,211,153,0.35)] animate-pulse'
+                : isPlayheadActive
+                ? 'bg-[#142334]/95 border-blue-500/80 ring-2 ring-blue-500/50 shadow-[0_0_15px_rgba(59,130,246,0.3)]'
                 : isKept
-                ? 'bg-[#161b22]/90 border-emerald-500/30 shadow-emerald-950/20'
-                : 'bg-[#161b22]/50 border-rose-500/20 opacity-80 shadow-rose-950/10'
+                ? 'bg-[#161b22]/90 border-emerald-500/30 hover:border-emerald-500/50 shadow-emerald-950/20'
+                : 'bg-[#161b22]/50 border-rose-500/20 hover:border-rose-500/40 opacity-80 shadow-rose-950/10'
             }`}
           >
             {/* 左侧状态发光指示条 */}
@@ -50,6 +170,8 @@ export const SegmentCardsGrid: React.FC<SegmentCardsGridProps> = ({
               className={`absolute left-0 top-1.5 bottom-1.5 w-1 rounded-r ${
                 isAuditioning
                   ? 'bg-emerald-400 shadow-[0_0_12px_#34d399]'
+                  : isPlayheadActive
+                  ? 'bg-blue-400 shadow-[0_0_10px_#60a5fa]'
                   : isKept
                   ? 'bg-emerald-500 shadow-[0_0_8px_#2ea043]'
                   : 'bg-rose-500'
@@ -60,7 +182,15 @@ export const SegmentCardsGrid: React.FC<SegmentCardsGridProps> = ({
             <div className="flex items-center justify-between pl-1 shrink-0 h-6">
               {/* 左：序号 + 保留/丢弃切换小胶囊 */}
               <div className="flex items-center gap-1.5 shrink-0">
-                <span className="font-mono font-bold text-[11px] text-zinc-200 bg-white/10 px-1.5 py-0.2 rounded">
+                <span
+                  onClick={() => onSeek && onSeek(seg.startMs)}
+                  className={`font-mono font-bold text-[11px] px-1.5 py-0.2 rounded cursor-pointer transition-colors ${
+                    isPlayheadActive
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'text-zinc-200 bg-white/10 hover:bg-white/20'
+                  }`}
+                  title="点击跳转至此段起点"
+                >
                   #{seg.index}
                 </span>
 
@@ -92,7 +222,7 @@ export const SegmentCardsGrid: React.FC<SegmentCardsGridProps> = ({
 
               {/* 右：时长 + 合并 + 试听 */}
               <div className="flex items-center gap-1 shrink-0">
-                <span className="text-[11px] text-zinc-400 font-mono flex items-center gap-0.5 bg-black/40 px-1.5 py-0.5 rounded border border-white/5 whitespace-nowrap">
+                <span className="text-[10px] text-zinc-400 font-mono flex items-center gap-0.5 bg-black/40 px-1.5 py-0.5 rounded border border-white/5 whitespace-nowrap">
                   <Clock className="w-2.5 h-2.5 text-zinc-400" />
                   <span>{durationSec}s</span>
                 </span>
@@ -119,7 +249,7 @@ export const SegmentCardsGrid: React.FC<SegmentCardsGridProps> = ({
                   {isAuditioning ? (
                     <>
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-                      <span className="text-emerald-300">试听中</span>
+                      <span className="text-emerald-300 font-semibold">试听中</span>
                     </>
                   ) : (
                     <>
@@ -131,30 +261,49 @@ export const SegmentCardsGrid: React.FC<SegmentCardsGridProps> = ({
               </div>
             </div>
 
-            {/* ── 行 2：时间码与微调步进 (高度 24px，绝不换行) ── */}
+            {/* ── 行 2：时间码（支持滚轮悬停微调）与步长微调按钮 ── */}
             <div className="flex items-center justify-between pl-1 shrink-0 h-6">
-              {/* 左：纯白等宽时间码 */}
-              <div className="flex items-center gap-1 font-mono text-[11px] text-white whitespace-nowrap bg-black/40 px-2 py-0.5 rounded border border-white/5 select-all">
-                <span className="font-semibold text-[#f0f6fc]">{formatTimecode(seg.startMs, false)}</span>
-                <ArrowRight className="w-3 h-3 text-zinc-500 shrink-0" />
-                <span className="font-semibold text-[#f0f6fc]">{formatTimecode(seg.endMs, false)}</span>
+              {/* 左：纯白等宽时间码 (HH:MM:SS.mmm，悬停时分秒滚动加减) */}
+              <div className="flex items-center gap-1 font-mono text-[10px] whitespace-nowrap bg-black/50 px-1.5 py-0.5 rounded border border-white/5">
+                <TimecodeWheel
+                  ms={seg.startMs}
+                  stepMs={activeStepMs}
+                  stepLabel={stepLabel}
+                  onNudge={(delta) => onNudgeStart(seg.id, delta)}
+                />
+                <ArrowRight className="w-2.5 h-2.5 text-zinc-500 shrink-0" />
+                <TimecodeWheel
+                  ms={seg.endMs}
+                  stepMs={activeStepMs}
+                  stepLabel={stepLabel}
+                  onNudge={(delta) => onNudgeEnd(seg.id, delta)}
+                />
               </div>
 
-              {/* 右：微调入点出点步进 */}
+              {/* 右：步长切换胶囊与微调按钮 */}
               <div className="flex items-center gap-1 shrink-0 font-mono text-[10px]">
+                {/* 步长切换胶囊 */}
                 <button
-                  onClick={() => onNudgeStart(seg.id, -100)}
-                  className="px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white border border-white/5 transition-colors active:scale-95"
-                  title="左移入点 0.1 秒"
+                  onClick={handleCycleStep}
+                  className="px-1 py-0.5 rounded bg-blue-500/15 text-blue-300 hover:bg-blue-500/25 border border-blue-400/25 text-[9px] font-sans font-medium transition-all active:scale-95"
+                  title={`点击切换微调步长 (当前: ${stepLabel}，支持 0.1s / 1s / 5s / 10s)`}
                 >
-                  -0.1s
+                  {stepLabel}
+                </button>
+
+                <button
+                  onClick={() => onNudgeStart(seg.id, -activeStepMs)}
+                  className="px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white border border-white/5 transition-colors active:scale-95"
+                  title={`左移入点 ${stepLabel}`}
+                >
+                  -{stepLabel}
                 </button>
                 <button
-                  onClick={() => onNudgeEnd(seg.id, 100)}
+                  onClick={() => onNudgeEnd(seg.id, activeStepMs)}
                   className="px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white border border-white/5 transition-colors active:scale-95"
-                  title="右移出点 0.1 秒"
+                  title={`右移出点 ${stepLabel}`}
                 >
-                  +0.1s
+                  +{stepLabel}
                 </button>
               </div>
             </div>

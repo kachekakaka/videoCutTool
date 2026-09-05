@@ -49,26 +49,44 @@ export const Timeline: React.FC<TimelineProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const isDraggingRef = useRef(false);
+  const isPanningRef = useRef(false);
+  const panStartXRef = useRef(0);
+  const panStartViewMsRef = useRef(0);
+
   const [zoom, setZoom] = useState(1); // 1x ~ 8x 缩放倍数
-  const [viewOffsetRatio, setViewOffsetRatio] = useState(0); // 视窗起始百分比 (0 ~ 1)
+  const [viewStartMs, setViewStartMs] = useState(0); // 视窗起始时间 (ms)
   const [selectedCutMs, setSelectedCutMs] = useState<number | null>(null);
 
-  // 计算当前可视时间窗口
-  const visibleDurationMs = durationMs / zoom;
-  const viewStartMs = Math.max(0, Math.min(durationMs - visibleDurationMs, viewOffsetRatio * durationMs));
-  const viewEndMs = viewStartMs + visibleDurationMs;
+  // 计算当前可视时间窗口 (严格封顶于视频末尾，彻底消除后半截不可达缺陷)
+  const visibleDurationMs = Math.max(1000, durationMs / zoom);
+  const maxViewStartMs = Math.max(0, durationMs - visibleDurationMs);
+  const clampedViewStartMs = Math.max(0, Math.min(maxViewStartMs, viewStartMs));
+  const viewEndMs = Math.min(durationMs, clampedViewStartMs + visibleDurationMs);
 
-  // 缩放调节
+  // 缩放调节（以当前指针或当前视窗中心为锚点平滑展开）
   const handleZoom = (delta: number) => {
     setZoom((prev) => {
-      const next = Math.max(1, Math.min(8, prev + delta));
-      return Number(next.toFixed(1));
+      const next = Math.max(1, Math.min(8, Number((prev + delta).toFixed(1))));
+      if (next === 1) {
+        setViewStartMs(0);
+      } else {
+        const nextVisible = durationMs / next;
+        // 优先以当前播放指针为锚点进行缩放，确保焦点不迷失
+        const anchor =
+          currentTimeMs >= clampedViewStartMs && currentTimeMs <= viewEndMs
+            ? currentTimeMs
+            : clampedViewStartMs + visibleDurationMs / 2;
+        const nextMaxStart = Math.max(0, durationMs - nextVisible);
+        const nextStart = Math.max(0, Math.min(nextMaxStart, anchor - nextVisible / 2));
+        setViewStartMs(nextStart);
+      }
+      return next;
     });
   };
 
   const resetZoom = () => {
     setZoom(1);
-    setViewOffsetRatio(0);
+    setViewStartMs(0);
   };
 
   // 键盘快捷键监听 Delete 删除选中的切点
@@ -107,9 +125,9 @@ export const Timeline: React.FC<TimelineProps> = ({
     ctx.fillStyle = '#0f131a';
     ctx.fillRect(0, 0, logicalWidth, logicalHeight);
 
-    // 2. 绘制时间刻度线
+    // 2. 绘制时间刻度线 (顶部 14px)
     ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
-    ctx.fillRect(0, 0, logicalWidth, 20);
+    ctx.fillRect(0, 0, logicalWidth, 14);
 
     // 动态步长计算
     let stepMs = 5000 / zoom;
@@ -119,36 +137,36 @@ export const Timeline: React.FC<TimelineProps> = ({
     else if (stepMs > 500) stepMs = 500;
     else stepMs = 200;
 
-    const firstTickMs = Math.floor(viewStartMs / stepMs) * stepMs;
-    ctx.font = '10px monospace';
+    const firstTickMs = Math.floor(clampedViewStartMs / stepMs) * stepMs;
+    ctx.font = '9px monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
     for (let t = firstTickMs; t <= viewEndMs; t += stepMs) {
-      if (t < viewStartMs) continue;
-      const x = ((t - viewStartMs) / visibleDurationMs) * logicalWidth;
+      if (t < clampedViewStartMs) continue;
+      const x = ((t - clampedViewStartMs) / visibleDurationMs) * logicalWidth;
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(x, 12);
-      ctx.lineTo(x, 20);
+      ctx.moveTo(x, 8);
+      ctx.lineTo(x, 14);
       ctx.stroke();
 
       ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-      ctx.fillText(formatTimecode(t, false), x, 7);
+      ctx.fillText(formatTimecode(t, false), x, 5);
     }
 
-    // 3. 绘制分段区间 (高度 22px ~ 54px)
-    const trackY = 22;
-    const trackHeight = 34;
+    // 3. 绘制分段区间 (高度 16px ~ 38px，共 22px 高度，紧凑利落)
+    const trackY = 16;
+    const trackHeight = 22;
 
     for (const seg of segments) {
-      if (seg.endMs < viewStartMs || seg.startMs > viewEndMs) continue;
+      if (seg.endMs < clampedViewStartMs || seg.startMs > viewEndMs) continue;
 
-      const clampedStart = Math.max(viewStartMs, seg.startMs);
+      const clampedStart = Math.max(clampedViewStartMs, seg.startMs);
       const clampedEnd = Math.min(viewEndMs, seg.endMs);
-      const x1 = ((clampedStart - viewStartMs) / visibleDurationMs) * logicalWidth;
-      const x2 = ((clampedEnd - viewStartMs) / visibleDurationMs) * logicalWidth;
+      const x1 = ((clampedStart - clampedViewStartMs) / visibleDurationMs) * logicalWidth;
+      const x2 = ((clampedEnd - clampedViewStartMs) / visibleDurationMs) * logicalWidth;
       const segWidth = Math.max(2, x2 - x1);
 
       if (seg.decision === 'keep') {
@@ -183,53 +201,53 @@ export const Timeline: React.FC<TimelineProps> = ({
       }
 
       // 序号标识
-      if (segWidth > 28) {
+      if (segWidth > 24) {
         ctx.fillStyle = seg.decision === 'keep' ? '#3fb950' : '#f85149';
-        ctx.font = 'bold 10px monospace';
+        ctx.font = 'bold 9px monospace';
         ctx.fillText(`#${seg.index}`, x1 + segWidth / 2, trackY + trackHeight / 2);
       }
     }
 
-    // 4. 绘制关键帧位置微标 (青色小圆点)
+    // 4. 绘制关键帧位置微标 (青色微圆点，位于轨道底部)
     ctx.fillStyle = '#38bdf8';
     for (const kf of keyframes) {
-      if (kf >= viewStartMs && kf <= viewEndMs) {
-        const kx = ((kf - viewStartMs) / visibleDurationMs) * logicalWidth;
+      if (kf >= clampedViewStartMs && kf <= viewEndMs) {
+        const kx = ((kf - clampedViewStartMs) / visibleDurationMs) * logicalWidth;
         ctx.beginPath();
-        ctx.arc(kx, logicalHeight - 6, 2, 0, Math.PI * 2);
+        ctx.arc(kx, logicalHeight - 3, 1.5, 0, Math.PI * 2);
         ctx.fill();
       }
     }
 
     // 5. 绘制切点竖线旗标
     for (const cutMs of cuts) {
-      if (cutMs >= viewStartMs && cutMs <= viewEndMs) {
-        const cx = ((cutMs - viewStartMs) / visibleDurationMs) * logicalWidth;
+      if (cutMs >= clampedViewStartMs && cutMs <= viewEndMs) {
+        const cx = ((cutMs - clampedViewStartMs) / visibleDurationMs) * logicalWidth;
         const isSelected = selectedCutMs === cutMs;
 
         ctx.strokeStyle = isSelected ? '#38bdf8' : '#f59e0b';
-        ctx.lineWidth = isSelected ? 3 : 2;
+        ctx.lineWidth = isSelected ? 2.5 : 1.5;
         ctx.beginPath();
         ctx.moveTo(cx, 0);
         ctx.lineTo(cx, logicalHeight);
         ctx.stroke();
 
-        // 顶部小菱形
+        // 顶部微型菱形
         ctx.fillStyle = isSelected ? '#38bdf8' : '#f59e0b';
         ctx.beginPath();
         ctx.moveTo(cx, 0);
-        ctx.lineTo(cx - (isSelected ? 5 : 3), isSelected ? 8 : 5);
-        ctx.lineTo(cx + (isSelected ? 5 : 3), isSelected ? 8 : 5);
+        ctx.lineTo(cx - (isSelected ? 4 : 2.5), isSelected ? 6 : 4);
+        ctx.lineTo(cx + (isSelected ? 4 : 2.5), isSelected ? 6 : 4);
         ctx.closePath();
         ctx.fill();
       }
     }
 
     // 6. 绘制播放游标针 (当前时间)
-    if (currentTimeMs >= viewStartMs && currentTimeMs <= viewEndMs) {
-      const playheadX = ((currentTimeMs - viewStartMs) / visibleDurationMs) * logicalWidth;
+    if (currentTimeMs >= clampedViewStartMs && currentTimeMs <= viewEndMs) {
+      const playheadX = ((currentTimeMs - clampedViewStartMs) / visibleDurationMs) * logicalWidth;
       ctx.shadowColor = '#58a6ff';
-      ctx.shadowBlur = 6;
+      ctx.shadowBlur = 5;
       ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 2;
 
@@ -241,15 +259,15 @@ export const Timeline: React.FC<TimelineProps> = ({
       // 游标顶部倒三角指针
       ctx.fillStyle = '#58a6ff';
       ctx.beginPath();
-      ctx.moveTo(playheadX - 6, 0);
-      ctx.lineTo(playheadX + 6, 0);
-      ctx.lineTo(playheadX, 10);
+      ctx.moveTo(playheadX - 5, 0);
+      ctx.lineTo(playheadX + 5, 0);
+      ctx.lineTo(playheadX, 7);
       ctx.closePath();
       ctx.fill();
     }
 
     ctx.restore();
-  }, [durationMs, currentTimeMs, keyframes, cuts, segments, zoom, viewStartMs, viewEndMs, visibleDurationMs, selectedCutMs]);
+  }, [durationMs, currentTimeMs, keyframes, cuts, segments, zoom, clampedViewStartMs, viewEndMs, visibleDurationMs, selectedCutMs]);
 
   // 自适应 Canvas 大小
   useEffect(() => {
@@ -281,19 +299,30 @@ export const Timeline: React.FC<TimelineProps> = ({
     const rect = canvas.getBoundingClientRect();
     const offsetX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
     const ratio = offsetX / rect.width;
-    return Math.round(viewStartMs + ratio * visibleDurationMs);
+    return Math.round(clampedViewStartMs + ratio * visibleDurationMs);
   };
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    // 中键或右键：进入视窗平移模式
+    if (e.button === 1 || e.button === 2) {
+      e.preventDefault();
+      isPanningRef.current = true;
+      panStartXRef.current = e.clientX;
+      panStartViewMsRef.current = clampedViewStartMs;
+      return;
+    }
+
+    if (e.button !== 0) return; // 左键才触发寻址与切点选择
+
     const targetMs = getTimeFromMouseEvent(e);
 
-    // 检查是否点击在某个切点附近 (±5px)
+    // 检查是否点击在某个切点附近 (±6px)
     const canvas = canvasRef.current;
     if (canvas) {
       const rect = canvas.getBoundingClientRect();
       let clickedCut: number | null = null;
       for (const c of cuts) {
-        const cx = ((c - viewStartMs) / visibleDurationMs) * rect.width;
+        const cx = ((c - clampedViewStartMs) / visibleDurationMs) * rect.width;
         if (Math.abs(cx - (e.clientX - rect.left)) <= 6) {
           clickedCut = c;
           break;
@@ -307,6 +336,15 @@ export const Timeline: React.FC<TimelineProps> = ({
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (isPanningRef.current && canvasRef.current) {
+      const rect = canvasRef.current.getBoundingClientRect();
+      const deltaPx = e.clientX - panStartXRef.current;
+      const deltaMs = (deltaPx / rect.width) * visibleDurationMs;
+      const nextStart = Math.max(0, Math.min(maxViewStartMs, panStartViewMsRef.current - deltaMs));
+      setViewStartMs(nextStart);
+      return;
+    }
+
     if (isDraggingRef.current) {
       const targetMs = getTimeFromMouseEvent(e);
       onSeek(targetMs);
@@ -315,24 +353,33 @@ export const Timeline: React.FC<TimelineProps> = ({
 
   const handleMouseUp = () => {
     isDraggingRef.current = false;
+    isPanningRef.current = false;
   };
 
-  // 鼠标滚轮缩放与平移
+  // 鼠标滚轮缩放与水平平移
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    if (e.ctrlKey || Math.abs(e.deltaY) > 0) {
-      e.preventDefault();
+    e.preventDefault();
+    if (e.ctrlKey) {
+      // Ctrl + 滚轮：缩放
       if (e.deltaY < 0) {
         handleZoom(0.5);
       } else {
         handleZoom(-0.5);
       }
+    } else {
+      // 普通滚轮或触控板：水平平移时间轴视野
+      if (zoom <= 1) return;
+      const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      // 每次滚动平移可视窗口宽度的 7%
+      const panStepMs = visibleDurationMs * 0.07 * (delta > 0 ? 1 : -1);
+      setViewStartMs((prev) => Math.max(0, Math.min(maxViewStartMs, prev + panStepMs)));
     }
   };
 
   return (
-    <div className="w-full flex flex-col gap-2 p-3 rounded-2xl bg-[#161b22]/90 border border-white/10 shadow-xl backdrop-blur-md">
+    <div className="w-full flex flex-col gap-1 px-3 py-1.5 rounded-xl bg-[#161b22]/90 border border-white/10 shadow-xl backdrop-blur-md">
       {/* ── 顶部三段式控制条 (左侧时间与图例 + 中间绝对居中播放 + 右侧缩放与切点) ── */}
-      <div className="relative flex items-center justify-between gap-2 px-1 min-h-[32px]">
+      <div className="relative flex items-center justify-between gap-2 px-1 min-h-[28px]">
         {/* 左侧：时间码与比例切换 + 紧凑内联图例 */}
         <div className="flex items-center gap-2 shrink-0 z-0">
           <div className="flex items-center gap-1.5 font-mono text-xs text-zinc-300">
@@ -500,8 +547,8 @@ export const Timeline: React.FC<TimelineProps> = ({
         </div>
       </div>
 
-      {/* ── Canvas 时间轴主轨道 ── */}
-      <div className="relative w-full h-[64px] rounded-xl overflow-hidden border border-white/10 cursor-crosshair">
+      {/* ── Canvas 时间轴主轨道 (紧凑 46px 高度) ── */}
+      <div className="relative w-full h-[46px] rounded-xl overflow-hidden border border-white/10 cursor-crosshair select-none">
         <canvas
           ref={canvasRef}
           onMouseDown={handleMouseDown}
@@ -509,8 +556,22 @@ export const Timeline: React.FC<TimelineProps> = ({
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseUp}
           onWheel={handleWheel}
+          onContextMenu={(e) => e.preventDefault()}
           className="w-full h-full block"
         />
+
+        {/* 缩放状态下底部微型视窗位置指示条 */}
+        {zoom > 1 && (
+          <div className="absolute bottom-0 left-0 right-0 h-1 bg-black/50 pointer-events-none">
+            <div
+              className="h-full bg-blue-500/70 rounded-full transition-all duration-75"
+              style={{
+                marginLeft: `${Math.min(99, Math.max(0, (clampedViewStartMs / durationMs) * 100))}%`,
+                width: `${Math.min(100, Math.max(1, (visibleDurationMs / durationMs) * 100))}%`,
+              }}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

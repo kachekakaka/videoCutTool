@@ -24,6 +24,7 @@ interface CutterPageProps {
   initialVideoPath?: string | null;
   loadedPlanRecord?: PlanRecord | null;
   onPlanSaved?: () => void;
+  isActive?: boolean;
 }
 
 export const CutterPage: React.FC<CutterPageProps> = ({
@@ -31,12 +32,23 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   initialVideoPath,
   loadedPlanRecord,
   onPlanSaved,
+  isActive = true,
 }) => {
   const [metadata, setMetadata] = useState<MediaMetadata | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isKeyframeScanning, setIsKeyframeScanning] = useState(false);
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+
+  // 跨 Tab 重新切回工作台时，微延时触发 resize 事件，确保时间轴 Canvas 自适应重新测算并重绘
+  useEffect(() => {
+    if (isActive) {
+      const timer = setTimeout(() => {
+        window.dispatchEvent(new Event('resize'));
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [isActive]);
 
   // 核心领域深模块草稿
   const [draft, setDraft] = useState<RetentionDraft | null>(null);
@@ -48,6 +60,9 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
   // 试听区间
   const [auditionRange, setAuditionRange] = useState<{ startMs: number; endMs: number } | null>(null);
+
+  // 微调步长选择 (ms，默认为 100ms 即 0.1s)
+  const [nudgeStepMs, setNudgeStepMs] = useState(100);
 
   // 播放状态与画面比例
   const [isPlaying, setIsPlaying] = useState(false);
@@ -580,11 +595,23 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             segments={segments}
             isPlaying={isPlaying}
             aspectRatioMode={aspectRatioMode}
-            onSeek={(ms) => playerRef.current?.seekTo(ms)}
+            onSeek={(ms) => {
+              setAuditionRange(null);
+              playerRef.current?.seekTo(ms);
+            }}
             onDeleteCut={handleDeleteCut}
-            onTogglePlay={() => playerRef.current?.togglePlay()}
-            onStepFrame={(delta) => playerRef.current?.stepFrame(delta)}
-            onStepSeconds={(sec) => playerRef.current?.stepSeconds(sec)}
+            onTogglePlay={() => {
+              setAuditionRange(null);
+              playerRef.current?.togglePlay();
+            }}
+            onStepFrame={(delta) => {
+              setAuditionRange(null);
+              playerRef.current?.stepFrame(delta);
+            }}
+            onStepSeconds={(sec) => {
+              setAuditionRange(null);
+              playerRef.current?.stepSeconds(sec);
+            }}
             onToggleAspectRatio={(mode) => setAspectRatioMode(mode)}
             onInsertCut={handleInsertCut}
           />
@@ -632,6 +659,29 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                 <span>重做</span>
               </button>
             </div>
+
+            {/* 微调步长多档选择器 */}
+            <div className="hidden sm:flex items-center bg-black/40 border border-white/10 rounded-lg p-0.5 text-xs font-normal">
+              <span className="text-[10px] text-zinc-400 px-1.5 select-none">步长:</span>
+              {[100, 1000, 5000, 10000].map((step) => {
+                const label = step < 1000 ? `${step / 1000}s` : `${step / 1000}s`;
+                const isSelected = nudgeStepMs === step;
+                return (
+                  <button
+                    key={step}
+                    onClick={() => setNudgeStepMs(step)}
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition-all active:scale-95 ${
+                      isSelected
+                        ? 'bg-blue-600 text-white font-bold shadow-sm'
+                        : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                    }`}
+                    title={`微调步长设置为 ${label}`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           <div
@@ -669,12 +719,19 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         <div className="max-h-[160px] shrink-0 overflow-y-auto overflow-x-hidden pr-0.5">
           <SegmentCardsGrid
             segments={segments}
+            currentTimeMs={currentTimeMs}
             auditionRange={auditionRange}
+            stepMs={nudgeStepMs}
+            onStepMsChange={setNudgeStepMs}
             onToggleDecision={handleToggleDecision}
             onAudition={handleAudition}
             onNudgeStart={handleNudgeStart}
             onNudgeEnd={handleNudgeEnd}
             onMergeWithPrevious={handleMergeSegment}
+            onSeek={(ms) => {
+              setAuditionRange(null);
+              playerRef.current?.seekTo(ms);
+            }}
           />
         </div>
 
@@ -737,10 +794,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                   onChange={(e) => handleToggleConcat(e.target.checked)}
                   className="w-3.5 h-3.5 accent-blue-500 rounded cursor-pointer"
                 />
-                <span>
-                  <span className="hidden xl:inline">多保留段</span>
-                  <span className="xl:hidden">多段</span>合并
-                </span>
+                <span>多段合并</span>
               </label>
 
               <label className="flex items-center gap-1 cursor-pointer hover:text-white transition-colors" title="勾选后剥离原片固定封面，让切片视频自动展示各段首帧画面，防止所有切片封面雷同">
@@ -750,9 +804,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                   onChange={(e) => handleToggleCover(e.target.checked)}
                   className="w-3.5 h-3.5 accent-blue-500 rounded cursor-pointer"
                 />
-                <span>
-                  <span className="hidden xl:inline">自适应</span>首帧封面
-                </span>
+                <span>首帧封面</span>
               </label>
             </div>
 
