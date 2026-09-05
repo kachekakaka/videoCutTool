@@ -1,13 +1,37 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
-import { MediaRetentionPlan, CutResult } from '../../shared/types';
+import { PlanRecord, CutResult, MediaRetentionPlan } from '../../shared/types';
+import { RetentionDraft } from '../../shared/RetentionDraft';
+import { KeyframeProber } from './KeyframeProber';
 
-export class FFmpegExecutor {
+export type PlanStatusListener = (event: {
+  planId: string;
+  status: 'processing' | 'completed' | 'failed';
+  outputPath?: string;
+  error?: string;
+  record?: PlanRecord;
+}) => void;
+
+/**
+ * MediaCuttingEngine: 后台异步剪辑执行引擎
+ * 负责单任务串行 FIFO 队列调度、无损流复制执行、临时切片生命周期 GC 与方案状态机跃迁
+ */
+export class MediaCuttingEngine {
   private ffmpegPath: string;
   private tmpDir: string;
+  private queue: Array<{ record: PlanRecord; prober: KeyframeProber }> = [];
+  private isRunning: boolean = false;
+  private activePlanId: string | null = null;
+  private onStatusChange?: PlanStatusListener;
+  private savePlanFn?: (record: PlanRecord) => void;
 
-  constructor(preferredPath?: string, customSlicesDir?: string) {
+  constructor(
+    preferredPath?: string,
+    customSlicesDir?: string,
+    savePlanFn?: (record: PlanRecord) => void,
+    onStatusChange?: PlanStatusListener
+  ) {
     const resourcesPath = (process as any).resourcesPath;
     const candidates = [
       resourcesPath ? path.join(resourcesPath, 'bin', 'ffmpeg.exe') : '',
@@ -19,11 +43,10 @@ export class FFmpegExecutor {
       path.resolve(process.cwd(), 'tools/ffmpeg.exe'),
     ].filter(Boolean) as string[];
 
-    const matched = candidates.find(p => fs.existsSync(p));
+    const matched = candidates.find((p) => fs.existsSync(p));
     this.ffmpegPath = matched || 'ffmpeg';
-    console.log('[FFmpegExecutor] Path:', this.ffmpegPath);
 
-    // 遵守隔离红线：切片缓存统一存放至同级外部目录 ../videoCutTool_tmp/slices/
+    // 切片缓存统一存放至同级外部目录 ../videoCutTool_tmp/slices/
     this.tmpDir = customSlicesDir
       ? path.resolve(customSlicesDir)
       : path.resolve(process.cwd(), '../videoCutTool_tmp/slices');
@@ -31,29 +54,144 @@ export class FFmpegExecutor {
     if (!fs.existsSync(this.tmpDir)) {
       fs.mkdirSync(this.tmpDir, { recursive: true });
     }
+
+    this.savePlanFn = savePlanFn;
+    this.onStatusChange = onStatusChange;
+  }
+
+  public setStatusListener(listener: PlanStatusListener) {
+    this.onStatusChange = listener;
+  }
+
+  public setPlanSaver(saver: (record: PlanRecord) => void) {
+    this.savePlanFn = saver;
   }
 
   /**
-   * 执行无损流复制裁剪方案
+   * 提交方案至后台执行队列
    */
-  public async executePlan(plan: MediaRetentionPlan): Promise<CutResult> {
+  public submitPlan(
+    record: PlanRecord,
+    prober: KeyframeProber
+  ): { queued: boolean; active: boolean } {
+    if (this.isRunning) {
+      record.status = 'ready';
+      if (this.savePlanFn) this.savePlanFn(record);
+      this.queue.push({ record, prober });
+      return { queued: true, active: false };
+    }
+
+    // 立即启动调度
+    this.processRecord(record, prober);
+    return { queued: false, active: true };
+  }
+
+  public getActivePlanId(): string | null {
+    return this.activePlanId;
+  }
+
+  public getQueueLength(): number {
+    return this.queue.length;
+  }
+
+  private async processRecord(record: PlanRecord, prober: KeyframeProber) {
+    this.isRunning = true;
+    this.activePlanId = record.id;
+
+    // 1. 状态跃迁为 processing 并通知
+    record.status = 'processing';
+    if (this.savePlanFn) this.savePlanFn(record);
+    this.notifyStatus(record.id, 'processing', undefined, undefined, record);
+
+    try {
+      if (!fs.existsSync(record.sourcePath)) {
+        throw new Error(`原视频文件不存在: ${record.sourcePath}`);
+      }
+
+      // 2. 重新探测关键帧以保证精度
+      const meta = await prober.probe(record.sourcePath);
+
+      // 3. 使用 RetentionDraft 重建不可变切片计划
+      const draft = RetentionDraft.fromRecord(record, meta.durationMs);
+      const isConcat = record.concatSingleFile !== false;
+      const safeOutput = this.resolveSafeSingleOutputPath(record.outputPath || record.sourcePath, record.sourcePath);
+
+      const retentionPlan = draft.toPlan(meta.keyframes, {
+        outputPath: safeOutput,
+        concatToSingleFile: isConcat,
+        stripOriginalCover: record.stripOriginalCover !== false,
+      });
+
+      // 4. 执行剪辑
+      const result = await this.executeRawPlan(retentionPlan);
+
+      if (result.success) {
+        // 成功状态跃迁
+        record.status = 'completed';
+        record.outputPath = result.outputPath;
+        record.completedAt = new Date().toISOString();
+        delete record.error;
+        if (this.savePlanFn) this.savePlanFn(record);
+        this.notifyStatus(record.id, 'completed', result.outputPath, undefined, record);
+      } else {
+        throw new Error(result.error || '剪辑执行返回失败');
+      }
+    } catch (err: any) {
+      console.error(`[MediaCuttingEngine] 执行方案 ${record.id} 出错:`, err);
+      record.status = 'failed';
+      record.error = err.message || '剪辑过程发生异常';
+      if (this.savePlanFn) this.savePlanFn(record);
+      this.notifyStatus(record.id, 'failed', undefined, record.error, record);
+    } finally {
+      this.activePlanId = null;
+      this.isRunning = false;
+      this.processNext();
+    }
+  }
+
+  private processNext() {
+    if (this.queue.length > 0 && !this.isRunning) {
+      const next = this.queue.shift();
+      if (next) {
+        this.processRecord(next.record, next.prober);
+      }
+    }
+  }
+
+  private notifyStatus(
+    planId: string,
+    status: 'processing' | 'completed' | 'failed',
+    outputPath?: string,
+    error?: string,
+    record?: PlanRecord
+  ) {
+    if (this.onStatusChange) {
+      try {
+        this.onStatusChange({ planId, status, outputPath, error, record });
+      } catch (err) {
+        console.error('[MediaCuttingEngine] 状态回调执行异常:', err);
+      }
+    }
+  }
+
+  /**
+   * 底层无损流复制执行器
+   */
+  public async executeRawPlan(plan: MediaRetentionPlan): Promise<CutResult> {
     if (plan.planSegments.length === 0) {
       return {
         success: false,
         outputPath: plan.outputPath,
-        durationMs: 0,
         error: '未选择任何保留片段',
       };
     }
 
-    // 确保输出目录存在
     const outDir = path.dirname(plan.outputPath);
     if (!fs.existsSync(outDir)) {
       fs.mkdirSync(outDir, { recursive: true });
     }
 
     try {
-      // 场景 1：只有一个保留段，直接无损输出到最终目标
       if (plan.planSegments.length === 1) {
         const seg = plan.planSegments[0];
         const segStartMs = seg.safeRange?.startMs ?? (seg as any).startMs ?? 0;
@@ -67,57 +205,55 @@ export class FFmpegExecutor {
           finalOutputPath,
           plan.stripOriginalCover !== false
         );
+
         return {
           success: true,
           outputPath: finalOutputPath,
-          durationMs: segEndMs - segStartMs,
         };
       }
 
-      // 场景 2：有多个保留段
       const ext = path.extname(plan.sourcePath) || '.mp4';
       const baseName = path.basename(plan.sourcePath, ext);
 
-      // 如果需要合并为单个文件
       if (plan.concatToSingleFile) {
         const finalOutputPath = this.resolveSafeSingleOutputPath(plan.outputPath, plan.sourcePath);
         const tempSegments: string[] = [];
         const timestamp = Date.now();
 
-        for (let i = 0; i < plan.planSegments.length; i++) {
-          const seg = plan.planSegments[i];
-          const segStartMs = seg.safeRange?.startMs ?? (seg as any).startMs ?? 0;
-          const segEndMs = seg.safeRange?.endMs ?? (seg as any).endMs ?? plan.durationMs;
-          const tempPath = path.join(this.tmpDir, `slice_${timestamp}_${i}${ext}`);
-          tempSegments.push(tempPath);
+        try {
+          for (let i = 0; i < plan.planSegments.length; i++) {
+            const seg = plan.planSegments[i];
+            const segStartMs = seg.safeRange.startMs;
+            const segEndMs = seg.safeRange.endMs;
+            const tempPath = path.join(this.tmpDir, `slice_${timestamp}_${i}${ext}`);
+            tempSegments.push(tempPath);
 
-          await this.cutSingleSegment(
-            plan.sourcePath,
-            segStartMs,
-            segEndMs,
-            tempPath,
-            plan.stripOriginalCover !== false
-          );
-        }
+            await this.cutSingleSegment(
+              plan.sourcePath,
+              segStartMs,
+              segEndMs,
+              tempPath,
+              plan.stripOriginalCover !== false
+            );
+          }
 
-        await this.concatSegments(tempSegments, finalOutputPath);
+          await this.concatSegments(tempSegments, finalOutputPath);
 
-        // 剪辑合并完成后，清理临时切片
-        for (const tempPath of tempSegments) {
-          try {
-            if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-          } catch {
-            // ignore
+          return {
+            success: true,
+            outputPath: finalOutputPath,
+          };
+        } finally {
+          // 确保无论执行成功还是异常抛错，均对临时切片进行保底垃圾回收
+          for (const tempPath of tempSegments) {
+            try {
+              if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+            } catch {
+              // 忽略临时文件释放异常
+            }
           }
         }
-
-        return {
-          success: true,
-          outputPath: finalOutputPath,
-          durationMs: plan.totalKeptDurationMs,
-        };
       } else {
-        // 不需要合并：各保留片段直接无损切出至目标输出目录 outDir（带智能批次避让）
         const finalDestPaths = this.resolveSafeSegmentPaths(
           outDir,
           baseName,
@@ -144,23 +280,18 @@ export class FFmpegExecutor {
         return {
           success: true,
           outputPath: finalDestPaths[0] || outDir,
-          durationMs: plan.totalKeptDurationMs,
         };
       }
     } catch (err: any) {
-      console.error('FFmpeg 执行裁剪失败:', err);
+      console.error('[MediaCuttingEngine] executeRawPlan 发生异常:', err);
       return {
         success: false,
         outputPath: plan.outputPath,
-        durationMs: 0,
         error: err.message || '剪辑执行过程发生未知错误',
       };
     }
   }
 
-  /**
-   * 确保单文件输出路径物理安全（避让已存在文件与源文件）
-   */
   public resolveSafeSingleOutputPath(candidatePath: string, sourcePath: string): string {
     const ext = path.extname(candidatePath) || path.extname(sourcePath) || '.mp4';
     const outDir = path.dirname(candidatePath);
@@ -191,9 +322,6 @@ export class FFmpegExecutor {
     }
   }
 
-  /**
-   * 确保多段不合并模式下的批次文件路径安全
-   */
   public resolveSafeSegmentPaths(
     outDir: string,
     baseName: string,
@@ -236,9 +364,6 @@ export class FFmpegExecutor {
     return result;
   }
 
-  /**
-   * 单段无损流拷贝 (-c copy)
-   */
   private cutSingleSegment(
     sourcePath: string,
     startMs: number,
@@ -250,7 +375,6 @@ export class FFmpegExecutor {
       const startSec = (startMs / 1000).toFixed(3);
       const durationSec = ((endMs - startMs) / 1000).toFixed(3);
 
-      // 当 stripOriginalCover 为 true 时，使用 0:V 排除原片静态封面 (attached_pic)，让系统自动抓取切片真实首帧
       const mapArgs = stripOriginalCover
         ? ['-map', '0:V', '-map', '0:a?']
         : ['-map', '0'];
@@ -269,9 +393,9 @@ export class FFmpegExecutor {
       const proc = spawn(this.ffmpegPath, args);
       let stderr = '';
 
-      proc.stderr.on('data', chunk => stderr += chunk);
+      proc.stderr.on('data', (chunk) => (stderr += chunk));
 
-      proc.on('close', code => {
+      proc.on('close', (code) => {
         if (code === 0 && fs.existsSync(outputPath)) {
           resolve();
         } else {
@@ -279,18 +403,14 @@ export class FFmpegExecutor {
         }
       });
 
-      proc.on('error', err => reject(err));
+      proc.on('error', (err) => reject(err));
     });
   }
 
-  /**
-   * 使用 FFmpeg Concat Demuxer 无损合并片段
-   */
   private concatSegments(segmentPaths: string[], outputPath: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const listFilePath = path.join(this.tmpDir, `concat_list_${Date.now()}.txt`);
-      // 生成符合 FFmpeg concat demuxer 规范的文件列表
-      const lines = segmentPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
+      const lines = segmentPaths.map((p) => `file '${p.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n');
       fs.writeFileSync(listFilePath, lines, 'utf-8');
 
       const args = [
@@ -305,14 +425,13 @@ export class FFmpegExecutor {
       const proc = spawn(this.ffmpegPath, args);
       let stderr = '';
 
-      proc.stderr.on('data', chunk => stderr += chunk);
+      proc.stderr.on('data', (chunk) => (stderr += chunk));
 
-      proc.on('close', code => {
-        // 清理 list 文件
+      proc.on('close', (code) => {
         try {
           if (fs.existsSync(listFilePath)) fs.unlinkSync(listFilePath);
         } catch {
-          // ignore
+          // 忽略清理异常
         }
 
         if (code === 0 && fs.existsSync(outputPath)) {
@@ -322,7 +441,7 @@ export class FFmpegExecutor {
         }
       });
 
-      proc.on('error', err => reject(err));
+      proc.on('error', (err) => reject(err));
     });
   }
 }

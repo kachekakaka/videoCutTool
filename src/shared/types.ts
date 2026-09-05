@@ -1,6 +1,6 @@
 /**
  * VideoCutTool 共享领域模型契约 (Domain Contracts)
- * 对齐 CONTEXT.md 与 ADR-0001
+ * 对齐 CONTEXT.md 与 ADR-0001 / ADR-0003
  */
 
 export type OutputDirectoryRule = 'sub_folder' | 'same_directory' | 'custom_fixed';
@@ -14,6 +14,7 @@ export interface AppConfig {
   keyframeSafetyGuaranteed: boolean;
   autoConcatSingleFile: boolean;
   stripOriginalCover: boolean;
+  notifyOnExportComplete: boolean;
   ffmpegPath: string;
   ffprobePath: string;
   plansStoragePath: string;
@@ -27,6 +28,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   keyframeSafetyGuaranteed: true,
   autoConcatSingleFile: true,
   stripOriginalCover: true,
+  notifyOnExportComplete: true,
   ffmpegPath: 'D:/Tools/ffmpeg/ffmpeg.exe',
   ffprobePath: 'D:/Tools/ffmpeg/ffprobe.exe',
   plansStoragePath: './plans',
@@ -77,7 +79,7 @@ export interface MediaRetentionPlan {
   blockers: string[];
 }
 
-export type ExecutionStatus = 'ready' | 'completed';
+export type ExecutionStatus = 'ready' | 'processing' | 'completed' | 'failed';
 
 export interface PlanRecord {
   id: string;
@@ -94,11 +96,12 @@ export interface PlanRecord {
   decisions: Record<string, RetentionDecision>;
   concatSingleFile?: boolean;
   stripOriginalCover?: boolean;
+  error?: string;
 }
 
 export interface CutResult {
   success: boolean;
   outputPath: string;
-  durationMs: number;
+  durationMs?: number;
   error?: string;
 }

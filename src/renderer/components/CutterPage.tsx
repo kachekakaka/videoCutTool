@@ -1,9 +1,9 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { MediaMetadata, Segment, RetentionDecision, MediaRetentionPlan, PlanRecord } from '../../shared/types';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { MediaMetadata, RetentionDecision, PlanRecord } from '../../shared/types';
 import { VideoPlayer, VideoPlayerRef, formatTimecode } from './VideoPlayer';
 import { Timeline } from './Timeline';
 import { SegmentCardsGrid } from './SegmentCardsGrid';
-import { planRetention } from '../../shared/RetentionPlanner';
+import { RetentionDraft, DraftSnapshot } from '../../shared/RetentionDraft';
 import {
   Film,
   Scissors,
@@ -26,11 +26,6 @@ interface CutterPageProps {
   onPlanSaved?: () => void;
 }
 
-interface HistoryState {
-  cuts: number[];
-  decisions: Record<string, RetentionDecision>;
-}
-
 export const CutterPage: React.FC<CutterPageProps> = ({
   onOpenVideo,
   initialVideoPath,
@@ -43,18 +38,16 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
 
-  // 切点与决策主状态
-  const [cuts, setCuts] = useState<number[]>([]);
-  const [decisions, setDecisions] = useState<Record<string, RetentionDecision>>({});
+  // 核心领域深模块草稿
+  const [draft, setDraft] = useState<RetentionDraft | null>(null);
+  const [draftVersion, setDraftVersion] = useState(0);
 
-  // 历史栈支持撤销/重做 (Undo / Redo)
-  const [history, setHistory] = useState<HistoryState[]>([]);
-  const [future, setFuture] = useState<HistoryState[]>([]);
+  // 历史快照栈支持撤销/重做 (Undo / Redo)
+  const [history, setHistory] = useState<DraftSnapshot[]>([]);
+  const [future, setFuture] = useState<DraftSnapshot[]>([]);
 
-  // 试听区间、合并开关与封面策略
+  // 试听区间
   const [auditionRange, setAuditionRange] = useState<{ startMs: number; endMs: number } | null>(null);
-  const [concatSingleFile, setConcatSingleFile] = useState(true);
-  const [stripOriginalCover, setStripOriginalCover] = useState(true);
 
   // 播放状态与画面比例
   const [isPlaying, setIsPlaying] = useState(false);
@@ -65,8 +58,15 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
   // 执行与提示状态
   const [executing, setExecuting] = useState(false);
-  const [lastExportedPath, setLastExportedPath] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ type: 'success' | 'error' | 'warning'; message: string } | null>(null);
+
+  // 从领域模型派生数据（受 draftVersion 驱动响应式刷新）
+  const cuts = useMemo(() => (draft ? draft.getCuts() : []), [draft, draftVersion]);
+  const segments = useMemo(() => (draft ? draft.getSegments() : []), [draft, draftVersion]);
+  const keptDurationMs = useMemo(() => (draft ? draft.getKeptDurationMs() : 0), [draft, draftVersion]);
+  const discardedDurationMs = useMemo(() => (draft ? draft.getDiscardedDurationMs() : 0), [draft, draftVersion]);
+  const concatSingleFile = draft ? draft.concatSingleFile : true;
+  const stripOriginalCover = draft ? draft.stripOriginalCover : true;
 
   // 实时推导预定安全产物路径
   useEffect(() => {
@@ -90,10 +90,70 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     return () => {
       isCancelled = true;
     };
-  }, [metadata?.filePath, concatSingleFile, lastExportedPath]);
+  }, [metadata?.filePath, concatSingleFile]);
+
+
 
   const playerRef = useRef<VideoPlayerRef | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // 提交草稿操作变更至撤销栈
+  const commitDraftChange = useCallback(
+    (mutator: (d: RetentionDraft) => boolean | void) => {
+      if (!draft) return;
+      const snap = draft.snapshot();
+      const res = mutator(draft);
+      if (res !== false) {
+        setHistory((prev) => [...prev, snap]);
+        setFuture([]);
+        setDraftVersion((v) => v + 1);
+      }
+    },
+    [draft]
+  );
+
+  // 撤销操作 (Undo, Ctrl+Z)
+  const handleUndo = useCallback(() => {
+    if (!draft || history.length === 0) return;
+    const previous = history[history.length - 1];
+    const currentSnap = draft.snapshot();
+    setHistory((prev) => prev.slice(0, prev.length - 1));
+    setFuture((prev) => [currentSnap, ...prev]);
+    draft.restore(previous);
+    setDraftVersion((v) => v + 1);
+  }, [draft, history]);
+
+  // 重做操作 (Redo, Ctrl+Y / Ctrl+Shift+Z)
+  const handleRedo = useCallback(() => {
+    if (!draft || future.length === 0) return;
+    const next = future[0];
+    const currentSnap = draft.snapshot();
+    setFuture((prev) => prev.slice(1));
+    setHistory((prev) => [...prev, currentSnap]);
+    draft.restore(next);
+    setDraftVersion((v) => v + 1);
+  }, [draft, future]);
+
+  // 全局快捷键监听撤销与重做
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) return;
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleUndo, handleRedo]);
 
   // 双保险文件选择唤起逻辑 (Electron 原生对话框 + HTML5 文件选择器兜底)
   const handleChooseFile = async (e?: React.MouseEvent) => {
@@ -145,62 +205,12 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     }
   };
 
-  // 提交新状态至历史栈
-  const commitState = (newCuts: number[], newDecisions: Record<string, RetentionDecision>) => {
-    setHistory((prev) => [...prev, { cuts, decisions }]);
-    setFuture([]); // 产生新操作时清空未来重做栈
-    setCuts(newCuts);
-    setDecisions(newDecisions);
-  };
-
-  // 撤销操作 (Undo, Ctrl+Z)
-  const handleUndo = useCallback(() => {
-    if (history.length === 0) return;
-    const previous = history[history.length - 1];
-    setHistory((prev) => prev.slice(0, prev.length - 1));
-    setFuture((prev) => [{ cuts, decisions }, ...prev]);
-    setCuts(previous.cuts);
-    setDecisions(previous.decisions);
-  }, [history, cuts, decisions]);
-
-  // 重做操作 (Redo, Ctrl+Y / Ctrl+Shift+Z)
-  const handleRedo = useCallback(() => {
-    if (future.length === 0) return;
-    const next = future[0];
-    setFuture((prev) => prev.slice(1));
-    setHistory((prev) => [...prev, { cuts, decisions }]);
-    setCuts(next.cuts);
-    setDecisions(next.decisions);
-  }, [future, cuts, decisions]);
-
-  // 全局快捷键监听撤销与重做
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) return;
-
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
-        e.preventDefault();
-        if (e.shiftKey) {
-          handleRedo();
-        } else {
-          handleUndo();
-        }
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
-        e.preventDefault();
-        handleRedo();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUndo, handleRedo]);
-
   // 载入视频并探测关键帧 (两阶段秒开机制：300ms 快速出图，后台静默扫描关键帧并落盘缓存)
-  const loadAndProbeVideo = async (filePath: string) => {
+  const loadAndProbeVideo = async (filePath: string, recordToLoad?: PlanRecord | null) => {
     setIsLoading(true);
     setIsKeyframeScanning(false);
     setNotice(null);
-    setLastExportedPath(null);
-    try {
+        try {
       if (window.electronAPI) {
         // 第一阶段：极速读取基本元数据 (<300ms 秒开)
         const basicMeta = window.electronAPI.probeBasic
@@ -212,19 +222,14 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         setHistory([]);
         setFuture([]);
 
-        if (loadedPlanRecord && loadedPlanRecord.sourcePath === filePath) {
-          setCuts(loadedPlanRecord.cuts);
-          setDecisions(loadedPlanRecord.decisions);
-          if (loadedPlanRecord.concatSingleFile !== undefined) {
-            setConcatSingleFile(loadedPlanRecord.concatSingleFile);
-          }
-          if (loadedPlanRecord.stripOriginalCover !== undefined) {
-            setStripOriginalCover(loadedPlanRecord.stripOriginalCover);
-          }
+        let newDraft: RetentionDraft;
+        if (recordToLoad && recordToLoad.sourcePath === filePath) {
+          newDraft = RetentionDraft.fromRecord(recordToLoad, basicMeta.durationMs);
         } else {
-          setCuts([]);
-          setDecisions({});
+          newDraft = new RetentionDraft(filePath, basicMeta.durationMs);
         }
+        setDraft(newDraft);
+        setDraftVersion((v) => v + 1);
 
         // 瞬间解除整屏加载遮罩，播放器立即挂载并可播放
         setIsLoading(false);
@@ -253,88 +258,57 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
   useEffect(() => {
     if (initialVideoPath) {
-      loadAndProbeVideo(initialVideoPath);
+      loadAndProbeVideo(initialVideoPath, loadedPlanRecord);
     }
-  }, [initialVideoPath]);
-
-  // 动态分段列表计算
-  const calculateSegments = (): Segment[] => {
-    if (!metadata || metadata.durationMs <= 0) return [];
-
-    const sortedCuts = Array.from(new Set([0, ...cuts, metadata.durationMs])).sort((a, b) => a - b);
-    const segmentsList: Segment[] = [];
-
-    for (let i = 0; i < sortedCuts.length - 1; i++) {
-      const segId = `seg_${i}`;
-      const startMs = sortedCuts[i];
-      const endMs = sortedCuts[i + 1];
-      const decision = decisions[segId] !== undefined ? decisions[segId] : 'keep';
-
-      segmentsList.push({
-        id: segId,
-        index: i + 1,
-        startMs,
-        endMs,
-        durationMs: endMs - startMs,
-        decision,
-      });
-    }
-
-    return segmentsList;
-  };
-
-  const segments = calculateSegments();
+  }, [initialVideoPath, loadedPlanRecord]);
 
   // 插入切点
   const handleInsertCut = () => {
-    if (!metadata) return;
+    if (!draft || !metadata) return;
     const timeMs = playerRef.current ? playerRef.current.getCurrentTimeMs() : currentTimeMs;
+    let success = false;
+    commitDraftChange((d) => {
+      success = d.addCut(timeMs);
+      return success;
+    });
 
-    // 防止在开头或结尾插点
-    if (timeMs <= 200 || timeMs >= metadata.durationMs - 200) {
-      setNotice({ type: 'warning', message: '不能在视频首尾 200ms 内插入切点' });
-      return;
+    if (!success) {
+      setNotice({ type: 'warning', message: '切点距离视频首尾或已有标记过近 (需间隔 200ms 以上)' });
+    } else {
+      setNotice(null);
     }
-    // 防止与已有切点过近
-    const tooClose = cuts.some((c) => Math.abs(c - timeMs) < 200);
-    if (tooClose) {
-      setNotice({ type: 'warning', message: '切点距离已有标记过近 (需间隔 200ms 以上)' });
-      return;
-    }
-
-    const newCuts = [...cuts, timeMs].sort((a, b) => a - b);
-    commitState(newCuts, decisions);
-    setNotice(null);
   };
 
   // 删除特定切点
   const handleDeleteCut = (cutTimeMs: number) => {
-    const newCuts = cuts.filter((c) => c !== cutTimeMs);
-    commitState(newCuts, decisions);
-    setNotice({ type: 'warning', message: `已移除位于 ${formatTimecode(cutTimeMs, false)} 的切点标记` });
+    if (!draft) return;
+    let success = false;
+    commitDraftChange((d) => {
+      success = d.removeCut(cutTimeMs);
+      return success;
+    });
+    if (success) {
+      setNotice({ type: 'warning', message: `已移除位于 ${formatTimecode(cutTimeMs, false)} 的切点标记` });
+    }
   };
 
-  // 合并某分段至上一段
+  // 合并某分段至上一段（直接调用 RetentionDraft 领域方法，零字符串推导）
   const handleMergeSegment = (segmentId: string) => {
-    const segIndex = parseInt(segmentId.replace('seg_', ''), 10);
-    if (isNaN(segIndex) || segIndex === 0) return;
-
-    const cutIndexToRemove = segIndex - 1;
-    if (cuts[cutIndexToRemove] !== undefined) {
-      const removedCut = cuts[cutIndexToRemove];
-      const newCuts = cuts.filter((_, idx) => idx !== cutIndexToRemove);
-      commitState(newCuts, decisions);
-      setNotice({
-        type: 'warning',
-        message: `已删除位于 ${formatTimecode(removedCut, false)} 的切点，并合并相邻分段`,
-      });
-    }
+    if (!draft) return;
+    commitDraftChange((d) => {
+      return d.mergeSegmentWithPrevious(segmentId);
+    });
+    setNotice({
+      type: 'warning',
+      message: '已安全合并相邻分段（执行保留优先保全铁律）',
+    });
   };
 
   // 切换分段决策
   const handleToggleDecision = (segmentId: string, decision: RetentionDecision) => {
-    const newDecisions = { ...decisions, [segmentId]: decision };
-    commitState(cuts, newDecisions);
+    commitDraftChange((d) => {
+      d.setDecision(segmentId, decision);
+    });
   };
 
   // 试听
@@ -342,76 +316,53 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     setAuditionRange({ startMs, endMs });
   };
 
-  // 微调起点
+  // 微调起点（领域方法）
   const handleNudgeStart = (segmentId: string, deltaMs: number) => {
-    const segIndex = parseInt(segmentId.replace('seg_', ''), 10);
-    if (isNaN(segIndex) || segIndex === 0) return;
-
-    const cutIndex = segIndex - 1;
-    if (cuts[cutIndex] !== undefined) {
-      const updated = [...cuts];
-      updated[cutIndex] = Math.max(0, updated[cutIndex] + deltaMs);
-      commitState(updated.sort((a, b) => a - b), decisions);
-    }
+    if (!draft) return;
+    commitDraftChange((d) => {
+      return d.nudgeSegmentStart(segmentId, deltaMs);
+    });
   };
 
-  // 微调终点
+  // 微调终点（领域方法）
   const handleNudgeEnd = (segmentId: string, deltaMs: number) => {
-    const segIndex = parseInt(segmentId.replace('seg_', ''), 10);
-    if (isNaN(segIndex) || segIndex >= cuts.length) return;
-
-    const cutIndex = segIndex;
-    if (cuts[cutIndex] !== undefined) {
-      const updated = [...cuts];
-      updated[cutIndex] = Math.max(0, updated[cutIndex] + deltaMs);
-      commitState(updated.sort((a, b) => a - b), decisions);
-    }
+    if (!draft) return;
+    commitDraftChange((d) => {
+      return d.nudgeSegmentEnd(segmentId, deltaMs);
+    });
   };
 
-  // 统计计算
-  const keptDurationMs = segments.filter((s) => s.decision === 'keep').reduce((acc, s) => acc + s.durationMs, 0);
-  const discardedDurationMs = segments.filter((s) => s.decision === 'discard').reduce((acc, s) => acc + s.durationMs, 0);
+  // 切换多段合并偏好
+  const handleToggleConcat = (val: boolean) => {
+    commitDraftChange((d) => {
+      d.concatSingleFile = val;
+    });
+  };
 
-  // 构建方案
-  const buildCurrentPlan = async (): Promise<MediaRetentionPlan | null> => {
-    if (!metadata || !window.electronAPI) return null;
-    const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, concatSingleFile);
+  // 切换首帧封面剥离偏好
+  const handleToggleCover = (val: boolean) => {
+    commitDraftChange((d) => {
+      d.stripOriginalCover = val;
+    });
+  };
 
-    return planRetention(
-      metadata.filePath,
-      metadata.durationMs,
-      segments,
-      metadata.keyframes,
-      outPath,
-      concatSingleFile,
-      stripOriginalCover
-    );
+  // 统一构建持久化方案记录
+  const buildCurrentRecord = async (): Promise<PlanRecord | null> => {
+    if (!draft || !metadata || !window.electronAPI) return null;
+    const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.concatSingleFile);
+    const planId = loadedPlanRecord ? loadedPlanRecord.id : `plan_${Date.now()}`;
+    return draft.toRecord({
+      id: planId,
+      title: metadata.fileName,
+      outputPath: outPath,
+    });
   };
 
   // 存为方案
   const handleSavePlan = async () => {
-    if (!metadata || !window.electronAPI) return;
     try {
-      const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, concatSingleFile);
-      const planId = loadedPlanRecord ? loadedPlanRecord.id : `plan_${Date.now()}`;
-
-      const record: PlanRecord = {
-        id: planId,
-        title: metadata.fileName,
-        sourcePath: metadata.filePath,
-        outputPath: outPath,
-        totalDurationMs: metadata.durationMs,
-        keptDurationMs,
-        cutsCount: cuts.length,
-        status: 'ready',
-        updatedAt: new Date().toISOString(),
-        completedAt: null,
-        cuts,
-        decisions,
-        concatSingleFile,
-        stripOriginalCover,
-      };
-
+      const record = await buildCurrentRecord();
+      if (!record || !window.electronAPI) return;
       await window.electronAPI.savePlan(record);
       setNotice({ type: 'success', message: '方案已成功保存至本地方案中心！' });
       if (onPlanSaved) onPlanSaved();
@@ -420,71 +371,33 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     }
   };
 
-  // 立即执行剪辑
+  // 立即执行剪辑（秒级移交后台异步引擎，不阻塞工作台）
   const handleExecuteCut = async () => {
-    if (!metadata || !window.electronAPI) return;
     setExecuting(true);
     setNotice(null);
 
     try {
-      const plan = await buildCurrentPlan();
-      if (!plan) throw new Error('无法生成剪辑方案');
-      if (plan.blockers.length > 0) throw new Error(plan.blockers.join('; '));
+      const record = await buildCurrentRecord();
+      if (!record || !window.electronAPI) return;
+      const res = await window.electronAPI.submitDraft(record);
+      if (onPlanSaved) onPlanSaved();
 
-      const result = await window.electronAPI.executeCut(plan);
-
-      if (result.success) {
-        setLastExportedPath(result.outputPath);
-        const isMultiSeg = !concatSingleFile && plan.planSegments.length > 1;
-        setNotice({
-          type: 'success',
-          message: isMultiSeg
-            ? `剪辑成功！已独立切出 ${plan.planSegments.length} 个视频片段至目标目录 (首段: ${result.outputPath.split(/[\\/]/).pop()})`
-            : `剪辑成功！产物已导出至: ${result.outputPath}`,
-        });
-
-        const record: PlanRecord = {
-          id: loadedPlanRecord ? loadedPlanRecord.id : `plan_${Date.now()}`,
-          title: metadata.fileName,
-          sourcePath: metadata.filePath,
-          outputPath: result.outputPath,
-          totalDurationMs: metadata.durationMs,
-          keptDurationMs,
-          cutsCount: cuts.length,
-          status: 'completed',
-          updatedAt: new Date().toISOString(),
-          completedAt: new Date().toISOString(),
-          cuts,
-          decisions,
-          concatSingleFile,
-          stripOriginalCover,
-        };
-        await window.electronAPI.savePlan(record);
-        if (onPlanSaved) onPlanSaved();
-      } else {
-        setNotice({ type: 'error', message: result.error || '剪辑执行失败' });
-      }
+      setNotice({
+        type: 'success',
+        message: res.queued
+          ? '方案已排入后台剪辑队列等待执行（可在方案中心查看实时进度）'
+          : '方案已移交后台异步引擎正在处理，导出完成将自动弹出通知（可在方案中心查看）',
+      });
     } catch (err: any) {
-      setNotice({ type: 'error', message: err.message || '执行过程发生异常' });
+      setNotice({ type: 'error', message: err.message || '提交剪辑任务失败' });
     } finally {
       setExecuting(false);
     }
   };
 
-  // 在系统文件管理器中定位产物
-  const handleRevealInExplorer = () => {
-    if (lastExportedPath && window.electronAPI) {
-      window.electronAPI.showItemInFolder(lastExportedPath);
-    }
-  };
-
-  // 打开输出目录 (如果有导出产物则定位产物，否则直达输出目录或原视频所在文件夹)
+  // 打开输出目录
   const handleOpenOutputFolder = async () => {
     if (!window.electronAPI) return;
-    if (lastExportedPath) {
-      window.electronAPI.showItemInFolder(lastExportedPath);
-      return;
-    }
     if (metadata?.filePath) {
       try {
         const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath);
@@ -495,7 +408,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     }
   };
 
-  // 选择自定义输出目录 (唤起系统原生选择目录对话框并实时更新预显路径)
+  // 选择自定义输出目录
   const handleSelectOutputDir = async () => {
     if (!window.electronAPI) return;
     try {
@@ -640,7 +553,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   return (
     <div className="flex-1 h-full overflow-hidden px-4 sm:px-6 xl:px-8 py-3 flex flex-col relative min-h-0">
       <div className="w-full max-w-[1360px] mx-auto space-y-2 flex-1 flex flex-col min-h-0">
-        {/* 1. 纯净视频画面视窗 (Video Viewport: 100% 视频呈现，弹性拉满) */}
+        {/* 1. 纯净视频画面视窗 */}
         <VideoPlayer
           ref={playerRef}
           videoPath={metadata.filePath}
@@ -653,13 +566,13 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           onAuditionEnd={() => setAuditionRange(null)}
         />
 
-        {/* 2. 主时间轴控制台 (Timeline Console: 二合一整合控制条与 Canvas 时间轨) */}
+        {/* 2. 主时间轴控制台 */}
         <div className="shrink-0">
           <Timeline
             durationMs={metadata.durationMs}
             currentTimeMs={currentTimeMs}
             keyframes={metadata.keyframes}
-            cuts={cuts}
+            cuts={cuts as number[]}
             segments={segments}
             isPlaying={isPlaying}
             aspectRatioMode={aspectRatioMode}
@@ -722,7 +635,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           </div>
         </div>
 
-        {/* 4. 精炼双行分段卡片流 (单卡锁定 72px 黄金高度，抗挤压排版，零垂直滚动条) */}
+        {/* 4. 精炼双行分段卡片流 */}
         <div className="max-h-[160px] shrink-0 overflow-y-auto overflow-x-hidden pr-0.5">
           <SegmentCardsGrid
             segments={segments}
@@ -735,10 +648,10 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           />
         </div>
 
-        {/* 5. 底部固定状态 Dock 栏 (深度自适应与防溢出优化，无缝适应小屏与高 DPI) */}
+        {/* 5. 底部固定状态 Dock 栏 */}
         <div className="mt-auto shrink-0 pt-1 pb-1">
           <div className="px-3 py-2 rounded-2xl bg-[#161b22]/95 border border-white/10 shadow-2xl backdrop-blur-md flex flex-wrap lg:flex-nowrap items-center justify-between gap-2 min-w-0">
-            {/* 左侧：统计指标与预定产物名 (自适应收纳与截断保护) */}
+            {/* 左侧：统计指标与预定产物名 */}
             <div className="flex items-center gap-2 sm:gap-2.5 text-xs font-mono shrink min-w-0">
               <div className="whitespace-nowrap hidden 2xl:block">
                 <span className="text-zinc-400">原片:</span>{' '}
@@ -758,7 +671,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                 <span className="hidden sm:inline text-amber-400"> 个</span>
               </div>
 
-              {/* 实时预定产物文件名预览 (点击可在资源管理器中打开，支持弹性截断) */}
+              {/* 实时预定产物文件名预览 */}
               {safeOutputPath && (
                 <div
                   onClick={handleOpenOutputFolder}
@@ -773,13 +686,13 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               )}
             </div>
 
-            {/* 中间：剪辑偏好选项组 (合并单文件 + 首帧封面策略，文案响应式简写) */}
+            {/* 中间：剪辑偏好选项组 */}
             <div className="flex items-center gap-2 sm:gap-2.5 text-xs text-zinc-300 select-none shrink-0 mx-0.5">
               <label className="flex items-center gap-1 cursor-pointer hover:text-white transition-colors" title="多个保留片段是否拼接合并为一个视频文件">
                 <input
                   type="checkbox"
                   checked={concatSingleFile}
-                  onChange={(e) => setConcatSingleFile(e.target.checked)}
+                  onChange={(e) => handleToggleConcat(e.target.checked)}
                   className="w-3.5 h-3.5 accent-blue-500 rounded cursor-pointer"
                 />
                 <span>
@@ -792,7 +705,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                 <input
                   type="checkbox"
                   checked={stripOriginalCover}
-                  onChange={(e) => setStripOriginalCover(e.target.checked)}
+                  onChange={(e) => handleToggleCover(e.target.checked)}
                   className="w-3.5 h-3.5 accent-blue-500 rounded cursor-pointer"
                 />
                 <span>
@@ -801,9 +714,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               </label>
             </div>
 
-            {/* 右侧动作按钮组 (紧凑排布，零溢出保证) */}
+            {/* 右侧动作按钮组 */}
             <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 ml-auto lg:ml-0">
-              {/* 输出目录组合按键：点击更改目录，侧边一键打开 */}
               <div className="flex items-center bg-white/5 rounded-xl border border-white/10 overflow-hidden text-xs">
                 <button
                   onClick={handleSelectOutputDir}
@@ -835,11 +747,12 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                 disabled={executing || keptDurationMs === 0}
                 onClick={handleExecuteCut}
                 className="px-3 sm:px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-lg shadow-emerald-500/20 active:scale-95 border border-emerald-400/30 focus-visible:ring-2 focus-visible:ring-emerald-400 shrink-0 whitespace-nowrap"
+                title="将当前方案移交后台异步引擎无损剪辑，完成后弹出通知"
               >
                 {executing ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>无损流拷贝剪辑中...</span>
+                    <span>提交后台中...</span>
                   </>
                 ) : (
                   <>
@@ -853,7 +766,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         </div>
       </div>
 
-      {/* 6. 就近浮动通知 Toast (在底部 Dock 栏正上方浮动展示，聚焦视线，不挤占页面布局) */}
+      {/* 6. 就近浮动通知 Toast */}
       {notice && (
         <div
           className={`absolute bottom-20 left-1/2 -translate-x-1/2 z-50 max-w-[700px] w-auto px-4 py-2.5 rounded-2xl border text-xs flex items-center gap-3 shadow-2xl backdrop-blur-md transition-all animate-in fade-in slide-in-from-bottom-3 ${
@@ -874,15 +787,6 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           </div>
 
           <div className="flex items-center gap-2 shrink-0 ml-auto">
-            {notice.type === 'success' && lastExportedPath && (
-              <button
-                onClick={handleRevealInExplorer}
-                className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center gap-1.5 transition-all shadow-sm active:scale-95 text-[11px]"
-              >
-                <FolderOpen className="w-3.5 h-3.5" />
-                <span>定位产物</span>
-              </button>
-            )}
             <button
               onClick={() => setNotice(null)}
               className="text-zinc-400 hover:text-white text-xs px-1 hover:bg-white/10 rounded transition-colors"

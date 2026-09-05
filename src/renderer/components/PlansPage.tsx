@@ -13,6 +13,7 @@ import {
   FolderOpen,
   Loader2,
   Check,
+  AlertCircle,
 } from 'lucide-react';
 import { formatTimecode } from './VideoPlayer';
 
@@ -22,7 +23,7 @@ interface PlansPageProps {
 
 export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) => {
   const [plans, setPlans] = useState<PlanRecord[]>([]);
-  const [filter, setFilter] = useState<'all' | 'ready' | 'completed'>('all');
+  const [filter, setFilter] = useState<'all' | 'ready' | 'processing' | 'completed' | 'failed'>('all');
   const [loading, setLoading] = useState(false);
   const [executingId, setExecutingId] = useState<string | null>(null);
   const [batchRunning, setBatchRunning] = useState(false);
@@ -44,6 +45,19 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
 
   useEffect(() => {
     fetchPlans();
+
+    if (window.electronAPI) {
+      const unsubStatus = window.electronAPI.onPlanStatusChanged?.(() => {
+        fetchPlans();
+      });
+      const unsubCompleted = window.electronAPI.onPlanCompleted?.(() => {
+        fetchPlans();
+      });
+      return () => {
+        if (unsubStatus) unsubStatus();
+        if (unsubCompleted) unsubCompleted();
+      };
+    }
   }, []);
 
   const handleExecuteSingle = async (planId: string) => {
@@ -98,12 +112,16 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
   // 过滤方案
   const filteredPlans = plans.filter((p) => {
     if (filter === 'ready') return p.status === 'ready';
+    if (filter === 'processing') return p.status === 'processing';
     if (filter === 'completed') return p.status === 'completed';
+    if (filter === 'failed') return p.status === 'failed';
     return true;
   });
 
   const readyCount = plans.filter((p) => p.status === 'ready').length;
+  const processingCount = plans.filter((p) => p.status === 'processing').length;
   const completedCount = plans.filter((p) => p.status === 'completed').length;
+  const failedCount = plans.filter((p) => p.status === 'failed').length;
 
   return (
     <div className="flex-1 h-full overflow-y-auto px-8 py-6">
@@ -119,7 +137,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
               </span>
             </h1>
             <p className="text-xs text-zinc-400 mt-1">
-              集中管理所有持久化保存的剪辑方案，已完成剪辑方案清晰标记，支持批量极速无损导出
+              集中管理所有持久化保存的剪辑方案，后台异步队列无缝调度，已完成方案支持一键定位产物
             </p>
           </div>
 
@@ -134,7 +152,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                     : 'text-zinc-400 hover:text-white'
                 }`}
               >
-                全部方案 ({plans.length})
+                全部 ({plans.length})
               </button>
               <button
                 onClick={() => setFilter('ready')}
@@ -147,6 +165,19 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                 <Clock className="w-3.5 h-3.5 text-amber-400" />
                 <span>待执行 ({readyCount})</span>
               </button>
+              {processingCount > 0 && (
+                <button
+                  onClick={() => setFilter('processing')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all focus-visible:ring-2 focus-visible:ring-blue-500 ${
+                    filter === 'processing'
+                      ? 'bg-blue-600 text-white shadow-sm font-bold animate-pulse'
+                      : 'text-blue-400 hover:text-white'
+                  }`}
+                >
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
+                  <span>剪辑中 ({processingCount})</span>
+                </button>
+              )}
               <button
                 onClick={() => setFilter('completed')}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all focus-visible:ring-2 focus-visible:ring-emerald-500 ${
@@ -156,8 +187,21 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                 }`}
               >
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                <span>已完成剪辑 ({completedCount})</span>
+                <span>已完成 ({completedCount})</span>
               </button>
+              {failedCount > 0 && (
+                <button
+                  onClick={() => setFilter('failed')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all focus-visible:ring-2 focus-visible:ring-rose-500 ${
+                    filter === 'failed'
+                      ? 'bg-rose-600 text-white shadow-sm font-bold'
+                      : 'text-rose-400 hover:text-white'
+                  }`}
+                >
+                  <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
+                  <span>失败 ({failedCount})</span>
+                </button>
+              )}
             </div>
 
             {/* 批量执行按钮 */}
@@ -170,7 +214,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                 {batchRunning ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>批量剪辑中...</span>
+                    <span>批量排队中...</span>
                   </>
                 ) : (
                   <>
@@ -197,13 +241,15 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
             <FolderKanban className="w-12 h-12 text-zinc-600 mb-3" />
             <h3 className="text-sm font-semibold text-zinc-300">当前分类暂无方案记录</h3>
             <p className="text-xs text-zinc-400 mt-1 max-w-[360px] text-center">
-              在工作台载入视频并打标后，点击【存为方案】或【立即执行剪辑】，对应方案将自动保存并出现在这里。
+              在工作台载入视频并打标后，点击【存为方案】或【立即执行剪辑】，方案将自动保存至本中心并在后台队列异步调度。
             </p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {filteredPlans.map((plan) => {
               const isCompleted = plan.status === 'completed';
+              const isProcessing = plan.status === 'processing';
+              const isFailed = plan.status === 'failed';
               const isRunning = executingId === plan.id;
 
               return (
@@ -212,6 +258,10 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                   className={`p-5 rounded-2xl border transition-all shadow-xl flex flex-col justify-between ${
                     isCompleted
                       ? 'bg-[#161b22]/90 border-emerald-500/30'
+                      : isProcessing
+                      ? 'bg-[#161b22]/90 border-blue-500/40 shadow-blue-500/10'
+                      : isFailed
+                      ? 'bg-[#161b22]/90 border-rose-500/30'
                       : 'bg-[#161b22]/80 border-white/10 hover:border-blue-500/30'
                   }`}
                 >
@@ -231,6 +281,16 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
                           <span>已完成剪辑</span>
                         </span>
+                      ) : isProcessing ? (
+                        <span className="shrink-0 text-xs bg-blue-500/20 text-blue-300 border border-blue-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-bold animate-pulse">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
+                          <span>⚡ 后台剪辑中...</span>
+                        </span>
+                      ) : isFailed ? (
+                        <span className="shrink-0 text-xs bg-rose-500/20 text-rose-300 border border-rose-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-medium">
+                          <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
+                          <span>✖ 执行失败</span>
+                        </span>
                       ) : (
                         <span className="shrink-0 text-xs bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-medium">
                           <Clock className="w-3.5 h-3.5 text-amber-400" />
@@ -238,6 +298,14 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                         </span>
                       )}
                     </div>
+
+                    {/* 失败原因提示 */}
+                    {isFailed && plan.error && (
+                      <div className="mb-3 p-2 rounded-xl bg-rose-950/30 border border-rose-500/20 text-[11px] font-sans text-rose-300 flex items-center gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0 text-rose-400" />
+                        <span className="truncate" title={plan.error}>失败原因: {plan.error}</span>
+                      </div>
+                    )}
 
                     {/* 产物路径展示 (已完成时醒目展示 + 一键定位) */}
                     {isCompleted && plan.outputPath && (
@@ -257,7 +325,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                       </div>
                     )}
 
-                    {/* 统计指标行 (text-zinc-400 满足 WCAG AA 4.5:1 对比度) */}
+                    {/* 统计指标行 */}
                     <div className="grid grid-cols-3 gap-2 py-2 px-3 rounded-xl bg-black/40 border border-white/5 text-xs font-mono mb-3">
                       <div>
                         <span className="text-zinc-400 text-[10px] block">切点数</span>
@@ -289,7 +357,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                       <button
                         onClick={() => handleCopyJson(plan)}
                         className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white transition-all focus-visible:ring-2 focus-visible:ring-blue-500"
-                        title="复制方案 JSON (兼容 JA_WORKSPACE)"
+                        title="复制方案 JSON"
                       >
                         {copiedId === plan.id ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                       </button>
@@ -304,33 +372,70 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                         <span>编辑</span>
                       </button>
 
-                      {/* 立即执行 / 重新导出 */}
-                      <button
-                        disabled={isRunning}
-                        onClick={() => handleExecuteSingle(plan.id)}
-                        className={`px-3 py-1.5 rounded-lg text-white font-semibold flex items-center gap-1.5 transition-all shadow-md active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-blue-500 ${
-                          isCompleted
-                            ? 'bg-zinc-700 hover:bg-zinc-600'
-                            : 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-500/20'
-                        }`}
-                      >
-                        {isRunning ? (
-                          <>
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            <span>剪辑中...</span>
-                          </>
-                        ) : isCompleted ? (
-                          <>
-                            <RefreshCw className="w-3.5 h-3.5" />
-                            <span>↻ 重新导出</span>
-                          </>
-                        ) : (
-                          <>
-                            <Rocket className="w-3.5 h-3.5" />
-                            <span>🚀 立即执行</span>
-                          </>
-                        )}
-                      </button>
+                      {/* 立即执行 / 重新导出 / 重试 */}
+                      {isProcessing ? (
+                        <button
+                          disabled={true}
+                          className="px-3 py-1.5 rounded-lg text-white font-semibold flex items-center gap-1.5 bg-blue-600/50 cursor-not-allowed opacity-80 text-xs"
+                        >
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>后台处理中...</span>
+                        </button>
+                      ) : isFailed ? (
+                        <button
+                          disabled={isRunning}
+                          onClick={() => handleExecuteSingle(plan.id)}
+                          className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold flex items-center gap-1.5 transition-all shadow-md active:scale-95 text-xs focus-visible:ring-2 focus-visible:ring-rose-400"
+                        >
+                          {isRunning ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>排队中...</span>
+                            </>
+                          ) : (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5" />
+                              <span>↻ 重试剪辑</span>
+                            </>
+                          )}
+                        </button>
+                      ) : isCompleted ? (
+                        <button
+                          disabled={isRunning}
+                          onClick={() => handleExecuteSingle(plan.id)}
+                          className="px-3 py-1.5 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-white font-semibold flex items-center gap-1.5 transition-all shadow-md active:scale-95 text-xs focus-visible:ring-2 focus-visible:ring-blue-500"
+                        >
+                          {isRunning ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>排队中...</span>
+                            </>
+                          ) : (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5" />
+                              <span>↻ 重新导出</span>
+                            </>
+                          )}
+                        </button>
+                      ) : (
+                        <button
+                          disabled={isRunning}
+                          onClick={() => handleExecuteSingle(plan.id)}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 shadow-emerald-500/20 text-white font-semibold flex items-center gap-1.5 transition-all shadow-md active:scale-95 text-xs focus-visible:ring-2 focus-visible:ring-emerald-400"
+                        >
+                          {isRunning ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>提交中...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Rocket className="w-3.5 h-3.5" />
+                              <span>🚀 立即执行</span>
+                            </>
+                          )}
+                        </button>
+                      )}
 
                       {/* 删除按钮 */}
                       <button

@@ -5,9 +5,9 @@ import { Readable } from 'stream';
 import { fileURLToPath } from 'url';
 import { ConfigService } from '../src/main/services/ConfigService';
 import { KeyframeProber } from '../src/main/services/KeyframeProber';
-import { FFmpegExecutor } from '../src/main/services/FFmpegExecutor';
+import { MediaCuttingEngine } from '../src/main/services/MediaCuttingEngine';
 import { PlanManager } from '../src/main/services/PlanManager';
-import { AppConfig, MediaRetentionPlan, PlanRecord } from '../src/shared/types';
+import { AppConfig, PlanRecord } from '../src/shared/types';
 
 // 全局彻底移除应用菜单，防止 Windows 下用户按 Alt 键唤出原生菜单栏
 Menu.setApplicationMenu(null);
@@ -49,7 +49,7 @@ app.setPath('userData', tempUserData);
 // 服务实例生命周期持有者
 let configService: ConfigService;
 let prober: KeyframeProber;
-let executor: FFmpegExecutor;
+let cuttingEngine: MediaCuttingEngine;
 let planManager: PlanManager;
 
 let mainWindow: BrowserWindow | null = null;
@@ -128,7 +128,8 @@ ipcMain.handle('media:probe', async (_event, filePath: string) => prober.probe(f
 ipcMain.handle('media:probeBasic', async (_event, filePath: string) => prober.probeBasic(filePath));
 ipcMain.handle('media:probeKeyframes', async (_event, filePath: string) => prober.probeKeyframes(filePath));
 
-ipcMain.handle('cut:execute', async (_event, plan: MediaRetentionPlan) => executor.executePlan(plan));
+// 剪辑引擎与后台任务
+ipcMain.handle('engine:submitDraft', async (_event, record: PlanRecord) => planManager.submitDraft(record));
 
 ipcMain.handle('plan:list', async () => planManager.listPlans());
 ipcMain.handle('plan:save', async (_event, record: PlanRecord) => planManager.savePlan(record));
@@ -181,10 +182,10 @@ ipcMain.handle('dialog:selectDirectory', async (_event, defaultPath?: string) =>
 });
 
 app.whenReady().then(async () => {
-  // 1. 获取物理宿主目录（优先支持外置跳板启动器注入的 VCT_WORKSPACE_DIR，其次兼容 portable 环境变量与 exe 宿主目录）
+  // 1. 获取物理宿主目录
   const exeDir = process.env.VCT_WORKSPACE_DIR || process.env.PORTABLE_EXECUTABLE_DIR || (app.isPackaged ? path.dirname(app.getPath('exe')) : process.cwd());
 
-  // 2. 探测同级目录是否已配置有效数据目录（优先读取 workspace.json）
+  // 2. 探测同级目录是否已配置有效数据目录
   const resolution = ConfigService.resolveDataDirectory(exeDir);
   let effectiveDataDir = resolution.dataDir;
 
@@ -214,18 +215,26 @@ app.whenReady().then(async () => {
   const currentConfig = configService.getConfig();
   const tempSlicesDir = path.resolve(process.cwd(), '../videoCutTool_tmp/slices');
   prober = new KeyframeProber(currentConfig.ffprobePath);
-  executor = new FFmpegExecutor(currentConfig.ffmpegPath, tempSlicesDir);
-  planManager = new PlanManager(configService.getDataDirectory(), executor, prober);
+  cuttingEngine = new MediaCuttingEngine(currentConfig.ffmpegPath, tempSlicesDir);
+  planManager = new PlanManager(configService.getDataDirectory(), cuttingEngine, prober);
+
+  // 绑定引擎状态变动至渲染层窗口广播
+  cuttingEngine.setStatusListener((event) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('plan:statusChanged', event);
+      if (event.status === 'completed') {
+        mainWindow.webContents.send('plan:completed', event);
+      }
+    }
+  });
 
   // 注册本地流媒体协议: media://video?path=...
-  // 支持 HTTP 206 Partial Content (Range 请求)，杜绝拖拽进度条回弹至 0 秒
   protocol.handle('media', (request) => {
     try {
       const parsed = new URL(request.url);
       let filePath = parsed.searchParams.get('path');
 
       if (!filePath) {
-        // 兼容旧版或直接 pathname 模式
         const raw = decodeURIComponent(parsed.pathname || request.url.replace(/^media:\/\//, ''));
         filePath = raw.replace(/^\/([a-zA-Z]:)/, '$1').replace(/^([a-zA-Z])\//, '$1:/');
       }
@@ -241,7 +250,6 @@ app.whenReady().then(async () => {
       const rangeHeader = request.headers.get('range');
 
       if (rangeHeader) {
-        // 解析 Range 头: bytes=start-end 或 bytes=start-
         const match = /bytes=(\d+)-(\d+)?/.exec(rangeHeader);
         if (match) {
           const start = parseInt(match[1], 10);
@@ -274,7 +282,6 @@ app.whenReady().then(async () => {
         }
       }
 
-      // 未携带 Range 头时以 200 流式返回，并声明支持字节寻址
       const nodeStream = fs.createReadStream(filePath);
       const webStream = Readable.toWeb(nodeStream) as ReadableStream<Uint8Array>;
 

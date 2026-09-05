@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import { AppConfig, MediaMetadata, MediaRetentionPlan, CutResult, PlanRecord } from '../src/shared/types';
+import { AppConfig, MediaMetadata, PlanRecord } from '../src/shared/types';
 
 contextBridge.exposeInMainWorld('electronAPI', {
   getPathForFile: (file: File): string => {
@@ -22,14 +22,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
   probeBasic: (filePath: string): Promise<MediaMetadata> => ipcRenderer.invoke('media:probeBasic', filePath),
   probeKeyframes: (filePath: string): Promise<number[]> => ipcRenderer.invoke('media:probeKeyframes', filePath),
 
-  // 执行裁剪
-  executeCut: (plan: MediaRetentionPlan): Promise<CutResult> => ipcRenderer.invoke('cut:execute', plan),
+  // 执行裁剪与后台引擎
+  submitDraft: (record: PlanRecord): Promise<{ queued: boolean; active: boolean }> => ipcRenderer.invoke('engine:submitDraft', record),
+  onPlanStatusChanged: (callback: (event: { planId: string; status: 'processing' | 'completed' | 'failed'; outputPath?: string; error?: string; record?: PlanRecord }) => void) => {
+    const handler = (_event: any, data: any) => callback(data);
+    ipcRenderer.on('plan:statusChanged', handler);
+    return () => {
+      ipcRenderer.removeListener('plan:statusChanged', handler);
+    };
+  },
+  onPlanCompleted: (callback: (event: { planId: string; status: 'completed'; outputPath?: string; record?: PlanRecord }) => void) => {
+    const handler = (_event: any, data: any) => callback(data);
+    ipcRenderer.on('plan:completed', handler);
+    return () => {
+      ipcRenderer.removeListener('plan:completed', handler);
+    };
+  },
 
   // 方案管理
   listPlans: (): Promise<PlanRecord[]> => ipcRenderer.invoke('plan:list'),
   savePlan: (record: PlanRecord): Promise<PlanRecord> => ipcRenderer.invoke('plan:save', record),
   deletePlan: (id: string): Promise<boolean> => ipcRenderer.invoke('plan:delete', id),
-  executePlan: (id: string): Promise<CutResult> => ipcRenderer.invoke('plan:execute', id),
-  batchExecutePlans: (): Promise<{ total: number; succeeded: number; failed: number }> => ipcRenderer.invoke('plan:batchExecute'),
+  executePlan: (id: string): Promise<{ success: boolean; message: string; queued?: boolean; active?: boolean }> => ipcRenderer.invoke('plan:execute', id),
+  batchExecutePlans: (): Promise<{ total: number; queued: number }> => ipcRenderer.invoke('plan:batchExecute'),
   showItemInFolder: (fullPath: string): Promise<void> => ipcRenderer.invoke('shell:showItemInFolder', fullPath),
 });

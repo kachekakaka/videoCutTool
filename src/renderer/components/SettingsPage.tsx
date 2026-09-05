@@ -257,6 +257,22 @@ export const SettingsPage: React.FC = () => {
                   className="w-4 h-4 accent-blue-500 rounded cursor-pointer"
                 />
               </div>
+              <div className="mt-3 flex items-center justify-between p-3 rounded-xl bg-white/[0.02] border border-white/5">
+                <div>
+                  <div className="text-sm font-semibold text-white">后台导出完成时弹出通知</div>
+                  <div className="text-xs text-zinc-400">视频在后台静默剪辑完成时，在界面右上角弹出带“定位产物”的通知浮层</div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={config.notifyOnExportComplete !== false}
+                  onChange={(e) => {
+                    const updated = { ...config, notifyOnExportComplete: e.target.checked };
+                    setConfig(updated);
+                    persistConfig(updated);
+                  }}
+                  className="w-4 h-4 accent-blue-500 rounded cursor-pointer"
+                />
+              </div>
             </div>
 
             {/* 本地环境持久化路径 */}

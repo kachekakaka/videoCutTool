@@ -17,15 +17,17 @@ export interface ElectronAPI {
   probeBasic: (filePath: string) => Promise<MediaMetadata>;
   probeKeyframes: (filePath: string) => Promise<number[]>;
 
-  // 剪辑执行
-  executeCut: (plan: MediaRetentionPlan) => Promise<CutResult>;
+  // 剪辑执行与后台引擎
+  submitDraft: (record: PlanRecord) => Promise<{ queued: boolean; active: boolean }>;
+  onPlanStatusChanged: (callback: (event: { planId: string; status: 'processing' | 'completed' | 'failed'; outputPath?: string; error?: string; record?: PlanRecord }) => void) => () => void;
+  onPlanCompleted: (callback: (event: { planId: string; status: 'completed'; outputPath?: string; record?: PlanRecord }) => void) => () => void;
 
   // 方案管理
   listPlans: () => Promise<PlanRecord[]>;
   savePlan: (record: PlanRecord) => Promise<PlanRecord>;
   deletePlan: (id: string) => Promise<boolean>;
-  executePlan: (id: string) => Promise<CutResult>;
-  batchExecutePlans: () => Promise<{ total: number; succeeded: number; failed: number }>;
+  executePlan: (id: string) => Promise<{ success: boolean; message: string; queued?: boolean; active?: boolean }>;
+  batchExecutePlans: () => Promise<{ total: number; queued: number }>;
   showItemInFolder: (fullPath: string) => Promise<void>;
 }
 

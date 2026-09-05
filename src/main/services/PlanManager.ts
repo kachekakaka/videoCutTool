@@ -1,28 +1,37 @@
 import fs from 'fs';
 import path from 'path';
-import { PlanRecord, CutResult, MediaRetentionPlan, Segment } from '../../shared/types';
-import { FFmpegExecutor } from './FFmpegExecutor';
-import { planRetention } from '../../shared/RetentionPlanner';
+import { PlanRecord } from '../../shared/types';
+import { MediaCuttingEngine } from './MediaCuttingEngine';
 import { KeyframeProber } from './KeyframeProber';
 
 /**
  * PlanManager: 方案管理器
- * 遵循 CONTEXT.md 领域模型契约，管理 Retention Plan 记录的持久化 CRUD 与生命周期状态机
+ * 遵循 CONTEXT.md 领域模型契约，管理 Retention Plan 记录的持久化 CRUD
+ * 并与 MediaCuttingEngine 协同提供后台队列调度与状态机持久化
  */
 export class PlanManager {
   private plansDir: string;
-  private executor: FFmpegExecutor;
+  private engine: MediaCuttingEngine;
   private prober: KeyframeProber;
 
-  constructor(dataOrPlansDir: string = process.cwd(), executor: FFmpegExecutor, prober: KeyframeProber) {
+  constructor(
+    dataOrPlansDir: string = process.cwd(),
+    engine: MediaCuttingEngine,
+    prober: KeyframeProber
+  ) {
     const resolved = path.resolve(dataOrPlansDir);
     this.plansDir = path.basename(resolved) === 'plans' ? resolved : path.join(resolved, 'plans');
-    this.executor = executor;
+    this.engine = engine;
     this.prober = prober;
 
     if (!fs.existsSync(this.plansDir)) {
       fs.mkdirSync(this.plansDir, { recursive: true });
     }
+
+    // 绑定引擎的方案持久化落盘回调
+    this.engine.setPlanSaver((record) => {
+      this.savePlan(record);
+    });
   }
 
   /**
@@ -31,7 +40,7 @@ export class PlanManager {
   public listPlans(): PlanRecord[] {
     try {
       if (!fs.existsSync(this.plansDir)) return [];
-      const files = fs.readdirSync(this.plansDir).filter(f => f.endsWith('.json'));
+      const files = fs.readdirSync(this.plansDir).filter((f) => f.endsWith('.json'));
       const plans: PlanRecord[] = [];
 
       for (const file of files) {
@@ -50,6 +59,20 @@ export class PlanManager {
     } catch (err) {
       console.error('读取方案列表失败:', err);
       return [];
+    }
+  }
+
+  /**
+   * 获取单个方案
+   */
+  public getPlan(id: string): PlanRecord | null {
+    const filePath = path.join(this.plansDir, `${id}.json`);
+    if (!fs.existsSync(filePath)) return null;
+    try {
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      return JSON.parse(raw) as PlanRecord;
+    } catch {
+      return null;
     }
   }
 
@@ -84,94 +107,51 @@ export class PlanManager {
   }
 
   /**
-   * 将持久化记录转换为物理可执行的无损切片规划契约
+   * 提交草稿至后台引擎执行（工作台“立即执行”入口）
    */
-  public buildRetentionPlanFromRecord(record: PlanRecord, durationMs: number, keyframes: number[]): MediaRetentionPlan {
-    const cuts = [0, ...record.cuts, durationMs].sort((a, b) => a - b);
-    const uniqueCuts = Array.from(new Set(cuts));
-    const segments: Segment[] = [];
-
-    for (let i = 0; i < uniqueCuts.length - 1; i++) {
-      const segId = `seg_${i}`;
-      const decision = record.decisions[segId] || 'keep';
-      segments.push({
-        id: segId,
-        index: i + 1,
-        startMs: uniqueCuts[i],
-        endMs: uniqueCuts[i + 1],
-        durationMs: uniqueCuts[i + 1] - uniqueCuts[i],
-        decision,
-      });
-    }
-
-    return planRetention(
-      record.sourcePath,
-      durationMs,
-      segments,
-      keyframes,
-      record.outputPath,
-      record.concatSingleFile ?? true,
-      record.stripOriginalCover ?? true
-    );
+  public submitDraft(record: PlanRecord): { queued: boolean; active: boolean } {
+    const saved = this.savePlan(record);
+    return this.engine.submitPlan(saved, this.prober);
   }
 
   /**
-   * 执行指定方案的无损剪辑，并更新状态机
+   * 提交指定方案至后台引擎执行
    */
-  public async executePlan(id: string): Promise<CutResult> {
-    const filePath = path.join(this.plansDir, `${id}.json`);
-    if (!fs.existsSync(filePath)) {
-      return { success: false, outputPath: '', durationMs: 0, error: '方案文件不存在' };
+  public executePlan(id: string): { success: boolean; message: string; queued?: boolean; active?: boolean } {
+    const record = this.getPlan(id);
+    if (!record) {
+      return { success: false, message: '方案文件不存在' };
     }
-
-    const raw = fs.readFileSync(filePath, 'utf-8');
-    const record = JSON.parse(raw) as PlanRecord;
-
     if (!fs.existsSync(record.sourcePath)) {
-      return { success: false, outputPath: record.outputPath, durationMs: 0, error: '原始视频文件不存在' };
+      return { success: false, message: `原视频文件不存在: ${record.sourcePath}` };
     }
 
-    // 重新探测关键帧以保证精度
-    const meta = await this.prober.probe(record.sourcePath);
-
-    // 构建物理切片计划
-    const retentionPlan = this.buildRetentionPlanFromRecord(record, meta.durationMs, meta.keyframes);
-
-    // 执行裁剪
-    const result = await this.executor.executePlan(retentionPlan);
-
-    // 成功后跃迁状态为 completed 并落盘
-    if (result.success) {
-      record.status = 'completed';
-      record.completedAt = new Date().toISOString();
-      record.outputPath = result.outputPath;
-      this.savePlan(record);
-    }
-
-    return result;
+    const res = this.engine.submitPlan(record, this.prober);
+    return {
+      success: true,
+      message: res.queued ? '已加入后台排队队列' : '已启动后台剪辑',
+      queued: res.queued,
+      active: res.active,
+    };
   }
 
   /**
    * 批量执行所有待执行的方案
    */
-  public async batchExecute(): Promise<{ total: number; succeeded: number; failed: number }> {
-    const plans = this.listPlans().filter(p => p.status === 'ready');
-    let succeeded = 0;
-    let failed = 0;
+  public batchExecute(): { total: number; queued: number } {
+    const readyPlans = this.listPlans().filter((p) => p.status === 'ready');
+    let queued = 0;
 
-    for (const plan of plans) {
-      const res = await this.executePlan(plan.id);
-      if (res.success) {
-        succeeded++;
-      } else {
-        failed++;
+    for (const plan of readyPlans) {
+      const res = this.engine.submitPlan(plan, this.prober);
+      if (res.queued || res.active) {
+        queued++;
       }
     }
 
     return {
-      total: plans.length,
-      succeeded,
-      failed,
+      total: readyPlans.length,
+      queued,
     };
   }
 }

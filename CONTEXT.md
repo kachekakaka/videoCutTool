@@ -19,7 +19,7 @@ The operator's explicit classification of a segment as either `keep` (retained i
 _Avoid_: Flag, status, label, toggle
 
 **Retention Draft**:
-The editable, in-progress state of an ongoing timeline session, containing the source path, cuts, and per-segment retention decisions.
+The editable, in-progress state of an ongoing timeline session, containing the source media path, cuts, and per-segment retention decisions. Maintains editing invariants across cut mutations (safely preserving 'keep' decisions upon segment consolidation) and persists in-memory across view navigation.
 _Avoid_: Workspace state, project, draft file
 
 **Retention Plan**:
@@ -30,7 +30,11 @@ _Avoid_: Export config, cut recipe, job
 The keyframe-aligned time interval computed outward from a user range, strictly adhering to the safety principle: expanding boundaries outward to previous/following keyframes so that no kept content is truncated.
 _Avoid_: Keyframe range, expanded slice, snapped boundary
 
-### Management & Configuration Concepts
+### Management & Execution Concepts
+
+**Media Cutting Engine**:
+The dedicated background processing subsystem responsible for asynchronously executing retention plans, orchestrating FFmpeg lossless stream copies, collision-free output naming, temporary slice lifecycle, and plan execution state updates.
+_Avoid_: Export queue, worker thread, task runner, ffmpeg wrapper
 
 **Plan Manager**:
 The central repository and UI module for creating, viewing, updating, deleting (CRUD), and executing saved retention plans.
@@ -45,7 +49,7 @@ The user-designated persistent directory hosting the runtime application configu
 _Avoid_: Workspace folder, cache dir, project folder
 
 **Application Configuration**:
-The persistent settings file (`config.json`) governing default output paths, toolchain discovery, and execution preferences, stored directly within the active Data Directory.
+The persistent settings file (`config.json`) governing default output paths, toolchain discovery, background notification preferences, and execution options, stored directly within the active Data Directory.
 _Avoid_: Preferences, options, ini file
 
 **Initial Data Setup**:
@@ -57,7 +61,7 @@ The zero-installer, single-file binary distribution (Motrix-inspired) that bundl
 _Avoid_: Green package, zip distribution, installer package
 
 **Execution Status**:
-The persistent lifecycle state of a plan record, explicitly distinguishing `ready` (pending cut) from `completed` (losslessly exported with generated artifact path and completion timestamp).
+The persistent lifecycle state of a plan record, explicitly distinguishing `ready` (pending cut), `processing` (actively executing in background), `completed` (losslessly exported with artifact path), and `failed` (execution error).
 _Avoid_: Run state, task progress, finish flag
 
 **Output Directory Policy**:
