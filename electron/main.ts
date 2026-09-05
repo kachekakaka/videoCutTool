@@ -42,9 +42,19 @@ app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 app.commandLine.appendSwitch('disable-http-cache');
 app.commandLine.appendSwitch('no-sandbox');
 
-// 设置独立的用户数据目录，解决权限冲突
-const tempUserData = path.join(app.getPath('temp'), 'videocuttool-userdata');
-app.setPath('userData', tempUserData);
+// 探测基准物理宿主目录
+const hostDir = process.env.VCT_WORKSPACE_DIR || process.env.PORTABLE_EXECUTABLE_DIR || (app.isPackaged ? path.dirname(app.getPath('exe')) : process.cwd());
+
+// 严格遵守绿色便携隔离规范：将 Chromium 运行时数据与缓存导向外部临时目录，彻底杜绝 C 盘 APPDATA 与 TEMP 污染
+const externalUserData = path.resolve(hostDir, '../videoCutTool_tmp/electron_userdata');
+try {
+  if (!fs.existsSync(externalUserData)) {
+    fs.mkdirSync(externalUserData, { recursive: true });
+  }
+  app.setPath('userData', externalUserData);
+} catch (e) {
+  console.warn('重定向 userData 目录异常:', e);
+}
 
 // 服务实例生命周期持有者
 let configService: ConfigService;
@@ -196,7 +206,7 @@ ipcMain.handle('dialog:selectDirectory', async (_event, defaultPath?: string) =>
 
 app.whenReady().then(async () => {
   // 1. 获取物理宿主目录
-  const exeDir = process.env.VCT_WORKSPACE_DIR || process.env.PORTABLE_EXECUTABLE_DIR || (app.isPackaged ? path.dirname(app.getPath('exe')) : process.cwd());
+  const exeDir = hostDir;
 
   // 2. 探测同级目录是否已配置有效数据目录
   const resolution = ConfigService.resolveDataDirectory(exeDir);
@@ -226,8 +236,8 @@ app.whenReady().then(async () => {
   }
 
   const currentConfig = configService.getConfig();
-  const tempSlicesDir = path.resolve(process.cwd(), '../videoCutTool_tmp/slices');
-  prober = new KeyframeProber(currentConfig.ffprobePath);
+  const tempSlicesDir = path.resolve(exeDir, '../videoCutTool_tmp/slices');
+  prober = new KeyframeProber(currentConfig.ffprobePath, exeDir);
   cuttingEngine = new MediaCuttingEngine(currentConfig.ffmpegPath, tempSlicesDir);
   planManager = new PlanManager(configService.getDataDirectory(), cuttingEngine, prober);
 

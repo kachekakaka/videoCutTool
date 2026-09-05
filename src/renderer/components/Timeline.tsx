@@ -356,6 +356,48 @@ export const Timeline: React.FC<TimelineProps> = ({
     isPanningRef.current = false;
   };
 
+  // 底部蓝线微型滚动条拖拽与点击跳转逻辑
+  const scrollbarTrackRef = useRef<HTMLDivElement | null>(null);
+  const isThumbDraggingRef = useRef(false);
+  const thumbDragStartXRef = useRef(0);
+  const thumbDragStartViewMsRef = useRef(0);
+
+  const handleThumbMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    isThumbDraggingRef.current = true;
+    thumbDragStartXRef.current = e.clientX;
+    thumbDragStartViewMsRef.current = clampedViewStartMs;
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      if (!isThumbDraggingRef.current || !scrollbarTrackRef.current) return;
+      const trackRect = scrollbarTrackRef.current.getBoundingClientRect();
+      const deltaPx = moveEvent.clientX - thumbDragStartXRef.current;
+      const deltaMs = (deltaPx / trackRect.width) * durationMs;
+      const nextStart = Math.max(0, Math.min(maxViewStartMs, thumbDragStartViewMsRef.current + deltaMs));
+      setViewStartMs(nextStart);
+    };
+
+    const onMouseUp = () => {
+      isThumbDraggingRef.current = false;
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  };
+
+  const handleTrackClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (isThumbDraggingRef.current || !scrollbarTrackRef.current) return;
+    const trackRect = scrollbarTrackRef.current.getBoundingClientRect();
+    const clickX = e.clientX - trackRect.left;
+    const clickRatio = Math.max(0, Math.min(1, clickX / trackRect.width));
+    const targetCenterMs = clickRatio * durationMs;
+    const nextStart = Math.max(0, Math.min(maxViewStartMs, targetCenterMs - visibleDurationMs / 2));
+    setViewStartMs(nextStart);
+  };
+
   // 鼠标滚轮缩放与水平平移
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
@@ -560,11 +602,17 @@ export const Timeline: React.FC<TimelineProps> = ({
           className="w-full h-full block"
         />
 
-        {/* 缩放状态下底部微型视窗位置指示条 */}
+        {/* 缩放状态下底部微型视窗位置可拖拽滚动条 */}
         {zoom > 1 && (
-          <div className="absolute bottom-0 left-0 right-0 h-1 bg-black/50 pointer-events-none">
+          <div
+            ref={scrollbarTrackRef}
+            onClick={handleTrackClick}
+            className="absolute bottom-0 left-0 right-0 h-2 bg-black/60 hover:bg-black/80 transition-colors z-20 cursor-pointer select-none"
+            title="点击或拖拽平移视窗"
+          >
             <div
-              className="h-full bg-blue-500/70 rounded-full transition-all duration-75"
+              onMouseDown={handleThumbMouseDown}
+              className="h-full bg-blue-500 hover:bg-blue-400 active:bg-blue-300 rounded-full cursor-grab active:cursor-grabbing shadow-sm transition-[background-color]"
               style={{
                 marginLeft: `${Math.min(99, Math.max(0, (clampedViewStartMs / durationMs) * 100))}%`,
                 width: `${Math.min(100, Math.max(1, (visibleDurationMs / durationMs) * 100))}%`,

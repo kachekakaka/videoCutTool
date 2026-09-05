@@ -75,6 +75,13 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const [executing, setExecuting] = useState(false);
   const [notice, setNotice] = useState<{ type: 'success' | 'error' | 'warning'; message: string } | null>(null);
 
+  // 当前绑定方案状态与保存模态框
+  const [currentPlanId, setCurrentPlanId] = useState<string | null>(loadedPlanRecord ? loadedPlanRecord.id : null);
+  const [currentPlanTitle, setCurrentPlanTitle] = useState<string>(loadedPlanRecord ? loadedPlanRecord.title : '');
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [planTitleInput, setPlanTitleInput] = useState('');
+  const [saveMode, setSaveMode] = useState<'update' | 'new'>('update');
+
   // 从领域模型派生数据（受 draftVersion 驱动响应式刷新）
   const cuts = useMemo(() => (draft ? draft.getCuts() : []), [draft, draftVersion]);
   const segments = useMemo(() => (draft ? draft.getSegments() : []), [draft, draftVersion]);
@@ -240,8 +247,12 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         let newDraft: RetentionDraft;
         if (recordToLoad && recordToLoad.sourcePath === filePath) {
           newDraft = RetentionDraft.fromRecord(recordToLoad, basicMeta.durationMs);
+          setCurrentPlanId(recordToLoad.id);
+          setCurrentPlanTitle(recordToLoad.title);
         } else {
           newDraft = new RetentionDraft(filePath, basicMeta.durationMs);
+          setCurrentPlanId(null);
+          setCurrentPlanTitle('');
         }
         setDraft(newDraft);
         setDraftVersion((v) => v + 1);
@@ -270,6 +281,14 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       setIsLoading(false);
     }
   };
+
+  // 跨 Tab 或方案中心加载新方案时同步方案状态
+  useEffect(() => {
+    if (loadedPlanRecord) {
+      setCurrentPlanId(loadedPlanRecord.id);
+      setCurrentPlanTitle(loadedPlanRecord.title);
+    }
+  }, [loadedPlanRecord]);
 
   useEffect(() => {
     if (initialVideoPath) {
@@ -365,21 +384,51 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const buildCurrentRecord = async (): Promise<PlanRecord | null> => {
     if (!draft || !metadata || !window.electronAPI) return null;
     const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.concatSingleFile);
-    const planId = loadedPlanRecord ? loadedPlanRecord.id : `plan_${Date.now()}`;
+    const planId = currentPlanId || `plan_${Date.now()}`;
+    const title = currentPlanTitle || metadata.fileName.replace(/\.[^/.]+$/, '');
     return draft.toRecord({
       id: planId,
-      title: metadata.fileName,
+      title: title,
       outputPath: outPath,
     });
   };
 
-  // 存为方案
-  const handleSavePlan = async () => {
+  // 打开存为方案输入弹窗
+  const handleOpenSaveModal = () => {
+    if (!metadata || !draft) return;
+    const defaultTitle = currentPlanTitle || metadata.fileName.replace(/\.[^/.]+$/, '');
+    setPlanTitleInput(defaultTitle);
+    setSaveMode(currentPlanId ? 'update' : 'new');
+    setShowSaveModal(true);
+  };
+
+  // 确认保存方案（支持用户自定义方案名，支持更新原方案与另存为新方案）
+  const handleConfirmSavePlan = async () => {
+    const trimmedTitle = planTitleInput.trim();
+    if (!trimmedTitle || !draft || !metadata || !window.electronAPI) return;
+
     try {
-      const record = await buildCurrentRecord();
-      if (!record || !window.electronAPI) return;
+      const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.concatSingleFile);
+      const isUpdating = saveMode === 'update' && Boolean(currentPlanId);
+      const targetId = isUpdating && currentPlanId ? currentPlanId : `plan_${Date.now()}`;
+
+      const record = draft.toRecord({
+        id: targetId,
+        title: trimmedTitle,
+        outputPath: outPath,
+      });
+
       await window.electronAPI.savePlan(record);
-      setNotice({ type: 'success', message: '方案已成功保存至本地方案中心！' });
+      setCurrentPlanId(targetId);
+      setCurrentPlanTitle(trimmedTitle);
+      setShowSaveModal(false);
+
+      setNotice({
+        type: 'success',
+        message: isUpdating
+          ? `方案「${trimmedTitle}」已成功更新保存！`
+          : `已成功另存为新方案「${trimmedTitle}」！`,
+      });
       if (onPlanSaved) onPlanSaved();
     } catch (err: any) {
       setNotice({ type: 'error', message: err.message || '保存方案失败' });
@@ -618,51 +667,55 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         </div>
 
         {/* 3. 分段卡片流工具条与撤销重做控制 */}
-        <div className="flex items-center justify-between pt-0.5 shrink-0">
-          <div className="flex items-center gap-3 text-sm font-bold text-white">
-            <div className="flex items-center gap-1.5">
-              <Scissors className="w-4 h-4 text-blue-400" />
-              <span>分段列表（共 {segments.length} 段）</span>
+        <div className="flex items-center justify-between gap-3 h-8 shrink-0 min-w-0 select-none">
+          {/* 左侧核心操作区：恒定单行防折行 */}
+          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0 whitespace-nowrap">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-white whitespace-nowrap shrink-0">
+              <Scissors className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+              <span>分段列表 ({segments.length})</span>
             </div>
 
             {/* 关键帧后台扫描与索引状态指示 */}
             {isKeyframeScanning ? (
-              <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px] font-normal animate-pulse">
-                <Loader2 className="w-3 h-3 animate-spin text-amber-400" />
-                <span>后台建立关键帧索引中...</span>
+              <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-normal animate-pulse whitespace-nowrap shrink-0">
+                <Loader2 className="w-2.5 h-2.5 animate-spin text-amber-400 shrink-0" />
+                <span>扫描关键帧...</span>
               </span>
             ) : metadata && metadata.keyframes && metadata.keyframes.length > 1 ? (
-              <span className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-300 text-[11px] font-mono font-normal">
-                <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
-                <span>{metadata.keyframes.length} 关键帧已就绪</span>
+              <span
+                className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-300 text-[10px] font-mono font-normal whitespace-nowrap shrink-0"
+                title={`共探测到 ${metadata.keyframes.length} 个物理关键帧`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0" />
+                <span>{metadata.keyframes.length} 关键帧</span>
               </span>
             ) : null}
 
             {/* 撤销 / 重做按钮组 */}
-            <div className="flex items-center bg-black/40 border border-white/10 rounded-lg p-0.5 text-xs font-normal">
+            <div className="flex items-center bg-black/40 border border-white/10 rounded-lg p-0.5 text-xs font-normal whitespace-nowrap shrink-0">
               <button
                 disabled={history.length === 0}
                 onClick={handleUndo}
-                className="px-2 py-1 rounded text-zinc-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 hover:bg-white/10 transition-all active:scale-95"
+                className="px-2 py-0.5 rounded text-zinc-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 hover:bg-white/10 transition-all active:scale-95 whitespace-nowrap"
                 title="撤销上一步操作 (Ctrl+Z)"
               >
-                <Undo2 className="w-3.5 h-3.5" />
-                <span>撤销</span>
+                <Undo2 className="w-3.5 h-3.5 shrink-0" />
+                <span className="whitespace-nowrap">撤销</span>
               </button>
               <button
                 disabled={future.length === 0}
                 onClick={handleRedo}
-                className="px-2 py-1 rounded text-zinc-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 hover:bg-white/10 transition-all active:scale-95 border-l border-white/10"
+                className="px-2 py-0.5 rounded text-zinc-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 hover:bg-white/10 transition-all active:scale-95 border-l border-white/10 whitespace-nowrap"
                 title="重做下一步操作 (Ctrl+Y)"
               >
-                <Redo2 className="w-3.5 h-3.5" />
-                <span>重做</span>
+                <Redo2 className="w-3.5 h-3.5 shrink-0" />
+                <span className="whitespace-nowrap">重做</span>
               </button>
             </div>
 
             {/* 微调步长多档选择器 */}
-            <div className="hidden sm:flex items-center bg-black/40 border border-white/10 rounded-lg p-0.5 text-xs font-normal">
-              <span className="text-[10px] text-zinc-400 px-1.5 select-none">步长:</span>
+            <div className="flex items-center bg-black/40 border border-white/10 rounded-lg p-0.5 text-xs font-normal whitespace-nowrap shrink-0">
+              <span className="text-[10px] text-zinc-400 px-1.5 select-none whitespace-nowrap">步长:</span>
               {[100, 1000, 5000, 10000].map((step) => {
                 const label = step < 1000 ? `${step / 1000}s` : `${step / 1000}s`;
                 const isSelected = nudgeStepMs === step;
@@ -670,7 +723,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                   <button
                     key={step}
                     onClick={() => setNudgeStepMs(step)}
-                    className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition-all active:scale-95 ${
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-mono whitespace-nowrap transition-all active:scale-95 ${
                       isSelected
                         ? 'bg-blue-600 text-white font-bold shadow-sm'
                         : 'text-zinc-400 hover:text-white hover:bg-white/5'
@@ -684,34 +737,33 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             </div>
           </div>
 
+          {/* 右侧：快捷键指示栏，响应式平滑收缩，严禁折行 */}
           <div
-            className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-400 select-none"
-            title="常用快捷键指南：空格播放/暂停，C插入切点，方向键逐帧微调，Del删除切点，Ctrl+Z撤销，Ctrl+Y重做"
+            className="hidden md:flex items-center gap-1.5 min-w-0 justify-end overflow-hidden whitespace-nowrap text-[11px] text-zinc-400 shrink"
+            title="常用快捷键：空格 播放/暂停 · C 插入切点 · ←/→ 逐帧微调 · Del 移除切点 · Ctrl+Z 撤销 · 点击卡片切换保留"
           >
-            <span className="flex items-center gap-1" title="按空格键控制视频播放或暂停">
-              <kbd className="bg-white/10 text-zinc-200 px-1.5 py-0.5 rounded text-[11px] font-mono">空格</kbd> 播放/暂停
+            <span className="flex items-center gap-1 shrink-0">
+              <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px] font-mono">空格</kbd> 播放
             </span>
-            <span className="text-zinc-600">·</span>
-            <span className="flex items-center gap-1" title="按 C 键在当前播放游标处插入新切点">
-              <kbd className="bg-white/10 text-zinc-200 px-1.5 py-0.5 rounded text-[11px] font-mono">C</kbd> 插入切点
+            <span className="text-zinc-600 shrink-0">·</span>
+            <span className="flex items-center gap-1 shrink-0">
+              <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px] font-mono">C</kbd> 切点
             </span>
-            <span className="text-zinc-600">·</span>
-            <span className="flex items-center gap-1" title="左右方向键逐帧微调，按住 Shift 跳跃 1 秒">
-              <kbd className="bg-white/10 text-zinc-200 px-1.5 py-0.5 rounded text-[11px] font-mono">←</kbd>
-              <kbd className="bg-white/10 text-zinc-200 px-1.5 py-0.5 rounded text-[11px] font-mono">→</kbd> 逐帧微调
+            <span className="hidden lg:inline text-zinc-600 shrink-0">·</span>
+            <span className="hidden lg:flex items-center gap-1 shrink-0">
+              <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px] font-mono">←</kbd>
+              <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px] font-mono">→</kbd> 逐帧
             </span>
-            <span className="text-zinc-600">·</span>
-            <span className="flex items-center gap-1" title="按 Delete 或 Backspace 键移除时间轴上选中的切点">
-              <kbd className="bg-white/10 text-zinc-200 px-1.5 py-0.5 rounded text-[11px] font-mono">Del</kbd> 移除切点
+            <span className="hidden xl:inline text-zinc-600 shrink-0">·</span>
+            <span className="hidden xl:flex items-center gap-1 shrink-0">
+              <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px] font-mono">Del</kbd> 删切点
             </span>
-            <span className="text-zinc-600">·</span>
-            <span className="flex items-center gap-1" title="撤销上一步操作 (Ctrl+Z) 或重做 (Ctrl+Y)">
-              <kbd className="bg-white/10 text-zinc-200 px-1.5 py-0.5 rounded text-[11px] font-mono">Ctrl+Z</kbd> 撤销
-              <span className="text-zinc-500">/</span>
-              <kbd className="bg-white/10 text-zinc-200 px-1.5 py-0.5 rounded text-[11px] font-mono">Y</kbd> 重做
+            <span className="hidden 2xl:inline text-zinc-600 shrink-0">·</span>
+            <span className="hidden 2xl:flex items-center gap-1 shrink-0">
+              <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px] font-mono">Ctrl+Z</kbd> 撤销
             </span>
-            <span className="hidden xl:inline text-zinc-600">·</span>
-            <span className="text-zinc-400 hidden xl:inline" title="点击分段卡片可快速切换保留或丢弃决策">点击卡片切换保留/丢弃</span>
+            <span className="hidden 2xl:inline text-zinc-600 shrink-0">·</span>
+            <span className="text-zinc-400 hidden 2xl:inline shrink-0">点击卡片切换保留</span>
           </div>
         </div>
 
@@ -811,29 +863,29 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             {/* 右侧动作按钮组 */}
             <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 ml-auto lg:ml-0">
               <button
-                onClick={handleSavePlan}
+                onClick={handleOpenSaveModal}
                 className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-all border border-white/10 active:scale-95 shadow-md focus-visible:ring-2 focus-visible:ring-blue-500"
-                title="将当前切点与决策保存为待批处理方案"
+                title={currentPlanId ? `保存或另存当前方案 (当前: ${currentPlanTitle})` : '将当前切点与决策保存为待批处理方案'}
               >
                 <Save className="w-3.5 h-3.5 text-zinc-300" />
-                <span>存为方案</span>
+                <span>{currentPlanId ? '保存方案' : '存为方案'}</span>
               </button>
 
               <button
                 disabled={executing || keptDurationMs === 0}
                 onClick={handleExecuteCut}
-                className="px-3 sm:px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-lg shadow-emerald-500/20 active:scale-95 border border-emerald-400/30 focus-visible:ring-2 focus-visible:ring-emerald-400 shrink-0 whitespace-nowrap"
+                className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-lg shadow-emerald-500/20 active:scale-95 border border-emerald-400/30 focus-visible:ring-2 focus-visible:ring-emerald-400 shrink-0 whitespace-nowrap"
                 title="将当前方案移交后台异步引擎无损剪辑，完成后弹出通知"
               >
                 {executing ? (
                   <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>提交后台中...</span>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>提交中...</span>
                   </>
                 ) : (
                   <>
-                    <Rocket className="w-4 h-4" />
-                    <span>🚀 立即执行剪辑</span>
+                    <Rocket className="w-3.5 h-3.5" />
+                    <span>立即剪辑</span>
                   </>
                 )}
               </button>
@@ -869,6 +921,107 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             >
               ✕
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* 7. 保存方案弹窗 (暗黑质感模态框) */}
+      {showSaveModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in"
+          onClick={() => setShowSaveModal(false)}
+        >
+          <div
+            className="w-full max-w-md bg-[#161b22] border border-white/10 rounded-2xl p-6 shadow-2xl animate-in zoom-in-95 select-none"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-4">
+              <div className="w-10 h-10 rounded-xl bg-blue-500/15 border border-blue-500/30 flex items-center justify-center text-blue-400 shrink-0">
+                <Save className="w-5 h-5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-base font-bold text-white mb-1">
+                  {currentPlanId ? '保存或另存方案' : '存为剪辑方案'}
+                </h3>
+                <p className="text-xs text-zinc-400 leading-relaxed mb-4">
+                  请输入方案名称，保存后可在方案管理中心调取查看、修改或批量执行剪辑。
+                </p>
+
+                {/* 若当前已有正在编辑的方案，提供更新与另存选择 */}
+                {currentPlanId && (
+                  <div className="mb-4 p-2.5 rounded-xl bg-black/40 border border-white/10 flex flex-col gap-2">
+                    <label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-200">
+                      <input
+                        type="radio"
+                        name="saveMode"
+                        checked={saveMode === 'update'}
+                        onChange={() => setSaveMode('update')}
+                        className="w-3.5 h-3.5 accent-blue-500 cursor-pointer"
+                      />
+                      <span className="font-medium">覆盖更新当前方案</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-200">
+                      <input
+                        type="radio"
+                        name="saveMode"
+                        checked={saveMode === 'new'}
+                        onChange={() => setSaveMode('new')}
+                        className="w-3.5 h-3.5 accent-blue-500 cursor-pointer"
+                      />
+                      <span className="font-medium">另存为新方案（保留原方案）</span>
+                    </label>
+                  </div>
+                )}
+
+                {/* 方案名称输入框 */}
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-medium text-zinc-400 block">
+                    方案名称
+                  </label>
+                  <input
+                    type="text"
+                    autoFocus
+                    value={planTitleInput}
+                    onChange={(e) => setPlanTitleInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleConfirmSavePlan();
+                      } else if (e.key === 'Escape') {
+                        setShowSaveModal(false);
+                      }
+                    }}
+                    placeholder="输入方案名称..."
+                    className="w-full bg-[#0d1117] border border-white/15 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-zinc-500 outline-none transition-all font-sans"
+                  />
+                </div>
+
+                {/* 方案内容摘要 */}
+                <div className="mt-3 text-[11px] text-zinc-400 bg-white/5 px-3 py-2 rounded-xl flex items-center justify-between font-mono">
+                  <span>保留分段: {segments.filter((s) => s.decision === 'keep').length} / {segments.length} 段</span>
+                  <span>保留时长: {formatTimecode(keptDurationMs, false)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setShowSaveModal(false)}
+                className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white text-xs font-semibold transition-all active:scale-95"
+              >
+                取消 (Esc)
+              </button>
+              <button
+                type="button"
+                disabled={!planTitleInput.trim()}
+                onClick={handleConfirmSavePlan}
+                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold transition-all shadow-lg shadow-blue-600/30 active:scale-95 flex items-center gap-1.5"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>{saveMode === 'update' && currentPlanId ? '确认更新' : '确认保存'}</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

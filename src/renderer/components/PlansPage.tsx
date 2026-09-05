@@ -246,7 +246,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter, isAc
                 ) : (
                   <>
                     <Rocket className="w-4 h-4" />
-                    <span>🚀 批量执行待办 ({readyCount})</span>
+                    <span>批量执行待办 ({readyCount})</span>
                   </>
                 )}
               </button>

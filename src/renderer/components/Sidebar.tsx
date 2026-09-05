@@ -1,5 +1,5 @@
 import React from 'react';
-import { Film, Scissors, FolderKanban, Settings as SettingsIcon } from 'lucide-react';
+import { Scissors, FolderKanban, Settings as SettingsIcon } from 'lucide-react';
 
 export type TabId = 'cutter' | 'plans' | 'settings';
 
@@ -12,15 +12,6 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, plansCount = 0 }) => {
   return (
     <aside className="w-[68px] h-full bg-[#090b10] border-r border-white/10 flex flex-col items-center py-5 shrink-0 z-50 select-none">
-      {/* Motrix 风格彩色品牌 Logo (胶片标识代表视频核心，点击直达工作台) */}
-      <button 
-        onClick={() => onTabChange('cutter')}
-        className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-600 to-emerald-600 flex items-center justify-center shadow-lg shadow-blue-500/20 mb-7 hover:scale-105 active:scale-95 transition-all border border-white/10 cursor-pointer"
-        title="VideoCutTool 无损视频裁剪工具"
-      >
-        <Film className="w-5 h-5 text-white" />
-      </button>
-
       {/* 竖向导航 Tab */}
       <nav className="flex flex-col gap-3.5 flex-1 w-full items-center">
         <button
