@@ -46,6 +46,7 @@ if exist "%TEMP%\vct_workspace_backup.json" (
   if not exist "release\workspace.json" copy /y "%TEMP%\vct_workspace_backup.json" "release\workspace.json" >nul
   del /f /q "%TEMP%\vct_workspace_backup.json" >nul
 )
+if exist "release\workspace.json" copy /y "release\workspace.json" "release\app\workspace.json" >nul
 
 echo.
 echo [4/4] Verifying deliverables...

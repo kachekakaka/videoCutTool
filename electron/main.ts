@@ -13,13 +13,6 @@ import { AppConfig, PlanRecord, CompressConfig } from '../src/shared/types';
 // 全局彻底移除应用菜单，防止 Windows 下用户按 Alt 键唤出原生菜单栏
 Menu.setApplicationMenu(null);
 
-// 单实例互斥锁：防止连击或多次双击导致多进程并发与目录写冲突
-const gotTheLock = app.requestSingleInstanceLock();
-if (!gotTheLock) {
-  app.quit();
-  process.exit(0);
-}
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -46,8 +39,9 @@ app.commandLine.appendSwitch('no-sandbox');
 // 强制原生深色沉浸主题
 nativeTheme.themeSource = 'dark';
 
-// 探测基准物理宿主目录
-const hostDir = process.env.VCT_WORKSPACE_DIR || process.env.PORTABLE_EXECUTABLE_DIR || (app.isPackaged ? path.dirname(app.getPath('exe')) : process.cwd());
+// 探测基准物理宿主目录（若直接运行了 app/VideoCutTool.exe，自适应向上退回至便携根目录）
+const rawHostDir = process.env.VCT_WORKSPACE_DIR || process.env.PORTABLE_EXECUTABLE_DIR || (app.isPackaged ? path.dirname(app.getPath('exe')) : process.cwd());
+const hostDir = path.basename(rawHostDir).toLowerCase() === 'app' ? path.dirname(rawHostDir) : rawHostDir;
 
 // 绿色临时目录解析：若宿主位于开发打包输出的 release/ 目录内，向上退两级与仓库同级的外部 tmp 对齐
 function getExternalTmpDir(baseDir: string): string {
@@ -57,15 +51,23 @@ function getExternalTmpDir(baseDir: string): string {
   return path.resolve(baseDir, '../videoCutTool_tmp');
 }
 
-// 严格遵守绿色便携隔离规范：将 Chromium 运行时数据与缓存导向外部临时目录，彻底杜绝 C 盘 APPDATA 与 TEMP 污染
+// 严格遵守绿色便携隔离规范：必须在 requestSingleInstanceLock 之前重定向 userData，彻底杜绝 APPDATA 污染与锁竞争
 const externalUserData = path.resolve(getExternalTmpDir(hostDir), 'electron_userdata');
 try {
   if (!fs.existsSync(externalUserData)) {
     fs.mkdirSync(externalUserData, { recursive: true });
   }
   app.setPath('userData', externalUserData);
+  app.setPath('sessionData', externalUserData);
 } catch (e) {
   console.warn('重定向 userData 目录异常:', e);
+}
+
+// 单实例互斥锁：在设置好便携数据目录后激活
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+  process.exit(0);
 }
 
 // 服务实例生命周期持有者
@@ -80,6 +82,7 @@ let mainWindow: BrowserWindow | null = null;
 app.on('second-instance', () => {
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
     mainWindow.focus();
   }
 });
@@ -91,7 +94,7 @@ function createWindow() {
     minWidth: 1080,
     minHeight: 700,
     backgroundColor: '#0c0e14',
-    show: false, // 初始不展示，待 ready-to-show 光滑渲染完毕后显现
+    show: true, // 核心修复：直接展示窗口，彻底避免 ready-to-show 漏发导致窗口在后台隐形常驻
     center: true,
     autoHideMenuBar: true,
     title: 'VideoCutTool - 无损视频裁剪工具',

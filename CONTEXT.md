@@ -100,3 +100,6 @@ _Avoid_: Transcode profile, export preset, quality mode
 The rapid on-demand A/B verification interface extracting representative keyframe samples from kept media intervals, presenting interactive split-slider and side-by-side comparisons between original and encoded frames prior to final rendering.
 _Avoid_: Sample viewer, quality test, transcode check
 
+**Preview Sample Point**:
+A discrete millisecond timestamp designated specifically for the Visual Compression Preview, indicating an exact video frame sampled for original vs compressed quality inspection. Strictly decoupled from Cut Points, it does not alter media segmentation or retention decisions, supports timeline double-click or timecode entry for addition, and can be removed via scene capsule interaction without leaving clutter on the primary timeline.
+_Avoid_: Cut marker, test cut, compare marker, sample slice

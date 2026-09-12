@@ -36,6 +36,9 @@ interface CutterPageProps {
   isActive?: boolean;
 }
 
+const getCompareCacheKey = (videoPath: string, config: CompressConfig, timestamps: number[]) =>
+  JSON.stringify([videoPath, config, timestamps]);
+
 export const CutterPage: React.FC<CutterPageProps> = ({
   onOpenVideo,
   initialVideoPath,
@@ -98,9 +101,24 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const [showAdvancedCompress, setShowAdvancedCompress] = useState(false);
 
   // 画质对比抽样画格、选中的场景页码及视图模式常驻工作台（跨 Tab / 跨视窗绝不丢失）
-  const [cachedCompareSamples, setCachedCompareSamples] = useState<PreviewSample[]>([]);
+  const [compareCache, setCompareCache] = useState<{ key: string; samples: PreviewSample[] }>({ key: '', samples: [] });
+  const [compareError, setCompareError] = useState<string | null>(null);
   const [currentCompareSampleIndex, setCurrentCompareSampleIndex] = useState<number>(0);
   const [compareViewMode, setCompareViewMode] = useState<'split' | 'side-by-side'>('split');
+  const [customSampleTimestampsMs, setCustomSampleTimestampsMs] = useState<number[] | null>(null);
+  const [isAddingCompareSample, setIsAddingCompareSample] = useState(false);
+  const compareEpochRef = useRef(0);
+  const pendingCompareAdditionRef = useRef<object | null>(null);
+  const cancelCompareAddition = useCallback(() => {
+    pendingCompareAdditionRef.current = null;
+    setIsAddingCompareSample(false);
+  }, []);
+  const invalidateComparePreview = useCallback(() => {
+    compareEpochRef.current += 1;
+    cancelCompareAddition();
+    setCompareCache({ key: '', samples: [] });
+    setCompareError(null);
+  }, [cancelCompareAddition]);
 
   // 从领域模型派生数据（受 draftVersion 驱动响应式刷新）
   const cuts = useMemo(() => (draft ? draft.getCuts() : []), [draft, draftVersion]);
@@ -113,7 +131,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   // 降码模式状态与当前配置派生
   const isCompressMode = Boolean(draft?.compress?.enabled);
   const currentCompressConfig = useMemo<CompressConfig>(() => {
-    return draft?.compress || {
+    return draft?.compress ? { ...draft.compress } : {
       enabled: false,
       preset: 'balanced',
       crf: 22,
@@ -121,7 +139,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     };
   }, [draft, draftVersion]);
 
-  // 计算用于画质对比抽样的代表性时间戳 (自适应保证至少 3 个场景)
+  // 计算用于画质对比抽样的代表性时间戳 (系统自动推荐保证至少 3 个场景)
   const sampleTimestamps = useMemo(() => {
     const keptSegs = segments.filter((s) => s.decision === 'keep');
     if (keptSegs.length === 0) {
@@ -154,15 +172,56 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     return keptSegs.map((s) => Math.round((s.startMs + s.endMs) / 2)).slice(0, 5);
   }, [segments, metadata?.durationMs]);
 
-  // 切点或保留分段变动导致抽样时间戳改变时，清空抽样帧缓存，触发按新时间戳重新抽取
-  const prevTimestampsKeyRef = useRef<string>('');
+  // 派生实际生效的对比抽样时间戳（用户自定义 vs 系统自动推荐）
+  const isCustomizedSamples = customSampleTimestampsMs !== null;
+  const effectiveSampleTimestamps = useMemo(() => {
+    return customSampleTimestampsMs !== null ? customSampleTimestampsMs : sampleTimestamps;
+  }, [customSampleTimestampsMs, sampleTimestamps]);
+
+  // 缓存必须同时匹配视频、参数与场景列表，避免旧图片短暂出现在新上下文中。
+  const compareRequestKey = getCompareCacheKey(metadata?.filePath || '', currentCompressConfig, effectiveSampleTimestamps);
+  const currentCompareKeyRef = useRef(compareRequestKey);
+  currentCompareKeyRef.current = compareRequestKey;
+  const cachedCompareSamples = compareCache.key === compareRequestKey ? compareCache.samples : [];
+  const isLoadingCompareSamples = compareCache.key !== compareRequestKey;
+
   useEffect(() => {
-    const key = sampleTimestamps.join(',');
-    if (prevTimestampsKeyRef.current && prevTimestampsKeyRef.current !== key) {
-      setCachedCompareSamples([]);
-    }
-    prevTimestampsKeyRef.current = key;
-  }, [sampleTimestamps]);
+    cancelCompareAddition();
+  }, [compareRequestKey, mainViewportMode, cancelCompareAddition]);
+
+  useEffect(() => () => {
+    compareEpochRef.current += 1;
+    pendingCompareAdditionRef.current = null;
+  }, []);
+
+  // 首批加载也由工作台持有；视图只呈现结果，不再与新增请求各自维护一套缓存。
+  useEffect(() => {
+    if (mainViewportMode !== 'compare' || isLoading || !metadata?.filePath || compareCache.key === compareRequestKey) return;
+    let active = true;
+    const epoch = compareEpochRef.current;
+    setCompareError(null);
+    const isCurrent = () => active && epoch === compareEpochRef.current && currentCompareKeyRef.current === compareRequestKey;
+    const fetchSamples = async () => {
+      try {
+        if (!window.electronAPI?.previewCompressionSamples) throw new Error('未检测到预览采样服务通道');
+        const result = await window.electronAPI.previewCompressionSamples(metadata.filePath, effectiveSampleTimestamps, currentCompressConfig);
+        if (!isCurrent()) return;
+        const samples = effectiveSampleTimestamps.flatMap((timestampMs) => {
+          const sample = result.find((item) => item.timestampMs === timestampMs);
+          return sample ? [sample] : [];
+        }).map((sample, index) => ({ ...sample, index }));
+        setCompareCache({ key: compareRequestKey, samples });
+        setCurrentCompareSampleIndex((index) => Math.min(index, Math.max(0, samples.length - 1)));
+        if (samples.length === 0) setCompareError('未能抽取到有效测试画格，请调整参数或点击重新加载');
+      } catch (err) {
+        if (!isCurrent()) return;
+        setCompareCache({ key: compareRequestKey, samples: [] });
+        setCompareError(err instanceof Error ? err.message : '加载预览抽样失败');
+      }
+    };
+    void fetchSamples();
+    return () => { active = false; };
+  }, [compareRequestKey, compareCache, mainViewportMode, isLoading]);
 
   // 实时推导预定安全产物路径
   useEffect(() => {
@@ -246,9 +305,9 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           setShowSaveModal(false);
           return;
         }
-        if (mainViewportMode === 'compare') {
+        if (showCompressSettings) {
           e.preventDefault();
-          setMainViewportMode('player');
+          setShowCompressSettings(false);
           return;
         }
       }
@@ -267,7 +326,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUndo, handleRedo, showNoCutWarningModal, showSaveModal, mainViewportMode]);
+  }, [handleUndo, handleRedo, showNoCutWarningModal, showSaveModal, showCompressSettings]);
 
   // 双保险文件选择唤起逻辑 (Electron 原生对话框 + HTML5 文件选择器兜底)
   const handleChooseFile = async (e?: React.MouseEvent) => {
@@ -321,6 +380,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
   // 载入视频并探测关键帧 (两阶段秒开机制：300ms 快速出图，后台静默扫描关键帧并落盘缓存)
   const loadAndProbeVideo = async (filePath: string, recordToLoad?: PlanRecord | null) => {
+    invalidateComparePreview();
     setIsLoading(true);
     setIsKeyframeScanning(false);
     setNotice(null);
@@ -335,8 +395,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         setCurrentTimeMs(0);
         setHistory([]);
         setFuture([]);
-        setCachedCompareSamples([]); // 彻底清空旧视频的画质对比抽样缓存
         setCurrentCompareSampleIndex(0);
+        setCustomSampleTimestampsMs(null);
         setMainViewportMode('player');
 
         let newDraft: RetentionDraft;
@@ -503,7 +563,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
   // 更新降码配置项
   const handleUpdateCompressConfig = (updater: (cfg: CompressConfig) => void) => {
-    setCachedCompareSamples([]); // 配置变更时清空抽样帧缓存，按新配置增量重新抽取
+    invalidateComparePreview();
     commitDraftChange((d) => {
       if (!d.compress) {
         d.compress = {
@@ -523,6 +583,80 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       d.stripOriginalCover = val;
     });
   };
+
+  // 增量添加单个画质对比场景点
+  const handleAddCompareSample = useCallback(
+    async (targetMs: number) => {
+      if (!metadata?.filePath || isLoading || isLoadingCompareSamples || pendingCompareAdditionRef.current || mainViewportMode !== 'compare') return false;
+      const baseList = cachedCompareSamples.map((sample) => sample.timestampMs);
+      if (baseList.length === 0 || baseList.length >= 5) return false;
+      const timestampMs = Math.round(targetMs);
+      if (!Number.isFinite(timestampMs) || timestampMs < 0 || timestampMs >= metadata.durationMs) {
+        setNotice({ type: 'warning', message: '对比点必须位于视频时长以内，视频结束位置没有可抽取的画面' });
+        return false;
+      }
+      if (baseList.some((ts) => Math.abs(ts - timestampMs) < 500)) {
+        setNotice({ type: 'warning', message: '该时间点附近已有对比场景，请至少间隔 500 毫秒' });
+        return false;
+      }
+
+      const request = {};
+      const epoch = compareEpochRef.current;
+      pendingCompareAdditionRef.current = request;
+      setIsAddingCompareSample(true);
+      const isCurrent = () => pendingCompareAdditionRef.current === request &&
+        epoch === compareEpochRef.current && currentCompareKeyRef.current === compareRequestKey;
+      try {
+        if (!window.electronAPI?.previewCompressionSamples) throw new Error('未检测到预览采样服务通道');
+        const result = await window.electronAPI.previewCompressionSamples(metadata.filePath, [timestampMs], currentCompressConfig);
+        if (!isCurrent()) return false;
+        const sample = result.find((item) => item.timestampMs === timestampMs);
+        if (!sample) throw new Error('该位置未能抽取到有效画面，请换一个时间点重试');
+
+        // 成功后一起提交时间点、图片与焦点；失败和过期请求不会占用名额。
+        const nextTimestamps = [...baseList, timestampMs];
+        setCustomSampleTimestampsMs(nextTimestamps);
+        setCompareCache({
+          key: getCompareCacheKey(metadata.filePath, currentCompressConfig, nextTimestamps),
+          samples: [...cachedCompareSamples, { ...sample, index: baseList.length }],
+        });
+        setCurrentCompareSampleIndex(baseList.length);
+        setNotice(null);
+        return true;
+      } catch (err) {
+        if (isCurrent()) setNotice({ type: 'error', message: err instanceof Error ? err.message : '新增对比场景失败，请重试' });
+        return false;
+      } finally {
+        if (pendingCompareAdditionRef.current === request) cancelCompareAddition();
+      }
+    },
+    [metadata, isLoading, isLoadingCompareSamples, mainViewportMode, cachedCompareSamples, currentCompressConfig, compareRequestKey, cancelCompareAddition]
+  );
+
+  // 删除特定画质对比场景点
+  const handleDeleteCompareSample = useCallback(
+    (sampleIndex: number) => {
+      if (!metadata || pendingCompareAdditionRef.current || cachedCompareSamples.length <= 1 || !cachedCompareSamples[sampleIndex]) return;
+      const selectedTimestamp = cachedCompareSamples[currentCompareSampleIndex]?.timestampMs;
+      const samples = cachedCompareSamples.filter((_, index) => index !== sampleIndex)
+        .map((sample, index) => ({ ...sample, index }));
+      const nextTimestamps = samples.map((sample) => sample.timestampMs);
+      setCustomSampleTimestampsMs(nextTimestamps);
+      setCompareCache({
+        key: getCompareCacheKey(metadata.filePath, currentCompressConfig, nextTimestamps), samples,
+      });
+      const selectedIndex = samples.findIndex((sample) => sample.timestampMs === selectedTimestamp);
+      setCurrentCompareSampleIndex(selectedIndex >= 0 ? selectedIndex : Math.min(sampleIndex, samples.length - 1));
+    },
+    [metadata, cachedCompareSamples, currentCompareSampleIndex, currentCompressConfig]
+  );
+
+  // 恢复系统默认推荐抽样场景点
+  const handleResetDefaultCompareSamples = useCallback(() => {
+    invalidateComparePreview();
+    setCustomSampleTimestampsMs(null);
+    setCurrentCompareSampleIndex(0);
+  }, [invalidateComparePreview]);
 
   // 统一构建持久化方案记录
   const buildCurrentRecord = async (): Promise<PlanRecord | null> => {
@@ -802,17 +936,28 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         ) : (
           <div className="relative flex-1 min-h-0 bg-black rounded-2xl overflow-hidden border border-white/10 shadow-2xl flex flex-col">
             <VideoCompareView
-              videoPath={metadata.filePath}
               config={currentCompressConfig}
-              sampleTimestampsMs={sampleTimestamps}
               cachedSamples={cachedCompareSamples}
+              loading={isLoadingCompareSamples}
+              error={compareError}
+              onRetry={invalidateComparePreview}
               currentSampleIndex={currentCompareSampleIndex}
               onSampleIndexChange={setCurrentCompareSampleIndex}
-              onSamplesLoaded={setCachedCompareSamples}
-              onSwitchToPlayer={() => setMainViewportMode('player')}
+              onSwitchToPlayer={() => {
+                cancelCompareAddition();
+                setMainViewportMode('player');
+              }}
+              shortcutsEnabled={isActive && !showSaveModal && !showNoCutWarningModal && !showCompressSettings}
               viewMode={compareViewMode}
               onViewModeChange={setCompareViewMode}
               aspectRatioMode={aspectRatioMode}
+              onAddSample={handleAddCompareSample}
+              onDeleteSample={handleDeleteCompareSample}
+              onResetDefaultSamples={handleResetDefaultCompareSamples}
+              isCustomized={isCustomizedSamples}
+              currentTimeMs={currentTimeMs}
+              durationMs={metadata.durationMs}
+              isAddingSample={isAddingCompareSample}
             />
           </div>
         )}
@@ -830,8 +975,10 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             aspectRatioMode={aspectRatioMode}
             onSeek={(ms) => {
               setAuditionRange(null);
+              setCurrentTimeMs(ms);
               playerRef.current?.seekTo(ms);
             }}
+            shortcutsEnabled={isActive && !showSaveModal && !showNoCutWarningModal && !showCompressSettings}
             onDeleteCut={handleDeleteCut}
             onMoveCut={handleMoveCut}
             onTogglePlay={() => {
@@ -848,6 +995,11 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             }}
             onToggleAspectRatio={(mode) => setAspectRatioMode(mode)}
             onInsertCut={handleInsertCut}
+            onDoubleClickBlank={(ms) => {
+              if (mainViewportMode === 'compare') {
+                handleAddCompareSample(ms);
+              }
+            }}
           />
         </div>
 
@@ -972,8 +1124,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           />
         </div>
 
-        {/* 5. 底部固定状态 Dock 栏 */}
-        <div className="mt-auto shrink-0 pt-1 pb-1">
+        {/* 5. 底部固定状态 Dock 栏 (建立顶级 relative z-50 层叠上下文，彻底杜绝任何下层视窗横穿切断弹窗) */}
+        <div className="mt-auto shrink-0 pt-1 pb-1 relative z-50">
           <div className="px-3 py-2 rounded-2xl bg-[#161b22]/95 border border-white/10 shadow-2xl backdrop-blur-md flex flex-wrap lg:flex-nowrap items-center justify-between gap-2 min-w-0">
             {/* 左侧：统计指标与预定产物名 */}
             <div className="flex items-center gap-2 sm:gap-2.5 text-xs font-mono shrink min-w-0">
@@ -1046,7 +1198,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             </div>
 
             {/* 右侧动作按钮组 */}
-            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 ml-auto lg:ml-0 relative">
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 ml-auto lg:ml-0 relative z-50">
               {/* 模式选择胶囊：无损秒切 vs 智能降码 */}
               <div className="flex items-center bg-black/40 border border-white/10 p-0.5 rounded-xl text-xs font-medium">
                 <button
@@ -1093,7 +1245,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               {/* 智能降码渐进式参数面板 Popover */}
               {isCompressMode && showCompressSettings && (
                 <div
-                  className="absolute bottom-12 right-0 z-40 w-[380px] bg-[#161a24] border border-white/15 rounded-2xl shadow-2xl p-4 flex flex-col gap-3.5 backdrop-blur-xl animate-in fade-in zoom-in-95 select-none"
+                  className="absolute bottom-12 right-0 z-50 w-[380px] max-h-[calc(100vh-140px)] overflow-y-auto bg-[#161a24] border border-white/15 rounded-2xl shadow-2xl p-4 flex flex-col gap-3.5 backdrop-blur-xl animate-in fade-in zoom-in-95 select-none"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <div className="flex items-center justify-between pb-2 border-b border-white/10">

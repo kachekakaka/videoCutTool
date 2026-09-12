@@ -1205,7 +1205,7 @@
           <span style="color: #bc8cff; font-family: monospace;">视口坐标隔离 · 放大防丢把手 · 跨Tab状态保活</span>
         </div>
         <!-- 顶部预设卡片行 -->
-        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;">
+        <div id="proto-compress-panel" role="dialog" aria-label="智能降码预设与画质微调" style="display: none; position: fixed; bottom: 100px; right: 28px; z-index: 50; width: min(560px, calc(100vw - 40px)); max-height: calc(100vh - 140px); overflow-y: auto; grid-template-columns: repeat(2, 1fr); gap: 14px; padding: 16px; background: #161a24; border: 1px solid var(--border-subtle); border-radius: 14px; box-shadow: 0 18px 60px #000b;">
           <div class="compress-card active" onclick="selectPreset('balanced', this)" style="background: var(--bg-card); border: 1px solid var(--accent-blue); border-radius: 12px; padding: 14px; cursor: pointer; transition: all 0.2s;">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
               <span style="font-size: 13px; font-weight: 700; color: #fff;">均衡 (推荐日常)</span>
@@ -1270,11 +1270,13 @@
           </div>
 
           <div style="display: flex; align-items: center; gap: 14px;">
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <span style="font-size: 12px; color: var(--text-muted);">场景切换:</span>
-              <button class="btn" id="scene-btn-1" style="padding: 4px 10px; font-size: 11px; background: rgba(88, 166, 255, 0.2); color: #fff;" onclick="setSampleScene(1)">场景 1</button>
-              <button class="btn" id="scene-btn-2" style="padding: 4px 10px; font-size: 11px;" onclick="setSampleScene(2)">场景 2</button>
-              <button class="btn" id="scene-btn-3" style="padding: 4px 10px; font-size: 11px;" onclick="setSampleScene(3)">场景 3</button>
+            <div style="display: flex; align-items: center; gap: 8px;" id="proto-scenes-bar">
+              <span style="font-size: 12px; color: var(--text-muted);">抽样场景:</span>
+              <div id="proto-scenes-list" style="display: flex; align-items: center; gap: 6px;">
+                <!-- 动态由 renderProtoScenes() 渲染 -->
+              </div>
+              <button class="btn" id="btn-add-scene" style="padding: 3px 8px; font-size: 11px; background: rgba(88, 166, 255, 0.1); border: 1px dashed rgba(88, 166, 255, 0.4); color: var(--accent-blue); border-radius: 6px;" onclick="protoOpenAddScene()" title="添加新的画质对比场景点（上限5个）">+ 场景</button>
+              <button class="btn" id="btn-reset-scenes" style="padding: 3px 8px; font-size: 11px; background: rgba(255,255,255,0.06); border: 1px solid var(--border-subtle); color: var(--text-muted); border-radius: 6px; display: none;" onclick="protoResetScenes()" title="恢复系统默认推荐场景点">↺ 恢复推荐</button>
             </div>
 
             <div style="display: flex; align-items: center; gap: 6px;">
@@ -1285,6 +1287,14 @@
             </div>
           </div>
         </div>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <span id="proto-current-time" style="font-family: monospace;">当前帧 00:00.000</span>
+          <span style="font-size: 12px; color: var(--text-muted);">点击时间轴定位，双击空白处添加对比点；选中场景后按 Delete 删除</span>
+          <button class="btn" onclick="protoToggleSettings()">⚙️ 参数</button>
+        </div>
+        <canvas id="proto-compare-timeline" tabindex="0" aria-label="画质对比时间轴" style="width: 100%; height: 50px; background: #121620; border-radius: 8px; cursor: crosshair;"></canvas>
+        <p id="proto-scene-notice" role="status" style="color: #ff7b72; font-size: 12px; min-height: 16px;"></p>
 
         <!-- 交互展示区 -->
         <div style="position: relative; width: 100%; height: 480px;">
@@ -1372,6 +1382,21 @@
       </div>
     </div>
   </div>
+
+  <dialog id="proto-add-scene-dialog" aria-label="添加对比场景点" style="position: fixed; margin: 0; width: 320px; max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); overflow-y: auto; padding: 16px; color: #fff; background: #161a24; border: 1px solid #ffffff33; border-radius: 12px;">
+    <form onsubmit="event.preventDefault(); protoConfirmAddScene()">
+      <h3 style="margin-bottom: 12px;">添加对比场景点</h3>
+      <div style="display: flex; gap: 8px;">
+        <input id="proto-add-scene-time" aria-label="场景时间码" placeholder="01:23.450 或秒数" oninput="protoSetSceneError('')" style="min-width: 0; flex: 1; padding: 6px; color: #fff; background: #0008; border: 1px solid #ffffff33; border-radius: 5px;">
+        <button class="btn" type="button" onclick="document.getElementById('proto-add-scene-time').value = formatTime(state.currentMs); protoSetSceneError('')">当前帧</button>
+      </div>
+      <p id="proto-add-scene-error" style="font-size: 12px; color: #ff7b72; min-height: 24px; padding-top: 6px;"></p>
+      <div style="display: flex; justify-content: flex-end; gap: 10px;">
+        <button class="btn" type="button" onclick="document.getElementById('proto-add-scene-dialog').close()">取消</button>
+        <button class="btn btn-primary" type="submit">确认添加</button>
+      </div>
+    </form>
+  </dialog>
 
   <script>
     const state = {
@@ -1907,6 +1932,7 @@
     requestAnimationFrame(loop);
 
     window.addEventListener('keydown', (e) => {
+      if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
       if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
       else if (e.code === 'KeyC') { e.preventDefault(); insertCutAtCurrent(); }
       else if (e.code === 'ArrowLeft') { e.preventDefault(); stepFrame(-1); }
@@ -1990,17 +2016,157 @@
       drawLabCanvases();
     }
 
+    const DEFAULT_PROTO_SCENES = [
+      { id: 1, timestampMs: 30000 },
+      { id: 2, timestampMs: 75000 },
+      { id: 3, timestampMs: 120000 },
+    ];
+    let protoScenes = [...DEFAULT_PROTO_SCENES];
+    let isProtoCustomized = false;
+
+    function renderProtoScenes() {
+      const container = document.getElementById('proto-scenes-list');
+      if (!container) return;
+      container.innerHTML = '';
+      protoScenes.forEach((s, index) => {
+        const isAct = labState.scene === s.id;
+        const btn = document.createElement('div');
+        btn.className = 'btn';
+        btn.style.cssText = `padding: 4px 8px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; border-radius: 6px; ${
+          isAct
+            ? 'background: rgba(88, 166, 255, 0.25); color: #fff; border: 1px solid rgba(88, 166, 255, 0.4);'
+            : 'background: rgba(255,255,255,0.05); color: var(--text-muted); border: 1px solid var(--border-subtle);'
+        }`;
+        btn.innerHTML = `<button class="btn" data-proto-scene="${s.id}" style="padding: 0; font-size: 11px; background: none; border: 0;" onclick="setSampleScene(${s.id})">场景 ${index + 1} (${formatTime(s.timestampMs)})</button>` + (protoScenes.length > 1 ? `<button class="btn" onclick="protoDeleteScene(${s.id})" style="padding: 0 2px; font-size: 10px;" aria-label="删除场景 ${index + 1}">✕</button>` : '');
+        container.appendChild(btn);
+      });
+
+      const addBtn = document.getElementById('btn-add-scene');
+      if (addBtn) {
+        addBtn.disabled = protoScenes.length >= 5;
+        addBtn.style.opacity = protoScenes.length >= 5 ? '0.4' : '1';
+      }
+      const resetBtn = document.getElementById('btn-reset-scenes');
+      if (resetBtn) {
+        resetBtn.style.display = isProtoCustomized ? 'inline-block' : 'none';
+      }
+    }
+
+    function protoSetSceneError(message) {
+      document.getElementById('proto-add-scene-error').textContent = message;
+      document.getElementById('proto-add-scene-time').style.borderColor = message ? '#ff7b72' : '#ffffff33';
+    }
+
+    function protoOpenAddScene() {
+      if (protoScenes.length >= 5) return;
+      const dialog = document.getElementById('proto-add-scene-dialog');
+      document.getElementById('proto-add-scene-time').value = formatTime(state.currentMs);
+      protoSetSceneError('');
+      dialog.showModal();
+      const rect = document.getElementById('btn-add-scene').getBoundingClientRect();
+      dialog.style.left = Math.max(12, Math.min(rect.right - dialog.offsetWidth, innerWidth - dialog.offsetWidth - 12)) + 'px';
+      dialog.style.top = Math.max(12, Math.min(rect.bottom + 8, innerHeight - dialog.offsetHeight - 12)) + 'px';
+      document.getElementById('proto-add-scene-time').select();
+    }
+
+    function protoConfirmAddScene() {
+      const input = document.getElementById('proto-add-scene-time').value.trim();
+      if (!/^\d+(?::[0-5]?\d){0,2}(?:\.\d{1,3})?$/.test(input)) {
+        protoSetSceneError('格式无效，支持 01:23.450 或秒数');
+        return;
+      }
+      const timestampMs = Math.round(input.split(':').reduce((seconds, part) => seconds * 60 + Number(part), 0) * 1000);
+      const message = protoAddScene(timestampMs);
+      if (message) protoSetSceneError(message);
+      else document.getElementById('proto-add-scene-dialog').close();
+    }
+
+    function protoAddScene(timestampMs) {
+      if (protoScenes.length >= 5) return '已达 5 个场景上限';
+      if (!Number.isFinite(timestampMs) || timestampMs < 0 || timestampMs >= state.durationMs) return '时间点必须位于视频时长以内';
+      if (protoScenes.some(s => Math.abs(s.timestampMs - timestampMs) < 500)) return '该时间点附近已有场景，请至少间隔 500 毫秒';
+      isProtoCustomized = true;
+      const newId = Math.max(...protoScenes.map(s => s.id)) + 1;
+      protoScenes.push({ id: newId, timestampMs });
+      labState.scene = newId;
+      renderProtoScenes();
+      drawLabCanvases();
+      document.querySelector(`[data-proto-scene="${newId}"]`)?.focus();
+      return '';
+    }
+
+    function protoDeleteScene(id) {
+      if (protoScenes.length <= 1) return;
+      isProtoCustomized = true;
+      const removedIndex = protoScenes.findIndex(s => s.id === id);
+      protoScenes = protoScenes.filter(s => s.id !== id);
+      if (labState.scene === id) {
+        labState.scene = protoScenes[Math.min(removedIndex, protoScenes.length - 1)].id;
+      }
+      renderProtoScenes();
+      drawLabCanvases();
+      document.querySelector(`[data-proto-scene="${labState.scene}"]`)?.focus();
+    }
+
+    function protoResetScenes() {
+      isProtoCustomized = false;
+      protoScenes = [...DEFAULT_PROTO_SCENES];
+      labState.scene = protoScenes[0].id;
+      renderProtoScenes();
+      drawLabCanvases();
+      drawProtoCompareTimeline();
+    }
+
     function setSampleScene(s) {
       labState.scene = s;
-      [1, 2, 3].forEach(val => {
-        const btn = document.getElementById(`scene-btn-${val}`);
-        if (btn) {
-          btn.style.background = (val === s) ? 'rgba(88, 166, 255, 0.25)' : 'rgba(255,255,255,0.05)';
-          btn.style.color = (val === s) ? '#fff' : 'var(--text-muted)';
-        }
-      });
+      renderProtoScenes();
       drawLabCanvases();
+      document.querySelector(`[data-proto-scene="${s}"]`)?.focus();
     }
+
+    function protoToggleSettings() {
+      const panel = document.getElementById('proto-compress-panel');
+      panel.style.display = panel.style.display === 'none' ? 'grid' : 'none';
+    }
+
+    function drawProtoCompareTimeline() {
+      const canvas = document.getElementById('proto-compare-timeline');
+      canvas.width = Math.max(1, canvas.clientWidth);
+      canvas.height = 50;
+      const ctx = canvas.getContext('2d');
+      ctx.font = '10px monospace';
+      for (let i = 0; i <= 10; i++) {
+        const x = i * canvas.width / 10;
+        ctx.fillStyle = '#71717a'; ctx.fillRect(x, 20, 1, 22);
+        ctx.fillText(formatTime(state.durationMs * i / 10), Math.min(x + 3, canvas.width - 65), 12);
+      }
+      // 只画剪辑切点与播放游标，不绘制画质抽样点。
+      ctx.fillStyle = '#fbbf24';
+      state.cuts.forEach(ms => ctx.fillRect(ms / state.durationMs * canvas.width - 2, 20, 4, 30));
+      ctx.fillStyle = '#60a5fa'; ctx.fillRect(state.currentMs / state.durationMs * canvas.width, 0, 2, 50);
+      document.getElementById('proto-current-time').textContent = '当前帧 ' + formatTime(state.currentMs);
+    }
+
+    const protoTimeline = document.getElementById('proto-compare-timeline');
+    protoTimeline.addEventListener('click', event => {
+      const rect = protoTimeline.getBoundingClientRect();
+      state.currentMs = Math.round(Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) * state.durationMs);
+      drawProtoCompareTimeline();
+    });
+    protoTimeline.addEventListener('dblclick', event => {
+      const rect = protoTimeline.getBoundingClientRect();
+      if (state.cuts.some(ms => Math.abs(ms / state.durationMs * rect.width - (event.clientX - rect.left)) < 8)) return;
+      document.getElementById('proto-scene-notice').textContent = protoAddScene(state.currentMs);
+    });
+    document.getElementById('proto-scenes-bar').addEventListener('keydown', event => {
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault(); protoDeleteScene(labState.scene);
+      }
+    });
+    window.addEventListener('resize', drawProtoCompareTimeline);
+    window.addEventListener('keydown', event => {
+      if (event.key === 'Escape') document.getElementById('proto-compress-panel').style.display = 'none';
+    });
 
     function drawLabCanvases() {
       const origCanvases = [document.getElementById('canvas-orig'), document.getElementById('canvas-side-orig')];
@@ -2116,7 +2282,9 @@
         labState.isDragging = false;
       });
 
+      renderProtoScenes();
       drawLabCanvases();
+      drawProtoCompareTimeline();
     }
 
     window.addEventListener('resize', resizeTimeline);

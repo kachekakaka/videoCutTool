@@ -51,6 +51,8 @@ interface TimelineProps {
   onStepSeconds?: (seconds: number) => void;
   onToggleAspectRatio?: (mode: 'auto' | '16:9' | '1:1') => void;
   onInsertCut?: () => void;
+  onDoubleClickBlank?: (timeMs: number) => void;
+  shortcutsEnabled?: boolean;
 }
 
 export const Timeline: React.FC<TimelineProps> = ({
@@ -70,7 +72,10 @@ export const Timeline: React.FC<TimelineProps> = ({
   onStepSeconds,
   onToggleAspectRatio,
   onInsertCut,
+  onDoubleClickBlank,
+  shortcutsEnabled = true,
 }) => {
+  const timelineRootRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const trackWrapperRef = useRef<HTMLDivElement | null>(null);
   const popoverInputRef = useRef<HTMLInputElement | null>(null);
@@ -84,6 +89,8 @@ export const Timeline: React.FC<TimelineProps> = ({
   const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
   const dragStartRef = useRef<{ startX: number; startY: number; timeMs: number; cutIndex: number } | null>(null);
   const lastCutClickRef = useRef<{ cutIndex: number; time: number } | null>(null);
+  const blankDownRef = useRef<{ x: number; y: number; timeMs: number } | null>(null);
+  const lastBlankClickRef = useRef<{ x: number; y: number; time: number; timeMs: number } | null>(null);
 
   const [zoom, setZoom] = useState(1); // 1x ~ 8x 缩放倍数
   const [viewStartMs, setViewStartMs] = useState(0); // 视窗起始时间 (ms)
@@ -155,19 +162,23 @@ export const Timeline: React.FC<TimelineProps> = ({
   // 键盘快捷键监听 Delete 删除选中的切点 & Escape 取消输入气泡
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (!shortcutsEnabled || e.defaultPrevented) return;
       if (e.key === 'Escape') {
         setPopoverState((p) => (p.visible ? { ...p, visible: false } : p));
         return;
       }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedCutMs !== null && onDeleteCut) {
-        if (popoverState.visible) return;
+        const target = e.target as HTMLElement;
+        if (popoverState.visible || !timelineRootRef.current?.contains(target) ||
+          target.closest('input, textarea, select, [contenteditable="true"]')) return;
+        e.preventDefault();
         onDeleteCut(selectedCutMs);
         setSelectedCutMs(null);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedCutMs, onDeleteCut, popoverState.visible]);
+  }, [selectedCutMs, onDeleteCut, popoverState.visible, shortcutsEnabled]);
 
   // 绘制时间轴
   const draw = useCallback(() => {
@@ -399,6 +410,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   };
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.currentTarget.focus({ preventScroll: true });
     // 中键或右键：进入视窗平移模式
     if (e.button === 1 || e.button === 2) {
       e.preventDefault();
@@ -459,6 +471,7 @@ export const Timeline: React.FC<TimelineProps> = ({
     setSelectedCutMs(null);
     const targetMs = getTimeFromMouseEvent(e);
     isDraggingRef.current = true;
+    blankDownRef.current = { x: e.clientX, y: e.clientY, timeMs: targetMs };
     onSeek(targetMs);
   };
 
@@ -500,18 +513,11 @@ export const Timeline: React.FC<TimelineProps> = ({
       const minAllowed = prevBound + 200;
       const maxAllowed = nextBound - 200;
 
-      let clampedMs = rawMs;
-      let hitBarrier = false;
-      if (clampedMs <= minAllowed) {
-        clampedMs = minAllowed;
-        hitBarrier = true;
-      } else if (clampedMs >= maxAllowed) {
-        clampedMs = maxAllowed;
-        hitBarrier = true;
-      }
-
-      // 关键帧向近磁吸（在屏幕像素空间 ±8px 检测）
+      let clampedMs = Math.max(minAllowed, Math.min(maxAllowed, rawMs));
       let snapped = false;
+      let hitBarrier = rawMs <= minAllowed || rawMs >= maxAllowed;
+
+      // 向近关键帧磁吸：在屏幕空间 ±8px 范围内吸附
       const currentPx = ((clampedMs - clampedViewStartMs) / visibleDurationMs) * rect.width;
       let closestKf: number | null = null;
       let minDiffPx = 9;
@@ -547,6 +553,12 @@ export const Timeline: React.FC<TimelineProps> = ({
 
     // 4. 普通时间轴拖拽游标 Seek
     if (isDraggingRef.current) {
+      if (blankDownRef.current) {
+        const dist = Math.hypot(e.clientX - blankDownRef.current.x, e.clientY - blankDownRef.current.y);
+        if (dist > 5) {
+          blankDownRef.current = null;
+        }
+      }
       const targetMs = getTimeFromMouseEvent(e);
       onSeek(targetMs);
     }
@@ -605,6 +617,27 @@ export const Timeline: React.FC<TimelineProps> = ({
         lastCutClickRef.current = { cutIndex, time: now };
       }
       dragStartRef.current = null;
+      blankDownRef.current = null;
+    } else if (blankDownRef.current && onDoubleClickBlank) {
+      // 4. 空白区域短按松开（双击检测）
+      const now = Date.now();
+      const last = lastBlankClickRef.current;
+      if (
+        last &&
+        now - last.time < 300 &&
+        Math.hypot(blankDownRef.current.x - last.x, blankDownRef.current.y - last.y) <= 8
+      ) {
+        onDoubleClickBlank(blankDownRef.current.timeMs);
+        lastBlankClickRef.current = null;
+      } else {
+        lastBlankClickRef.current = {
+          time: now,
+          x: blankDownRef.current.x,
+          y: blankDownRef.current.y,
+          timeMs: blankDownRef.current.timeMs,
+        };
+      }
+      blankDownRef.current = null;
     }
 
     isDraggingRef.current = false;
@@ -711,7 +744,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   };
 
   return (
-    <div className="w-full flex flex-col gap-1 px-3 py-1.5 rounded-xl bg-[#161b22]/90 border border-white/10 shadow-xl backdrop-blur-md">
+    <div ref={timelineRootRef} className="w-full flex flex-col gap-1 px-3 py-1.5 rounded-xl bg-[#161b22]/90 border border-white/10 shadow-xl backdrop-blur-md">
       {/* ── 顶部三段式控制条 (左侧时间与图例 + 中间绝对居中播放 + 右侧缩放与切点) ── */}
       <div className="relative flex items-center justify-between gap-2 px-1 min-h-[28px]">
         {/* 左侧：时间码与比例切换 + 紧凑内联图例 */}
@@ -890,6 +923,8 @@ export const Timeline: React.FC<TimelineProps> = ({
         >
           <canvas
             ref={canvasRef}
+            tabIndex={0}
+            aria-label="剪辑时间轴，选中切点后可按 Delete 删除"
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
