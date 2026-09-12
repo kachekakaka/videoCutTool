@@ -53,6 +53,8 @@ interface TimelineProps {
   onInsertCut?: () => void;
   onDoubleClickBlank?: (timeMs: number) => void;
   shortcutsEnabled?: boolean;
+  isActive?: boolean;
+  playbackEnabled?: boolean;
 }
 
 export const Timeline: React.FC<TimelineProps> = ({
@@ -74,9 +76,13 @@ export const Timeline: React.FC<TimelineProps> = ({
   onInsertCut,
   onDoubleClickBlank,
   shortcutsEnabled = true,
+  isActive = true,
+  playbackEnabled = true,
 }) => {
   const timelineRootRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const backgroundRef = useRef<HTMLCanvasElement | null>(null);
+  const paintedBackground = useRef<(() => void) | null>(null);
   const trackWrapperRef = useRef<HTMLDivElement | null>(null);
   const popoverInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -181,8 +187,8 @@ export const Timeline: React.FC<TimelineProps> = ({
   }, [selectedCutMs, onDeleteCut, popoverState.visible, shortcutsEnabled]);
 
   // 绘制时间轴
-  const draw = useCallback(() => {
-    const canvas = canvasRef.current;
+  const drawBackground = useCallback(() => {
+    const canvas = backgroundRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -209,12 +215,9 @@ export const Timeline: React.FC<TimelineProps> = ({
     ctx.fillRect(0, 0, logicalWidth, 14);
 
     // 动态步长计算
-    let stepMs = 5000 / zoom;
-    if (stepMs > 30000) stepMs = 30000;
-    else if (stepMs > 10000) stepMs = 10000;
-    else if (stepMs > 2000) stepMs = 2000;
-    else if (stepMs > 500) stepMs = 500;
-    else stepMs = 200;
+    const desired = visibleDurationMs / Math.max(1, logicalWidth / 90);
+    const magnitude = 10 ** Math.floor(Math.log10(Math.max(1, desired)));
+    const stepMs = [1, 2, 5, 10].find(value => value * magnitude >= desired)! * magnitude;
 
     const firstTickMs = Math.floor(clampedViewStartMs / stepMs) * stepMs;
     ctx.font = '9px monospace';
@@ -289,9 +292,15 @@ export const Timeline: React.FC<TimelineProps> = ({
 
     // 4. 绘制关键帧位置微标 (青色微圆点，位于轨道底部)
     ctx.fillStyle = '#38bdf8';
-    for (const kf of keyframes) {
+    let low = 0, high = keyframes.length;
+    while (low < high) { const middle = (low + high) >>> 1; if (keyframes[middle] < clampedViewStartMs) low = middle + 1; else high = middle; }
+    let lastPixel = -10;
+    for (let i = low; i < keyframes.length && keyframes[i] <= viewEndMs; i++) {
+      const kf = keyframes[i];
       if (kf >= clampedViewStartMs && kf <= viewEndMs) {
         const kx = ((kf - clampedViewStartMs) / visibleDurationMs) * logicalWidth;
+        if (kx - lastPixel < 2) continue;
+        lastPixel = kx;
         ctx.beginPath();
         ctx.arc(kx, logicalHeight - 3, 1.5, 0, Math.PI * 2);
         ctx.fill();
@@ -349,7 +358,24 @@ export const Timeline: React.FC<TimelineProps> = ({
       }
     }
 
-    // 6. 绘制播放游标针 (当前时间)
+    ctx.restore();
+  }, [durationMs, keyframes, cuts, segments, clampedViewStartMs, viewEndMs, visibleDurationMs, selectedCutMs, cutDragState]);
+
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!isActive || !canvas) return;
+    const rect = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    if (!rect.width || !rect.height) return;
+    const width = Math.round(rect.width * dpr), height = Math.round(rect.height * dpr);
+    if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; setTrackWidth(rect.width); paintedBackground.current = null; }
+    const background = backgroundRef.current ||= document.createElement('canvas');
+    if (background.width !== width || background.height !== height) { background.width = width; background.height = height; paintedBackground.current = null; }
+    if (paintedBackground.current !== drawBackground) { drawBackground(); paintedBackground.current = drawBackground; }
+    const ctx = canvas.getContext('2d'); if (!ctx) return;
+    ctx.clearRect(0, 0, width, height); ctx.drawImage(background, 0, 0);
+    const logicalWidth = width / dpr, logicalHeight = height / dpr;
+    ctx.save(); ctx.scale(dpr, dpr);
+    // 游标更新复用静态背景，不重画全部刻度和分段。
     if (currentTimeMs >= clampedViewStartMs && currentTimeMs <= viewEndMs) {
       const playheadX = ((currentTimeMs - clampedViewStartMs) / visibleDurationMs) * logicalWidth;
       ctx.shadowColor = '#58a6ff';
@@ -373,32 +399,32 @@ export const Timeline: React.FC<TimelineProps> = ({
     }
 
     ctx.restore();
-  }, [durationMs, currentTimeMs, keyframes, cuts, segments, zoom, clampedViewStartMs, viewEndMs, visibleDurationMs, selectedCutMs, cutDragState]);
+  }, [isActive, drawBackground, currentTimeMs, clampedViewStartMs, viewEndMs, visibleDurationMs]);
+  const drawRef = useRef(draw); drawRef.current = draw;
+  const animationRef = useRef<number | null>(null);
+  const scheduleDraw = useCallback(() => {
+    if (animationRef.current !== null) return;
+    animationRef.current = requestAnimationFrame(() => { animationRef.current = null; drawRef.current(); });
+  }, []);
 
   // 自适应 Canvas 大小
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const resize = () => {
-      const rect = canvas.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
-      setTrackWidth(rect.width);
-      draw();
-    };
-
-    resize();
-    const observer = new ResizeObserver(resize);
+    scheduleDraw();
+    const observer = new ResizeObserver(scheduleDraw);
     observer.observe(canvas);
 
-    return () => observer.disconnect();
-  }, [draw]);
+    return () => { observer.disconnect(); if (animationRef.current !== null) cancelAnimationFrame(animationRef.current); animationRef.current = null; };
+  }, [scheduleDraw]);
 
   useEffect(() => {
-    draw();
-  }, [draw]);
+    scheduleDraw();
+  }, [draw, scheduleDraw]);
+  useEffect(() => {
+    if (!isActive) { if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current); isDraggingRef.current = false; isPanningRef.current = false; setCutDragState(previous => ({ ...previous, isDragging: false })); setPopoverState(previous => ({ ...previous, visible: false })); }
+  }, [isActive]);
 
   const getTimeFromMouseEvent = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -804,7 +830,7 @@ export const Timeline: React.FC<TimelineProps> = ({
 
         {/* 中间：播放核心操作群 (数学绝对居中聚焦视线) */}
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-1.5 z-10 pointer-events-auto">
-          {onStepSeconds && (
+          {playbackEnabled && onStepSeconds && (
             <button
               onClick={() => onStepSeconds(-1)}
               className="p-1 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 transition-all active:scale-95"
@@ -814,7 +840,7 @@ export const Timeline: React.FC<TimelineProps> = ({
             </button>
           )}
 
-          {onStepFrame && (
+          {playbackEnabled && onStepFrame && (
             <button
               onClick={() => onStepFrame(-1)}
               className="p-1 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 transition-all active:scale-95"
@@ -824,7 +850,7 @@ export const Timeline: React.FC<TimelineProps> = ({
             </button>
           )}
 
-          {onTogglePlay && (
+          {playbackEnabled && onTogglePlay && (
             <button
               onClick={onTogglePlay}
               className="w-7 h-7 rounded-lg bg-blue-600 hover:bg-blue-500 text-white flex items-center justify-center transition-all shadow-md shadow-blue-500/30 active:scale-95 mx-0.5"
@@ -834,7 +860,7 @@ export const Timeline: React.FC<TimelineProps> = ({
             </button>
           )}
 
-          {onStepFrame && (
+          {playbackEnabled && onStepFrame && (
             <button
               onClick={() => onStepFrame(1)}
               className="p-1 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 transition-all active:scale-95"
@@ -844,7 +870,7 @@ export const Timeline: React.FC<TimelineProps> = ({
             </button>
           )}
 
-          {onStepSeconds && (
+          {playbackEnabled && onStepSeconds && (
             <button
               onClick={() => onStepSeconds(1)}
               className="p-1 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 transition-all active:scale-95"

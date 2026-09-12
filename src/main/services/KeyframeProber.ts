@@ -1,228 +1,103 @@
-import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { MediaMetadata } from '../../shared/types';
+import { KeyframePoint, MediaMetadata, MediaTime } from '../../shared/types';
+import { ceilMicroseconds, compareTime, formatMicroseconds, frameTime, millisecondsTime, rational, timeMs } from '../../shared/mediaTime';
+import { fileIdentity, probeFile, ProbedFile, resolveTool, runMediaTool } from './MediaTools';
 
+interface FrameIndex { version: 4; identity: string; points: KeyframePoint[] }
 export class KeyframeProber {
   private ffprobePath: string;
   private cacheDir: string;
-
-  constructor(preferredPath?: string, baseDir: string = process.cwd()) {
-    const resourcesPath = (process as any).resourcesPath;
-    const candidates = [
-      resourcesPath ? path.join(resourcesPath, 'bin', 'ffprobe.exe') : '',
-      resourcesPath ? path.join(resourcesPath, 'tools', 'ffprobe.exe') : '',
-      preferredPath,
-      'D:/Tools/ffmpeg/ffprobe.exe',
-      'D:\\Tools\\ffmpeg\\ffprobe.exe',
-      './tools/ffprobe.exe',
-      path.resolve(process.cwd(), 'tools/ffprobe.exe'),
-    ].filter(Boolean) as string[];
-
-    const matched = candidates.find(p => fs.existsSync(p));
-    this.ffprobePath = matched || 'ffprobe';
-    console.log('[KeyframeProber] Path:', this.ffprobePath);
-
-    // 遵守隔离红线：关键帧持久化缓存统一存放至同级外部临时目录 ../videoCutTool_tmp/cache/
-    const externalTmp = path.basename(baseDir).toLowerCase() === 'release'
-      ? path.resolve(baseDir, '../../videoCutTool_tmp')
-      : path.resolve(baseDir, '../videoCutTool_tmp');
-    this.cacheDir = path.resolve(externalTmp, 'cache');
-    if (!fs.existsSync(this.cacheDir)) {
-      fs.mkdirSync(this.cacheDir, { recursive: true });
-    }
+  private pending = new Map<string, Promise<FrameIndex>>();
+  private frameWindows = new Map<string, { points: number[]; center: number }>();
+  constructor(preferredPath?: string, baseDir = process.cwd()) {
+    this.ffprobePath = resolveTool('ffprobe', preferredPath);
+    const external = path.basename(baseDir).toLowerCase() === 'release' ? path.resolve(baseDir, '../../videoCutTool_tmp') : path.resolve(baseDir, '../videoCutTool_tmp');
+    this.cacheDir = path.join(external, 'cache');
+    fs.mkdirSync(this.cacheDir, { recursive: true });
   }
-
-  /**
-   * 极速秒开探测：只读取视频元数据（时长、分辨率、帧率），耗时通常 < 300ms
-   */
-  public async probeBasic(filePath: string): Promise<MediaMetadata> {
-    if (!fs.existsSync(filePath)) {
-      throw new Error(`视频文件不存在: ${filePath}`);
-    }
-
-    const fileName = path.basename(filePath);
-    const streamInfo = await this.getStreamInfo(filePath);
-
-    // 尝试先看有没有已存在的关键帧缓存
-    const cachedKeyframes = this.readCachedKeyframes(filePath);
-
-    return {
-      filePath,
-      fileName,
-      durationMs: streamInfo.durationMs,
-      width: streamInfo.width,
-      height: streamInfo.height,
-      fps: streamInfo.fps,
-      keyframes: cachedKeyframes || [0],
-    };
-  }
-
-  /**
-   * 异步扫描或从缓存加载全量物理关键帧列表
-   */
-  public async probeKeyframes(filePath: string): Promise<number[]> {
-    // 1. 检查缓存 (二次访问 0ms 秒开)
-    const cached = this.readCachedKeyframes(filePath);
-    if (cached && cached.length > 0) {
-      console.log(`[KeyframeCache] 命中磁盘缓存: ${filePath} (共 ${cached.length} 个关键帧)`);
-      return cached;
-    }
-
-    // 2. 无缓存时后台执行物理探测
-    const keyframes = await this.extractKeyframes(filePath);
-
-    // 3. 写入缓存
-    this.writeCachedKeyframes(filePath, keyframes);
-    return keyframes;
-  }
-
-  /**
-   * 兼容旧接口：全量探测
-   */
-  public async probe(filePath: string): Promise<MediaMetadata> {
-    const basic = await this.probeBasic(filePath);
-    if (basic.keyframes.length <= 1) {
-      const kfs = await this.probeKeyframes(filePath);
-      basic.keyframes = kfs;
-    }
-    return basic;
-  }
-
-  private getCachePath(filePath: string): string {
+  updateTool(preferredPath?: string) { this.ffprobePath = resolveTool('ffprobe', preferredPath); this.frameWindows.clear(); }
+  private cachePath(identity: string) { return path.join(this.cacheDir, `kfs_v4_${crypto.createHash('sha256').update(identity).digest('hex')}.json`); }
+  private readIndex(identity: string): FrameIndex | null {
     try {
-      const stat = fs.statSync(filePath);
-      const raw = `${filePath}_${stat.size}_${stat.mtimeMs}`;
-      const hash = crypto.createHash('md5').update(raw).digest('hex');
-      return path.join(this.cacheDir, `kfs_${hash}.json`);
-    } catch {
-      return '';
-    }
-  }
-
-  private readCachedKeyframes(filePath: string): number[] | null {
-    const cpath = this.getCachePath(filePath);
-    if (cpath && fs.existsSync(cpath)) {
-      try {
-        const data = fs.readFileSync(cpath, 'utf-8');
-        const parsed = JSON.parse(data);
-        if (Array.isArray(parsed)) return parsed;
-      } catch (err) {
-        console.warn('读取关键帧缓存失败:', err);
+      const data = JSON.parse(fs.readFileSync(this.cachePath(identity), 'utf8')) as FrameIndex;
+      if (data.version !== 4 || data.identity !== identity || !data.points.length) return null;
+      for (const point of data.points) {
+        if (!Number.isFinite(point.timeMs) || BigInt(point.time.denominator) <= 0n || !Number.isFinite(timeMs(point.time)) || Math.abs(timeMs(point.time) - point.timeMs) > 0.000001) return null;
       }
-    }
-    return null;
+      if (data.points.some((point, index) => index > 0 && compareTime(data.points[index - 1].time, point.time) >= 0)) return null;
+      return data;
+    } catch { return null; }
   }
-
-  private writeCachedKeyframes(filePath: string, keyframes: number[]): void {
-    const cpath = this.getCachePath(filePath);
-    if (cpath) {
-      try {
-        fs.writeFileSync(cpath, JSON.stringify(keyframes), 'utf-8');
-      } catch (err) {
-        console.warn('写入关键帧缓存失败:', err);
+  private async getIndex(file: string, info?: ProbedFile): Promise<FrameIndex> {
+    const identity = fileIdentity(file), cached = this.readIndex(identity);
+    if (cached) return cached;
+    const inFlight = this.pending.get(identity);
+    if (inFlight) return inFlight;
+    const task = (async () => {
+      const metadata = info || await probeFile(file, this.ffprobePath);
+      const output = await runMediaTool(this.ffprobePath, ['-v', 'error', '-select_streams', String(metadata.videoIndex), '-skip_frame', 'nokey', '-show_frames', '-show_entries', 'frame=best_effort_timestamp,pts', '-of', 'json', file]);
+      let frames = JSON.parse(output).frames || [];
+      // AVI 等素材没有 PTS 时，跳帧解码会把较晚的 DTS 当作展示时间，必须完整解码恢复顺序。
+      if (!frames.length || frames.some((frame: any) => frame.pts === undefined || frame.best_effort_timestamp === undefined)) {
+        const decoded = await runMediaTool(this.ffprobePath, ['-v', 'error', '-select_streams', String(metadata.videoIndex), '-show_frames', '-show_entries', 'frame=key_frame,best_effort_timestamp,pts', '-of', 'compact=p=0', file]);
+        frames = decoded.split(/\r?\n/).filter(line => /(?:^|\|)key_frame=1(?:\||$)/.test(line)).map(line => Object.fromEntries([...line.matchAll(/(?:^|\|)(pts|best_effort_timestamp)=(-?\d+)/g)].map(match => [match[1], match[2]])));
       }
+      const points = this.parseFrames(frames, metadata);
+      if (!points.length) throw new Error('没有取得有效关键帧时间戳，请检查素材或媒体工具后重试');
+      const result: FrameIndex = { version: 4, identity, points };
+      if (fileIdentity(file) !== identity) throw new Error('扫描期间源视频发生变化，请重新载入');
+      await fs.promises.writeFile(this.cachePath(identity), JSON.stringify(result), 'utf8');
+      return result;
+    })();
+    this.pending.set(identity, task);
+    try { return await task; } finally { this.pending.delete(identity); }
+  }
+  private parseFrames(frames: any[], info: ProbedFile): KeyframePoint[] {
+    const unique = new Map<string, KeyframePoint>();
+    for (const frame of frames || []) {
+      const ticks = frame.best_effort_timestamp ?? frame.pts;
+      if (typeof ticks === 'number' && !Number.isSafeInteger(ticks)) throw new Error('素材时间戳超出无损整数范围，无法精确寻址');
+      if (ticks === undefined || !/^-?\d+$/.test(String(ticks))) continue;
+      const time = frameTime(ticks, info.timeBase, info.origin);
+      const ms = timeMs(time);
+      if (!Number.isFinite(ms) || ms > info.durationMs + 1000) continue;
+      unique.set(`${time.numerator}/${time.denominator}`, { time, timeMs: ms });
     }
+    return [...unique.values()].sort((a, b) => compareTime(a.time, b.time));
   }
-
-  private getStreamInfo(filePath: string): Promise<{ durationMs: number; width: number; height: number; fps: number }> {
-    return new Promise((resolve, reject) => {
-      const args = [
-        '-v', 'error',
-        '-select_streams', 'v:0',
-        '-show_entries', 'stream=width,height,r_frame_rate,duration:format=duration',
-        '-of', 'json',
-        filePath,
-      ];
-
-      const proc = spawn(this.ffprobePath, args);
-      let stdout = '';
-      let stderr = '';
-
-      proc.stdout.on('data', chunk => stdout += chunk);
-      proc.stderr.on('data', chunk => stderr += chunk);
-
-      proc.on('close', code => {
-        if (code !== 0) {
-          return reject(new Error(`ffprobe 探测视频失败 (code ${code}): ${stderr || '未知错误'}`));
-        }
-
-        try {
-          const data = JSON.parse(stdout);
-          const stream = data.streams?.[0] || {};
-          const format = data.format || {};
-
-          let durationSec = parseFloat(stream.duration || format.duration || '0');
-          if (isNaN(durationSec) || durationSec <= 0) {
-            durationSec = 60;
-          }
-
-          let fps = 30;
-          if (stream.r_frame_rate) {
-            const [num, den] = stream.r_frame_rate.split('/').map(Number);
-            if (den && den > 0) {
-              fps = Math.round(num / den);
-            }
-          }
-
-          resolve({
-            durationMs: Math.round(durationSec * 1000),
-            width: stream.width || 1920,
-            height: stream.height || 1080,
-            fps: fps || 30,
-          });
-        } catch (err) {
-          reject(new Error(`解析 ffprobe 输出 JSON 失败: ${err}`));
-        }
-      });
-
-      proc.on('error', err => reject(new Error(`启动 ffprobe 失败 (${this.ffprobePath}): ${err.message}`)));
-    });
+  async probeBasic(file: string): Promise<MediaMetadata> {
+    const info = await probeFile(file, this.ffprobePath);
+    const index = this.readIndex(fileIdentity(file));
+    return this.toMetadata(file, info, index?.points);
   }
-
-  private extractKeyframes(filePath: string): Promise<number[]> {
-    return new Promise((resolve) => {
-      const args = [
-        '-v', 'error',
-        '-select_streams', 'v:0',
-        '-skip_frame', 'nokey',
-        '-show_frames',
-        '-show_entries', 'frame=pkt_dts_time',
-        '-of', 'json',
-        filePath,
-      ];
-
-      const proc = spawn(this.ffprobePath, args);
-      let stdout = '';
-
-      proc.stdout.on('data', chunk => stdout += chunk);
-
-      proc.on('close', () => {
-        const keyframes: number[] = [0];
-
-        try {
-          const data = JSON.parse(stdout);
-          if (Array.isArray(data.frames)) {
-            for (const f of data.frames) {
-              const sec = parseFloat(f.pkt_dts_time);
-              if (!isNaN(sec) && sec >= 0) {
-                keyframes.push(Math.round(sec * 1000));
-              }
-            }
-          }
-        } catch {
-          // JSON 解析降级
-        }
-
-        const uniqueSorted = Array.from(new Set(keyframes)).sort((a, b) => a - b);
-        resolve(uniqueSorted);
-      });
-
-      proc.on('error', (err) => {
-        console.warn('提取关键帧进程出错，默认使用 0ms:', err);
-        resolve([0]);
-      });
-    });
+  async probeKeyframes(file: string): Promise<number[]> { return (await this.getIndex(file)).points.map(point => Math.max(0, point.timeMs)); }
+  async probe(file: string): Promise<MediaMetadata> {
+    const info = await probeFile(file, this.ffprobePath);
+    return this.toMetadata(file, info, (await this.getIndex(file, info)).points);
+  }
+  private toMetadata(file: string, info: ProbedFile, points?: KeyframePoint[]): MediaMetadata {
+    return { filePath: file, fileName: path.basename(file), durationMs: info.durationMs, width: info.width, height: info.height, fps: info.fps, keyframes: points?.map(point => Math.max(0, point.timeMs)) || [0], keyframePoints: points, timeOrigin: info.origin, streams: info.streams };
+  }
+  async adjacentFrame(file: string, currentMs: number, direction: number): Promise<number> {
+    const identity = fileIdentity(file);
+    const cached = this.frameWindows.get(identity);
+    const nextFrom = (points: number[]) => direction > 0 ? points.find(point => point > currentMs + 0.01) : [...points].reverse().find(point => point < currentMs - 0.01);
+    if (cached && Math.abs(cached.center - currentMs) < 1800) {
+      const target = nextFrom(cached.points);
+      if (target !== undefined) return target;
+    }
+    const info = await probeFile(file, this.ffprobePath);
+    const relative = millisecondsTime(Math.max(0, currentMs - 2000));
+    const absolute: MediaTime = rational(BigInt(relative.numerator) * BigInt(info.origin.denominator) + BigInt(info.origin.numerator) * BigInt(relative.denominator), BigInt(relative.denominator) * BigInt(info.origin.denominator));
+    const end = millisecondsTime(Math.min(info.durationMs + 1000, currentMs + 3000));
+    const absoluteEnd = rational(BigInt(end.numerator) * BigInt(info.origin.denominator) + BigInt(info.origin.numerator) * BigInt(end.denominator), BigInt(end.denominator) * BigInt(info.origin.denominator));
+    const output = await runMediaTool(this.ffprobePath, ['-v', 'error', '-select_streams', String(info.videoIndex), '-read_intervals', `${formatMicroseconds(ceilMicroseconds(absolute))}%${formatMicroseconds(ceilMicroseconds(absoluteEnd))}`, '-show_frames', '-show_entries', 'frame=best_effort_timestamp,pts', '-of', 'json', file], { timeoutMs: 30000 });
+    const points = this.parseFrames(JSON.parse(output).frames, info).map(point => Math.max(0, point.timeMs));
+    this.frameWindows.set(identity, { center: currentMs, points });
+    if (this.frameWindows.size > 3) this.frameWindows.delete(this.frameWindows.keys().next().value!);
+    if (!points.length) throw new Error('未能读取当前位置附近的展示帧');
+    return nextFrom(points) ?? (direction > 0 ? Math.max(currentMs, points[points.length - 1]) : 0);
   }
 }

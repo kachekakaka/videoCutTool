@@ -10,7 +10,7 @@ interface SegmentCardsGridProps {
   stepMs?: number;
   onStepMsChange?: (step: number) => void;
   onToggleDecision: (segmentId: string, decision: RetentionDecision) => void;
-  onAudition: (startMs: number, endMs: number) => void;
+  onAudition?: (startMs: number, endMs: number) => void;
   onNudgeStart: (segmentId: string, deltaMs: number) => void;
   onNudgeEnd: (segmentId: string, deltaMs: number) => void;
   onMergeWithPrevious?: (segmentId: string) => void;
@@ -168,7 +168,7 @@ interface SegmentCardItemProps {
   activeStepMs: number;
   stepLabel: string;
   onToggleDecision: (segmentId: string, decision: RetentionDecision) => void;
-  onAudition: (startMs: number, endMs: number) => void;
+  onAudition?: (startMs: number, endMs: number) => void;
   onNudgeStart: (segmentId: string, deltaMs: number) => void;
   onNudgeEnd: (segmentId: string, deltaMs: number) => void;
   onMergeWithPrevious?: (segmentId: string) => void;
@@ -314,7 +314,8 @@ const SegmentCardItem: React.FC<SegmentCardItemProps> = ({
           )}
 
           <button
-            onClick={() => onAudition(seg.startMs, seg.endMs)}
+            disabled={!onAudition}
+            onClick={() => onAudition?.(seg.startMs, seg.endMs)}
             className={`px-1.5 py-0.5 rounded transition-all text-[11px] flex items-center gap-1 active:scale-95 border ${
               isAuditioning
                 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/40 shadow-sm font-bold'

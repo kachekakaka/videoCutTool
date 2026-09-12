@@ -1,12 +1,16 @@
 import fs from 'fs';
 import path from 'path';
 import { AppConfig, DEFAULT_APP_CONFIG } from '../../shared/types';
-import { formatTaskTimestamp } from '../../shared/timeUtils';
+import { CompressConfig, MediaStreamInfo } from '../../shared/types';
+import { resolveOutputBatch } from './OutputPathResolver';
+import { resolveFormats } from './MediaFormatResolver';
+import { fileIdentity, probeFile, resolveTool } from './MediaTools';
 
 export class ConfigService {
   private configPath: string;
   private currentConfig: AppConfig;
   private dataDir: string;
+  private outputStreams = new Map<string, Promise<MediaStreamInfo[]>>();
 
   constructor(dataDir: string = process.cwd(), configPath?: string) {
     this.dataDir = path.resolve(dataDir);
@@ -141,7 +145,7 @@ export class ConfigService {
    * 保存并更新配置
    */
   public saveConfig(newConfig: Partial<AppConfig>): AppConfig {
-    this.currentConfig = {
+    const nextConfig = {
       ...this.currentConfig,
       ...newConfig,
     };
@@ -149,7 +153,8 @@ export class ConfigService {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    fs.writeFileSync(this.configPath, JSON.stringify(this.currentConfig, null, 2), 'utf-8');
+    fs.writeFileSync(this.configPath, JSON.stringify(nextConfig, null, 2), 'utf-8');
+    this.currentConfig = nextConfig;
     return { ...this.currentConfig };
   }
 
@@ -179,7 +184,7 @@ export class ConfigService {
   /**
    * 根据当前输出目录策略推导视频切片的输出路径
    */
-  public resolveOutputPath(videoSourcePath: string, isConcat: boolean = true, planTitle?: string): string {
+  public resolveOutputPath(videoSourcePath: string, isConcat: boolean = true, planTitle?: string): Promise<string> {
     return this.resolveSafeOutputPath(videoSourcePath, isConcat, planTitle);
   }
 
@@ -192,58 +197,22 @@ export class ConfigService {
    * @param isConcat 是否为单文件合并模式（若为 false 则推导多分段切片的第一段预定路径）
    * @param planTitle 可选方案名称
    */
-  public resolveSafeOutputPath(
+  public async resolveSafeOutputPath(
     videoSourcePath: string,
     isConcat: boolean = true,
-    planTitle?: string
-  ): string {
-    const ext = path.extname(videoSourcePath) || '.mp4';
-    const rawBase = path.basename(videoSourcePath, ext);
-    const targetDir = this.resolveTargetDirectory(videoSourcePath);
-    const resolvedSource = path.resolve(videoSourcePath);
-
-    const isConflict = (p: string) => path.resolve(p) === resolvedSource || fs.existsSync(p);
-
-    const timestamp = formatTaskTimestamp();
-    const cleanTitle = planTitle?.trim();
-    const hasCustomTitle = Boolean(
-      cleanTitle &&
-      cleanTitle !== rawBase &&
-      !/^plan_\d+$/.test(cleanTitle)
-    );
-
-    let prefixPart = `${timestamp}_`;
-    if (hasCustomTitle) {
-      prefixPart += `[${cleanTitle}]`;
+    planTitle?: string,
+    compress?: CompressConfig,
+    stripCover = true
+  ): Promise<string> {
+    const tool = resolveTool('ffprobe', this.currentConfig.ffprobePath), identity = `${tool}:${fileIdentity(videoSourcePath)}`;
+    let streams = this.outputStreams.get(identity);
+    if (!streams) {
+      streams = probeFile(videoSourcePath, tool).then(info => info.streams).catch(error => { this.outputStreams.delete(identity); throw error; });
+      this.outputStreams.set(identity, streams);
+      if (this.outputStreams.size > 64) this.outputStreams.delete(this.outputStreams.keys().next().value!);
     }
-
-    const baseName = `${prefixPart}${rawBase}`;
-    const suffix = isConcat ? (hasCustomTitle ? '' : '_cut') : '_seg01';
-
-    return this.findNonConflictingPath(targetDir, baseName, suffix, ext, isConflict);
-  }
-
-  private findNonConflictingPath(
-    targetDir: string,
-    baseName: string,
-    prefix: string,
-    ext: string,
-    isConflict: (p: string) => boolean
-  ): string {
-    const initial = path.join(targetDir, `${baseName}${prefix}${ext}`);
-    if (!isConflict(initial)) {
-      return initial;
-    }
-
-    let index = 1;
-    while (true) {
-      const suffix = `${prefix}_${String(index).padStart(2, '0')}${ext}`;
-      const candidate = path.join(targetDir, `${baseName}${suffix}`);
-      if (!isConflict(candidate)) {
-        return candidate;
-      }
-      index++;
-    }
+    const extension = resolveFormats(videoSourcePath, await streams, compress, stripCover).outputExtension;
+    return resolveOutputBatch({ directory: this.resolveTargetDirectory(videoSourcePath), source: videoSourcePath, extension, title: planTitle, segmented: !isConcat })[0];
   }
 
   public getConfigPath(): string {

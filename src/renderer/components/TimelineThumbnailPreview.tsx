@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { formatTimecode } from './VideoPlayer';
 
 interface TimelineThumbnailPreviewProps {
@@ -21,6 +21,8 @@ export const TimelineThumbnailPreview: React.FC<TimelineThumbnailPreviewProps> =
   isHitBarrier,
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [videoPath, visible]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -28,10 +30,10 @@ export const TimelineThumbnailPreview: React.FC<TimelineThumbnailPreviewProps> =
 
     const targetSec = Math.max(0, targetMs / 1000);
     // 只有在差值超过 20ms 时才执行 seek，提升 60FPS 拖拽流畅度
-    if (Math.abs(video.currentTime - targetSec) > 0.02) {
+    if (video.readyState && Math.abs(video.currentTime - targetSec) > 0.001) {
       video.currentTime = targetSec;
     }
-  }, [targetMs, visible]);
+  }, [targetMs, visible, videoPath]);
 
   if (!visible || !videoPath) return null;
 
@@ -57,11 +59,14 @@ export const TimelineThumbnailPreview: React.FC<TimelineThumbnailPreviewProps> =
           <video
             ref={videoRef}
             src={mediaUrl}
+            onLoadedMetadata={() => { if (videoRef.current) videoRef.current.currentTime = Math.max(0, targetMs / 1000); }}
+            onError={() => setFailed(true)}
             preload="auto"
             muted
             playsInline
             className="w-full h-full object-contain"
           />
+          {failed && <span className="absolute text-[10px] text-zinc-400">此格式暂不支持小窗预览</span>}
         </div>
 
         {/* 底部信息与吸附状态徽章 */}

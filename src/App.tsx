@@ -6,58 +6,38 @@ import { PlansPage } from './renderer/components/PlansPage';
 import { SettingsPage } from './renderer/components/SettingsPage';
 import { PlanRecord } from './shared/types';
 import { CheckCircle2, FolderOpen, X } from 'lucide-react';
+import { AppDataProvider, useAppData } from './renderer/AppDataContext';
 
-export const App: React.FC = () => {
+const AppContent: React.FC = () => {
+  const { plans, config } = useAppData();
   const [activeTab, setActiveTab] = useState<TabId>('cutter');
   const [currentVideoPath, setCurrentVideoPath] = useState<string | null>(null);
   const [loadedPlan, setLoadedPlan] = useState<PlanRecord | null>(null);
-  const [plansCount, setPlansCount] = useState(0);
+  const [requestedVideo, setRequestedVideo] = useState<{ path: string; generation: number } | null>(null);
   const [globalToast, setGlobalToast] = useState<{ message: string; outputPath?: string } | null>(null);
 
-  // 刷新方案数量
-  const refreshPlansCount = async () => {
-    try {
-      if (window.electronAPI) {
-        const plans = await window.electronAPI.listPlans();
-        setPlansCount(plans.length);
-      }
-    } catch {
-      // 忽略异常
-    }
-  };
-
   useEffect(() => {
-    refreshPlansCount();
-
     if (!window.electronAPI) return;
-
-    // 监听后台方案状态变动
-    const cleanupStatus = window.electronAPI.onPlanStatusChanged?.(() => {
-      refreshPlansCount();
-    });
-
-    // 监听后台方案完成
-    const cleanupCompleted = window.electronAPI.onPlanCompleted?.(async (event) => {
-      refreshPlansCount();
-      try {
-        const cfg = await window.electronAPI!.getConfig();
-        if (cfg.notifyOnExportComplete !== false) {
+    const cleanupCompleted = window.electronAPI.onPlanCompleted?.((event) => {
+        if (config.notifyOnExportComplete !== false) {
           const fileName = event.outputPath ? event.outputPath.split(/[\\/]/).pop() : '剪辑产物';
           setGlobalToast({
             message: `剪辑完成：${fileName}`,
             outputPath: event.outputPath,
           });
         }
-      } catch (err) {
-        console.warn('读取通知配置失败:', err);
-      }
     });
 
     return () => {
-      if (cleanupStatus) cleanupStatus();
       if (cleanupCompleted) cleanupCompleted();
     };
-  }, []);
+  }, [config.notifyOnExportComplete]);
+
+  const requestVideo = (filePath: string) => {
+    setLoadedPlan(null);
+    setRequestedVideo(previous => ({ path: filePath, generation: (previous?.generation || 0) + 1 }));
+    setActiveTab('cutter');
+  };
 
   const globalFileInputRef = React.useRef<HTMLInputElement | null>(null);
 
@@ -67,11 +47,9 @@ export const App: React.FC = () => {
       try {
         const filePath = await window.electronAPI.openVideoDialog();
         if (filePath) {
-          setLoadedPlan(null); // 打开新视频时清空回载的旧方案
-          setCurrentVideoPath(filePath);
-          setActiveTab('cutter');
-          return;
+          requestVideo(filePath);
         }
+        return;
       } catch (err) {
         console.warn('原生对话框打开失败，回退至标准文件选择器', err);
       }
@@ -83,17 +61,17 @@ export const App: React.FC = () => {
   const handleGlobalFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const fullPath = (file as any).path || file.name;
-      setLoadedPlan(null);
-      setCurrentVideoPath(fullPath);
-      setActiveTab('cutter');
+      const fullPath = window.electronAPI?.getPathForFile(file) || '';
+      if (fullPath) requestVideo(fullPath);
+      else setGlobalToast({ message: '无法获取视频的完整路径，请使用桌面应用打开视频' });
     }
+    e.target.value = '';
   };
 
   // 从方案列表回载方案到工作台
   const handleLoadPlanIntoCutter = (plan: PlanRecord) => {
     setLoadedPlan(plan);
-    setCurrentVideoPath(plan.sourcePath);
+    setRequestedVideo(previous => ({ path: plan.sourcePath, generation: (previous?.generation || 0) + 1 }));
     setActiveTab('cutter');
   };
 
@@ -140,9 +118,8 @@ export const App: React.FC = () => {
         activeTab={activeTab}
         onTabChange={(tab) => {
           setActiveTab(tab);
-          refreshPlansCount();
         }}
-        plansCount={plansCount}
+        plansCount={plans.length}
       />
 
       {/* 主界面视窗 */}
@@ -161,9 +138,11 @@ export const App: React.FC = () => {
             <CutterPage
               isActive={activeTab === 'cutter'}
               onOpenVideo={handleOpenVideo}
-              initialVideoPath={currentVideoPath}
+              initialVideoPath={requestedVideo?.path}
+              loadGeneration={requestedVideo?.generation}
+              onRequestVideo={requestVideo}
+              onVideoLoaded={setCurrentVideoPath}
               loadedPlanRecord={loadedPlan}
-              onPlanSaved={refreshPlansCount}
             />
           </div>
 
@@ -212,4 +191,5 @@ export const App: React.FC = () => {
   );
 };
 
+export const App: React.FC = () => <AppDataProvider><AppContent /></AppDataProvider>;
 export default App;

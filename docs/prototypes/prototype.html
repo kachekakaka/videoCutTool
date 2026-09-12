@@ -1050,6 +1050,7 @@
       <section class="player-section">
         <div class="video-viewport">
           <video id="real-video" style="display: none;" playsinline></video>
+          <details style="position:absolute;bottom:12px;left:12px;z-index:20;background:#161b22;padding:8px;border-radius:8px;font-size:12px;"><summary>播放失败状态示意</summary><p>此素材无法直接播放，可生成兼容预览。导出仍使用原片。</p><button class="btn" onclick="this.parentElement.querySelector('p').innerText='正在生成兼容预览 35%（示意）'">生成兼容预览</button><button class="btn" onclick="this.parentElement.querySelector('p').innerText='已取消生成，可重试播放或重新生成。'">取消生成</button></details>
           <canvas id="virtual-screen"></canvas>
           <div class="video-overlay-info">
             <span id="video-name-tag">示例影片: sample_movie.mp4</span>
@@ -1077,11 +1078,11 @@
           </div>
 
           <div class="player-controls-center">
-            <button class="btn" onclick="stepFrame(-1)" title="后退 1 帧 / 0.04s (快捷键: ←)">◀ 逐帧</button>
+            <button class="btn" onclick="stepFrame(-1)" title="定位上一展示帧 (快捷键: ←)">◀ 逐帧</button>
             <button class="btn btn-primary" id="play-pause-btn" onclick="togglePlay()" style="padding: 7px 22px;">
               <span id="play-btn-text">播放</span>
             </button>
-            <button class="btn" onclick="stepFrame(1)" title="前进 1 帧 / 0.04s (快捷键: →)">逐帧 ▶</button>
+            <button class="btn" onclick="stepFrame(1)" title="定位下一展示帧 (快捷键: →)">逐帧 ▶</button>
           </div>
 
           <div class="player-controls-right">
@@ -1117,6 +1118,7 @@
           <div class="filter-tabs">
             <button class="filter-btn active" onclick="filterPlans('all', this)">全部方案 (<span id="count-all">2</span>)</button>
             <button class="filter-btn" onclick="filterPlans('ready', this)">⏳ 待执行 (<span id="count-ready">1</span>)</button>
+            <button class="filter-btn" onclick="filterPlans('queued', this)">排队中 (<span id="count-queued">0</span>)</button>
             <button class="filter-btn" onclick="filterPlans('completed', this)">✔ 已完成剪辑 (<span id="count-completed">1</span>)</button>
           </div>
           <div style="display: flex; gap: 10px;">
@@ -1211,10 +1213,10 @@
               <span style="font-size: 13px; font-weight: 700; color: #fff;">均衡 (推荐日常)</span>
               <span style="font-size: 11px; padding: 2px 6px; border-radius: 6px; background: rgba(88, 166, 255, 0.2); color: #58a6ff; font-family: monospace;">CRF 22</span>
             </div>
-            <p style="font-size: 11.5px; color: var(--text-muted); line-height: 1.4; margin-bottom: 10px;">肉眼近乎无损，体积缩减 35%~50%，强制音频无损拷贝</p>
+            <p style="font-size: 11.5px; color: var(--text-muted); line-height: 1.4; margin-bottom: 10px;">兼顾画面细节和体积，全部音轨保持流复制</p>
             <div style="display: flex; justify-content: space-between; font-size: 11px; font-family: monospace;">
-              <span style="color: #3fb950; font-weight: 600;">体积 -42.5%</span>
-              <span style="color: #bc8cff;">保真 92%+</span>
+              <span style="color: #3fb950; font-weight: 600;">实际效果随素材变化</span>
+              <span style="color: #bc8cff;">均衡压缩</span>
             </div>
           </div>
 
@@ -1223,10 +1225,10 @@
               <span style="font-size: 13px; font-weight: 700; color: #fff;">高画质</span>
               <span style="font-size: 11px; padding: 2px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.1); color: var(--text-main); font-family: monospace;">CRF 18</span>
             </div>
-            <p style="font-size: 11.5px; color: var(--text-muted); line-height: 1.4; margin-bottom: 10px;">极致画质保留，微小细节完全保真，体积缩减 15%~35%</p>
+            <p style="font-size: 11.5px; color: var(--text-muted); line-height: 1.4; margin-bottom: 10px;">优先保留画面细节，保留原生分辨率</p>
             <div style="display: flex; justify-content: space-between; font-size: 11px; font-family: monospace;">
-              <span style="color: #3fb950; font-weight: 600;">体积 -24.8%</span>
-              <span style="color: #bc8cff;">保真 97%+</span>
+              <span style="color: #3fb950; font-weight: 600;">实际效果随素材变化</span>
+              <span style="color: #bc8cff;">画质优先</span>
             </div>
           </div>
 
@@ -1235,22 +1237,22 @@
               <span style="font-size: 13px; font-weight: 700; color: #fff;">高压缩 (HEVC)</span>
               <span style="font-size: 11px; padding: 2px 6px; border-radius: 6px; background: rgba(188, 140, 255, 0.2); color: #bc8cff; font-family: monospace;">H.265 CRF 24</span>
             </div>
-            <p style="font-size: 11.5px; color: var(--text-muted); line-height: 1.4; margin-bottom: 10px;">高效高密编码，体积极限缩减 50%~70%，长片首选</p>
+            <p style="font-size: 11.5px; color: var(--text-muted); line-height: 1.4; margin-bottom: 10px;">使用 HEVC 编码，偏重体积缩减</p>
             <div style="display: flex; justify-content: space-between; font-size: 11px; font-family: monospace;">
-              <span style="color: #3fb950; font-weight: 600;">体积 -61.2%</span>
-              <span style="color: #bc8cff;">保真 86%+</span>
+              <span style="color: #3fb950; font-weight: 600;">实际效果随素材变化</span>
+              <span style="color: #bc8cff;">体积优先</span>
             </div>
           </div>
 
           <div class="compress-card" onclick="selectPreset('scale_1080p', this)" style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 14px; cursor: pointer; transition: all 0.2s;">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
               <span style="font-size: 13px; font-weight: 700; color: #fff;">降至 1080p</span>
-              <span style="font-size: 11px; padding: 2px 6px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; font-family: monospace;">限宽1920</span>
+              <span style="font-size: 11px; padding: 2px 6px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; font-family: monospace;">限高1080</span>
             </div>
-            <p style="font-size: 11.5px; color: var(--text-muted); line-height: 1.4; margin-bottom: 10px;">4K/2K 超高清专享，限宽 1920 消除多余负荷</p>
+            <p style="font-size: 11.5px; color: var(--text-muted); line-height: 1.4; margin-bottom: 10px;">按旋转后的实际画面限高 1080，保持比例，不放大小素材</p>
             <div style="display: flex; justify-content: space-between; font-size: 11px; font-family: monospace;">
-              <span style="color: #3fb950; font-weight: 600;">体积 -55.0%</span>
-              <span style="color: #bc8cff;">保真 94%+</span>
+              <span style="color: #3fb950; font-weight: 600;">实际效果随素材变化</span>
+              <span style="color: #bc8cff;">限制画面高度</span>
             </div>
           </div>
         </div>
@@ -1294,6 +1296,7 @@
           <button class="btn" onclick="protoToggleSettings()">⚙️ 参数</button>
         </div>
         <canvas id="proto-compare-timeline" tabindex="0" aria-label="画质对比时间轴" style="width: 100%; height: 50px; background: #121620; border-radius: 8px; cursor: crosshair;"></canvas>
+        <p style="font-size:11px;color:var(--text-muted)">局部抽样 · 实际编码器：CPU（示意） · 不保证与整片每帧相同；画格大小不代表成片体积。进入对比暂停播放，返回保留位置。</p>
         <p id="proto-scene-notice" role="status" style="color: #ff7b72; font-size: 12px; min-height: 16px;"></p>
 
         <!-- 交互展示区 -->
@@ -1320,14 +1323,14 @@
             <div style="position: relative; background: #000; border-radius: 12px; border: 1px solid var(--border-subtle); overflow: hidden; display: flex; flex-direction: column;">
               <div style="padding: 8px 12px; background: rgba(255,255,255,0.05); border-bottom: 1px solid var(--border-subtle); font-size: 12px; color: #58a6ff; font-family: monospace; display: flex; justify-content: space-between;">
                 <span>原片画质</span>
-                <span style="color: var(--text-muted);">单帧: 1.82 MB</span>
+                <span style="color: var(--text-muted);">原画格: 1.82 MB（示意）</span>
               </div>
               <canvas id="canvas-side-orig" style="flex: 1; width: 100%; height: 100%;"></canvas>
             </div>
             <div style="position: relative; background: #000; border-radius: 12px; border: 1px solid var(--border-subtle); overflow: hidden; display: flex; flex-direction: column;">
               <div style="padding: 8px 12px; background: rgba(255,255,255,0.05); border-bottom: 1px solid var(--border-subtle); font-size: 12px; color: #bc8cff; font-family: monospace; display: flex; justify-content: space-between;">
                 <span id="side-tag-comp">降码压制 (CRF 22)</span>
-                <span style="color: #3fb950;">单帧: 1.05 MB (-42.5%)</span>
+                <span style="color: #3fb950;">压缩画格: 1.05 MB（示意）</span>
               </div>
               <canvas id="canvas-side-comp" style="flex: 1; width: 100%; height: 100%;"></canvas>
             </div>
@@ -1625,6 +1628,7 @@
 
       const readyCount = state.savedPlans.filter(p => p.status === 'ready').length;
       const completedCount = state.savedPlans.filter(p => p.status === 'completed').length;
+      document.getElementById('count-queued').innerText = state.savedPlans.filter(p => p.status === 'queued').length;
 
       document.getElementById('count-all').innerText = state.savedPlans.length;
       document.getElementById('count-ready').innerText = readyCount;
@@ -1634,14 +1638,16 @@
       let filtered = state.savedPlans;
       if (state.currentFilter === 'ready') filtered = filtered.filter(p => p.status === 'ready');
       if (state.currentFilter === 'completed') filtered = filtered.filter(p => p.status === 'completed');
+      if (state.currentFilter === 'queued') filtered = filtered.filter(p => p.status === 'queued');
 
       if (filtered.length === 0) {
         container.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--text-dim);">当前筛选下暂无方案</div>`;
         return;
       }
 
-      filtered.forEach((plan, idx) => {
+      filtered.slice(0, 50).forEach((plan) => {
         const isCompleted = plan.status === 'completed';
+        const busy = ['queued', 'processing'].includes(plan.status);
         const card = document.createElement('div');
         card.className = 'plan-card';
 
@@ -1650,7 +1656,7 @@
             <div class="plan-title">
               <span>${plan.title}</span>
               <span class="status-tag ${isCompleted ? 'completed' : 'ready'}">
-                ${isCompleted ? '✔ 已完成剪辑' : '⏳ 待执行'}
+                ${isCompleted ? '✔ 已完成剪辑' : plan.status === 'queued' ? '排队中' : plan.status === 'processing' ? '处理中' : '⏳ 待执行'}
               </span>
             </div>
             <div class="plan-path-sub">来源: ${plan.sourcePath}</div>
@@ -1671,14 +1677,14 @@
                 ↻ 重新导出
               </button>
             ` : `
-              <button class="btn btn-primary" onclick="executePlan('${plan.id}')" title="一键执行无损流复制剪辑">
-                🚀 立即执行
+              <button class="btn btn-primary" ${busy ? 'disabled' : ''} onclick="executePlan('${plan.id}')" title="提交后台队列">
+                ${busy ? '已接受任务' : '🚀 立即执行'}
               </button>
             `}
             <button class="btn" onclick="loadPlanToCutter('${plan.id}')" title="载入到工作台微调切点">
               ✏ 编辑
             </button>
-            <button class="btn btn-danger" onclick="deletePlan(${idx})" title="删除方案">
+            <button class="btn btn-danger" ${plan.status === 'processing' ? 'disabled' : ''} onclick="deletePlan('${plan.id}')" title="${plan.status === 'processing' ? '处理中，完成后可删除' : '移除排队任务并删除方案'}">
               🗑
             </button>
           </div>
@@ -1736,7 +1742,9 @@
       alert(`已成功载入方案【${plan.title}】到工作台！`);
     }
 
-    function deletePlan(index) {
+    function deletePlan(id) {
+      const index = state.savedPlans.findIndex(plan => plan.id === id);
+      if (index < 0 || state.savedPlans[index].status === 'processing') return;
       if (confirm('确认删除该方案记录？')) {
         state.savedPlans.splice(index, 1);
         renderPlansList();
@@ -1745,12 +1753,14 @@
 
     function executePlan(planId) {
       const plan = state.savedPlans.find(p => p.id === planId);
-      if (!plan) return;
-      alert(`🚀 开始执行方案【${plan.title}】！\n\n输出目标：${plan.outputPath}\n已调用 FFmpeg 流复制极速完成，方案状态将标记为【✔ 已完成剪辑】！`);
-      plan.status = 'completed';
-      const now = new Date();
-      plan.completedAt = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+      if (!plan || ['queued', 'processing'].includes(plan.status)) return;
+      plan.status = 'queued';
       renderPlansList();
+      setTimeout(() => {
+        if (!state.savedPlans.includes(plan)) return;
+        plan.status = 'processing'; renderPlansList();
+        setTimeout(() => { plan.status = 'completed'; plan.completedAt = new Date().toLocaleTimeString(); renderPlansList(); }, 1500);
+      }, 1500);
     }
 
     function batchExecutePlans() {
@@ -1759,11 +1769,7 @@
         alert('当前没有待执行的方案！');
         return;
       }
-      alert(`🚀 正在批量执行 ${readyPlans.length} 个待办方案！全部完成流复制无损剪切。`);
-      readyPlans.forEach(p => {
-        p.status = 'completed';
-        p.completedAt = '刚才';
-      });
+      readyPlans.forEach(p => executePlan(p.id));
       renderPlansList();
     }
 

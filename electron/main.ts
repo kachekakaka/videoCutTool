@@ -8,6 +8,8 @@ import { KeyframeProber } from '../src/main/services/KeyframeProber';
 import { MediaCuttingEngine } from '../src/main/services/MediaCuttingEngine';
 import { PlanManager } from '../src/main/services/PlanManager';
 import { CompressionPreviewService } from '../src/main/services/CompressionPreviewService';
+import { PlaybackPreviewService } from '../src/main/services/PlaybackPreviewService';
+import { MediaLimiter, stopMediaProcesses } from '../src/main/services/MediaTools';
 import { AppConfig, PlanRecord, CompressConfig } from '../src/shared/types';
 
 // 全局彻底移除应用菜单，防止 Windows 下用户按 Alt 键唤出原生菜单栏
@@ -76,6 +78,7 @@ let prober: KeyframeProber;
 let cuttingEngine: MediaCuttingEngine;
 let planManager: PlanManager;
 let previewService: CompressionPreviewService;
+let playbackService: PlaybackPreviewService;
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -146,11 +149,20 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+  mainWindow.on('close', (event) => {
+    if (!quitting && cuttingEngine?.getState().activePlanId) {
+      const answer = dialog.showMessageBoxSync(mainWindow!, { type: 'question', title: '退出应用', message: '正在导出视频，退出会中断当前任务。下次启动可在方案中心重试。', buttons: ['继续导出', '中断并退出'], defaultId: 0, cancelId: 0 });
+      if (answer === 0) event.preventDefault();
+    }
+  });
 }
 
 function getMimeType(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   switch (ext) {
+    case '.png': return 'image/png';
+    case '.jpg': return 'image/jpeg';
+    case '.webp': return 'image/webp';
     case '.mp4': return 'video/mp4';
     case '.mkv': return 'video/x-matroska';
     case '.mov': return 'video/quicktime';
@@ -164,24 +176,44 @@ function getMimeType(filePath: string): string {
 
 // 注册 IPC 通信
 ipcMain.handle('config:get', async () => configService.getConfig());
-ipcMain.handle('config:save', async (_event, newConfig: Partial<AppConfig>) => configService.saveConfig(newConfig));
+ipcMain.handle('config:save', async (_event, patch: Partial<AppConfig>) => {
+  const previous = configService.getConfig();
+  const config = configService.saveConfig(patch);
+  if (previous.ffmpegPath !== config.ffmpegPath || previous.ffprobePath !== config.ffprobePath) {
+    await Promise.all([previewService.shutdown(), playbackService.shutdown()]);
+    prober.updateTool(config.ffprobePath);
+    cuttingEngine.updateTools(config.ffmpegPath, config.ffprobePath);
+    previewService.updateTools(config.ffmpegPath, config.ffprobePath);
+    playbackService.updateTools(config.ffmpegPath, config.ffprobePath);
+  }
+  mainWindow?.webContents.send('config:changed', config);
+  return config;
+});
 ipcMain.handle('config:getPath', async () => configService.getConfigPath());
-ipcMain.handle('config:resolveOutputPath', async (_event, videoPath: string, isConcat: boolean = true, planTitle?: string) => configService.resolveSafeOutputPath(videoPath, isConcat, planTitle));
+ipcMain.handle('config:resolveOutputPath', async (_event, videoPath: string, isConcat: boolean = true, planTitle?: string, compress?: CompressConfig, stripCover?: boolean) => configService.resolveSafeOutputPath(videoPath, isConcat, planTitle, compress, stripCover));
 
 ipcMain.handle('media:probe', async (_event, filePath: string) => prober.probe(filePath));
 ipcMain.handle('media:probeBasic', async (_event, filePath: string) => prober.probeBasic(filePath));
 ipcMain.handle('media:probeKeyframes', async (_event, filePath: string) => prober.probeKeyframes(filePath));
+ipcMain.handle('media:adjacentFrame', async (_event, file: string, time: number, direction: -1 | 1) => prober.adjacentFrame(file, time, direction));
+ipcMain.handle('media:preparePlayback', async (event, file: string, convert: boolean, id: string) => playbackService.prepare(file, convert, id, progress => { if (!event.sender.isDestroyed()) event.sender.send('media:previewProgress', progress); }));
+ipcMain.handle('media:cancelPlayback', async (_event, id: string) => playbackService.cancel(id));
 
 // 降码画质抽样对比与硬件探测
-ipcMain.handle('compress:previewSamples', async (_event, videoPath: string, timestampsMs: number[], config: CompressConfig) => {
-  return previewService.generatePreviewSamples(videoPath, timestampsMs, config);
+ipcMain.handle('compress:previewSamples', async (_event, videoPath: string, timestampsMs: number[], config: CompressConfig, id?: string) => {
+  return previewService.generatePreviewSamples(videoPath, timestampsMs, config, id);
 });
-ipcMain.handle('compress:probeEncoder', async () => cuttingEngine.probeEncoderSupport());
+ipcMain.handle('compress:cancelPreview', async (_event, id: string) => previewService.cancel(id));
+ipcMain.handle('compress:probeEncoder', async (_event, config?: CompressConfig) => cuttingEngine.probeEncoderSupport(config));
 
 // 剪辑引擎与后台任务
 ipcMain.handle('engine:submitDraft', async (_event, record: PlanRecord) => planManager.submitDraft(record));
 
 ipcMain.handle('plan:list', async () => planManager.listPlans());
+ipcMain.handle('plan:details', async () => planManager.details());
+ipcMain.handle('plan:refresh', async () => planManager.refreshPlans());
+ipcMain.handle('engine:state', async () => cuttingEngine.getState());
+ipcMain.handle('engine:retryPendingWrites', async () => cuttingEngine.retryPendingWrites());
 ipcMain.handle('plan:save', async (_event, record: PlanRecord) => planManager.savePlan(record));
 ipcMain.handle('plan:delete', async (_event, id: string) => planManager.deletePlan(id));
 ipcMain.handle('plan:execute', async (_event, id: string) => planManager.executePlan(id));
@@ -221,7 +253,7 @@ ipcMain.handle('dialog:openVideo', async () => {
     return result.filePaths[0];
   } catch (err) {
     console.error('打开文件对话框失败:', err);
-    return null;
+    throw err;
   }
 });
 
@@ -281,7 +313,12 @@ app.whenReady().then(async () => {
   prober = new KeyframeProber(currentConfig.ffprobePath, exeDir);
   cuttingEngine = new MediaCuttingEngine(currentConfig.ffmpegPath, tempSlicesDir);
   planManager = new PlanManager(configService.getDataDirectory(), cuttingEngine, prober);
-  previewService = new CompressionPreviewService(currentConfig.ffmpegPath, tempPreviewDir);
+  const previewLimiter = new MediaLimiter(() => cuttingEngine.getActivePlanId() ? 1 : 2);
+  previewService = new CompressionPreviewService(currentConfig.ffmpegPath, tempPreviewDir, (config, signal) => cuttingEngine.probeEncoderSupport(config, signal), previewLimiter);
+  playbackService = new PlaybackPreviewService(path.resolve(getExternalTmpDir(exeDir), 'playback_cache'), currentConfig.ffmpegPath, currentConfig.ffprobePath, previewLimiter);
+  planManager.setChangeListener(change => mainWindow?.webContents.send('plan:changed', change));
+  cuttingEngine.setStateListener(state => mainWindow?.webContents.send('engine:stateChanged', state));
+  await planManager.ready;
 
   // 绑定引擎状态变动至渲染层窗口广播
   cuttingEngine.setStatusListener((event) => {
@@ -369,10 +406,24 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+}).catch(error => {
+  dialog.showErrorBox('启动失败', `无法初始化应用或工作数据目录：${error instanceof Error ? error.message : String(error)}`);
+  app.quit();
 });
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+let quitting = false;
+app.on('before-quit', event => {
+  if (quitting) return;
+  event.preventDefault(); quitting = true;
+  void (async () => {
+    await Promise.allSettled([previewService?.shutdown(), playbackService?.shutdown(), cuttingEngine?.shutdown(), stopMediaProcesses()]);
+    await stopMediaProcesses();
+    app.quit();
+  })();
 });

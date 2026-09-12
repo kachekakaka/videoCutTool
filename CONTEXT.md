@@ -77,7 +77,7 @@ The zero-installer, instant-launch distribution employing a Clean Root architect
 _Avoid_: Green package, zip distribution, installer package, single-file SFX
 
 **Execution Status**:
-The persistent lifecycle state of a plan record, explicitly distinguishing `ready` (pending cut), `processing` (actively executing in background), `completed` (losslessly exported with artifact path), and `failed` (execution error).
+The persistent lifecycle state of a plan record: `ready`（未提交）、`queued`（已接受并等待执行）、`processing`（后台处理中）、`completed`（导出完成并记录产物路径）与 `failed`（执行失败或上次执行中断，可重试）。状态保存成功后才确认接受任务和广播变更；同一 ID 在排队、执行及结果保存期间只接受一次。处理中不能删除或覆盖保存；排队记录删除时同步移出队列。恢复快照和删除标记属于 Data Directory 中的长期用户恢复数据。
 _Avoid_: Run state, task progress, finish flag
 
 **Output Directory Policy**:

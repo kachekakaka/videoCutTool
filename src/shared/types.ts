@@ -58,13 +58,30 @@ export interface MediaMetadata {
   height: number;
   fps: number;
   keyframes: number[]; // 全片关键帧毫秒时间戳有序列表
+  keyframePoints?: KeyframePoint[];
+  timeOrigin?: MediaTime;
+  streams?: MediaStreamInfo[];
 }
+
+/** 秒的有理数表示；整数用字符串存储，避免 JSON 往返丢失寻址精度。 */
+export interface MediaTime { numerator: string; denominator: string }
+export interface KeyframePoint { time: MediaTime; timeMs: number }
+export interface MediaStreamInfo {
+  index: number;
+  type: string;
+  codec: string;
+  language?: string;
+  attachedPicture: boolean;
+  default: boolean;
+}
+export interface ExportFormats { intermediateExtension: string; outputExtension: string }
 
 export interface PlanSegment {
   segmentId: string;
   userRange: TimeRange;
   safeRange: TimeRange;
   sourceKeyframeMs: number;
+  seekTime?: MediaTime;
 }
 
 export type CompressPresetId = 'high_quality' | 'balanced' | 'high_compression' | 'scale_1080p' | 'custom';
@@ -92,7 +109,7 @@ export interface MediaRetentionPlan {
   compress?: CompressConfig;
 }
 
-export type ExecutionStatus = 'ready' | 'processing' | 'completed' | 'failed';
+export type ExecutionStatus = 'ready' | 'queued' | 'processing' | 'completed' | 'failed';
 
 export interface PlanRecord {
   id: string;
@@ -111,6 +128,8 @@ export interface PlanRecord {
   stripOriginalCover?: boolean;
   compress?: CompressConfig;
   error?: string;
+  outputPaths?: string[];
+  resolvedEncoder?: 'cpu' | 'nvenc' | 'qsv';
 }
 
 export interface CutResult {
@@ -118,7 +137,14 @@ export interface CutResult {
   outputPath: string;
   durationMs?: number;
   error?: string;
+  outputPaths?: string[];
+  resolvedEncoder?: 'cpu' | 'nvenc' | 'qsv';
 }
+
+export interface PlanChange { record?: PlanRecord; deletedId?: string }
+export interface EngineState { activePlanId: string | null; queuedIds: string[]; storageError: string | null }
+export interface PlanListResult { records: PlanRecord[]; issues: string[] }
+export interface PreviewProgress { requestId: string; percent: number; message: string }
 
 /**
  * 降码画质 A/B 对比抽样画格数据契约 (Visual Compression Preview Sample)
@@ -130,4 +156,7 @@ export interface PreviewSample {
   compressedBase64: string;
   originalSizeBytes: number;
   compressedSizeBytes: number;
+  originalUrl?: string;
+  compressedUrl?: string;
+  resolvedEncoder?: 'cpu' | 'nvenc' | 'qsv';
 }

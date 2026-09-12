@@ -1,4 +1,4 @@
-import { Segment, RetentionDecision, MediaRetentionPlan, PlanRecord, CompressConfig } from './types';
+import { Segment, RetentionDecision, MediaRetentionPlan, PlanRecord, CompressConfig, KeyframePoint } from './types';
 import { planRetention } from './RetentionPlanner';
 
 export interface DraftSnapshot {
@@ -248,6 +248,7 @@ export class RetentionDraft {
       stripOriginalCover?: boolean;
       title?: string;
       compress?: CompressConfig;
+      keyframePoints?: KeyframePoint[];
     }
   ): MediaRetentionPlan {
     const isConcat = options.concatSingleFile ?? options.concatToSingleFile ?? this.concatSingleFile;
@@ -260,7 +261,8 @@ export class RetentionDraft {
       keyframes,
       options.outputPath,
       isConcat,
-      stripCover
+      stripCover,
+      options.keyframePoints
     );
     if (options.title) {
       plan.title = options.title;

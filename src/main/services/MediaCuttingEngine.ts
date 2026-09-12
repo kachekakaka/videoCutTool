@@ -1,628 +1,246 @@
-import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
-import { PlanRecord, CutResult, MediaRetentionPlan, CompressConfig } from '../../shared/types';
+import { randomUUID } from 'crypto';
+import { PlanRecord, CutResult, MediaRetentionPlan, CompressConfig, ExecutionStatus, EngineState, PlanSegment, MediaStreamInfo, MediaTime } from '../../shared/types';
 import { RetentionDraft } from '../../shared/RetentionDraft';
 import { formatTaskTimestamp } from '../../shared/timeUtils';
 import { buildCompressArgs } from '../../shared/compressPresets';
+import { addTime, subtractTime, ceilMicroseconds, formatMicroseconds, millisecondsTime } from '../../shared/mediaTime';
 import { KeyframeProber } from './KeyframeProber';
+import { abortError, needsTimestampRepair, presentationStartTime, probeFile, removeOwnedDirectory, resolveTool, runMediaTool } from './MediaTools';
+import { resolveFormats, resolveNormalizationExtension, retainedStreams } from './MediaFormatResolver';
+import { resolveOutputBatch } from './OutputPathResolver';
 
-export type PlanStatusListener = (event: {
-  planId: string;
-  status: 'processing' | 'completed' | 'failed';
-  outputPath?: string;
-  error?: string;
-  record?: PlanRecord;
-}) => void;
+type Encoder = 'cpu' | 'nvenc' | 'qsv';
+type Job = { record: PlanRecord; prober: KeyframeProber };
+export type PlanStatusListener = (event: { planId: string; status: ExecutionStatus; outputPath?: string; error?: string; record?: PlanRecord }) => void;
 
-/**
- * MediaCuttingEngine: 后台异步剪辑执行引擎
- * 负责单任务串行 FIFO 队列调度、无损流复制执行、智能先切后压、临时切片生命周期 GC 与方案状态机跃迁
- */
 export class MediaCuttingEngine {
   private ffmpegPath: string;
+  private ffprobePath: string;
   private tmpDir: string;
-  private queue: Array<{ record: PlanRecord; prober: KeyframeProber }> = [];
-  private isRunning: boolean = false;
-  private activePlanId: string | null = null;
+  private queue: Job[] = [];
+  private accepted = new Map<string, Job>();
+  private submitting = new Map<string, Promise<{ queued: boolean; active: boolean }>>();
+  private submissionChain: Promise<unknown> = Promise.resolve();
+  private running = false;
+  private active: Job | null = null;
+  private controller: AbortController | null = null;
+  private savePlanFn?: (record: PlanRecord) => Promise<PlanRecord | void> | PlanRecord | void;
   private onStatusChange?: PlanStatusListener;
-  private savePlanFn?: (record: PlanRecord) => void;
-  private cachedEncoder?: 'cpu' | 'nvenc' | 'qsv';
+  private onStateChange?: (state: EngineState) => void;
+  private storageError: string | null = null;
+  private pendingFinal: PlanRecord | null = null;
+  private closing = false;
+  private cachedEncoders = new Map<string, Encoder>();
+  private encoderJobs = new Map<string, { promise: Promise<Encoder>; controller: AbortController; consumers: Set<symbol> }>();
+  private drainPromise: Promise<void> = Promise.resolve();
 
-  constructor(
-    preferredPath?: string,
-    customSlicesDir?: string,
-    savePlanFn?: (record: PlanRecord) => void,
-    onStatusChange?: PlanStatusListener
-  ) {
-    const resourcesPath = (process as any).resourcesPath;
-    const candidates = [
-      resourcesPath ? path.join(resourcesPath, 'bin', 'ffmpeg.exe') : '',
-      resourcesPath ? path.join(resourcesPath, 'tools', 'ffmpeg.exe') : '',
-      preferredPath,
-      'D:/Tools/ffmpeg/ffmpeg.exe',
-      'D:\\Tools\\ffmpeg\\ffmpeg.exe',
-      './tools/ffmpeg.exe',
-      path.resolve(process.cwd(), 'tools/ffmpeg.exe'),
-    ].filter(Boolean) as string[];
-
-    const matched = candidates.find((p) => fs.existsSync(p));
-    this.ffmpegPath = matched || 'ffmpeg';
-
-    // 切片缓存统一存放至同级外部目录 ../videoCutTool_tmp/slices/
-    const baseCwd = process.cwd();
-    const fallbackTmp = path.basename(baseCwd).toLowerCase() === 'release'
-      ? path.resolve(baseCwd, '../../videoCutTool_tmp')
-      : path.resolve(baseCwd, '../videoCutTool_tmp');
-    this.tmpDir = customSlicesDir
-      ? path.resolve(customSlicesDir)
-      : path.resolve(fallbackTmp, 'slices');
-
-    if (!fs.existsSync(this.tmpDir)) {
-      fs.mkdirSync(this.tmpDir, { recursive: true });
-    }
-
-    this.savePlanFn = savePlanFn;
-    this.onStatusChange = onStatusChange;
+  constructor(preferredPath?: string, customSlicesDir?: string, saver?: (record: PlanRecord) => any, listener?: PlanStatusListener) {
+    this.ffmpegPath = resolveTool('ffmpeg', preferredPath);
+    this.ffprobePath = resolveTool('ffprobe', preferredPath ? path.join(path.dirname(preferredPath), 'ffprobe.exe') : undefined);
+    const base = process.cwd();
+    this.tmpDir = customSlicesDir || path.resolve(base, path.basename(base).toLowerCase() === 'release' ? '../../videoCutTool_tmp/slices' : '../videoCutTool_tmp/slices');
+    fs.mkdirSync(this.tmpDir, { recursive: true });
+    this.savePlanFn = saver; this.onStatusChange = listener;
   }
-
-  public setStatusListener(listener: PlanStatusListener) {
-    this.onStatusChange = listener;
+  updateTools(ffmpeg?: string, ffprobe?: string) { this.ffmpegPath = resolveTool('ffmpeg', ffmpeg); this.ffprobePath = resolveTool('ffprobe', ffprobe); this.cachedEncoders.clear(); }
+  setStatusListener(listener: PlanStatusListener) { this.onStatusChange = listener; }
+  setStateListener(listener: (state: EngineState) => void) { this.onStateChange = listener; }
+  setPlanSaver(saver: (record: PlanRecord) => Promise<PlanRecord | void> | PlanRecord | void) { this.savePlanFn = saver; }
+  getActivePlanId() { return this.active?.record.id || null; }
+  getQueueLength() { return this.queue.length; }
+  isAccepted(id: string) { return this.accepted.has(id) || this.submitting.has(id); }
+  getState(): EngineState { return { activePlanId: this.getActivePlanId(), queuedIds: this.queue.map(job => job.record.id), storageError: this.storageError }; }
+  private stateChanged() { this.onStateChange?.(this.getState()); }
+  private async persist(record: PlanRecord) { await this.savePlanFn?.(record); }
+  private notify(record: PlanRecord) { this.onStatusChange?.({ planId: record.id, status: record.status, record: structuredClone(record), outputPath: record.outputPath, error: record.error }); }
+  submitPlan(record: PlanRecord, prober: KeyframeProber): Promise<{ queued: boolean; active: boolean }> {
+    const pending = this.submitting.get(record.id); if (pending) return pending;
+    if (this.accepted.has(record.id)) return Promise.resolve({ queued: this.getActivePlanId() !== record.id, active: this.getActivePlanId() === record.id });
+    const task = this.submissionChain.then(async () => {
+      if (this.closing) throw new Error('应用正在退出，未接受新任务');
+      if (this.storageError) throw new Error('方案保存尚未恢复，请在方案中心重试保存后再提交');
+      const snapshot = structuredClone(record); snapshot.status = 'queued'; delete snapshot.error;
+      await this.persist(snapshot);
+      const job = { record: snapshot, prober };
+      this.accepted.set(record.id, job); this.queue.push(job); this.notify(snapshot); this.stateChanged(); this.startDrain();
+      return { queued: this.getActivePlanId() !== record.id, active: this.getActivePlanId() === record.id };
+    });
+    this.submitting.set(record.id, task);
+    this.submissionChain = task.catch(() => {});
+    void task.finally(() => this.submitting.delete(record.id)).catch(() => {});
+    return task;
   }
-
-  public setPlanSaver(saver: (record: PlanRecord) => void) {
-    this.savePlanFn = saver;
+  /** 删除与派发在同一事件循环同步检查、移出；调用方随后持久化删除。 */
+  removeQueued(id: string): Job | undefined {
+    if (this.active?.record.id === id || this.pendingFinal?.id === id || this.submitting.has(id)) throw new Error('方案正在处理或保存，完成后可删除');
+    const index = this.queue.findIndex(job => job.record.id === id);
+    if (index < 0) return undefined;
+    const [job] = this.queue.splice(index, 1); this.accepted.delete(id); this.stateChanged(); return job;
   }
-
-  /**
-   * 提交方案至后台执行队列
-   */
-  public submitPlan(
-    record: PlanRecord,
-    prober: KeyframeProber
-  ): { queued: boolean; active: boolean } {
-    if (this.isRunning) {
-      record.status = 'ready';
-      if (this.savePlanFn) this.savePlanFn(record);
-      this.queue.push({ record, prober });
-      return { queued: true, active: false };
-    }
-
-    // 立即启动调度
-    this.processRecord(record, prober);
-    return { queued: false, active: true };
+  restoreQueued(job: Job) { this.accepted.set(job.record.id, job); this.queue.push(job); this.stateChanged(); this.startDrain(); }
+  private startDrain() {
+    if (this.running || this.storageError || this.closing) return;
+    this.running = true;
+    this.drainPromise = this.drain().finally(() => { this.running = false; this.stateChanged(); if (this.queue.length && !this.storageError && !this.closing) this.startDrain(); });
   }
-
-  public getActivePlanId(): string | null {
-    return this.activePlanId;
-  }
-
-  public getQueueLength(): number {
-    return this.queue.length;
-  }
-
-  private async processRecord(record: PlanRecord, prober: KeyframeProber) {
-    this.isRunning = true;
-    this.activePlanId = record.id;
-
-    // 1. 状态跃迁为 processing 并通知
-    record.status = 'processing';
-    if (this.savePlanFn) this.savePlanFn(record);
-    this.notifyStatus(record.id, 'processing', undefined, undefined, record);
-
-    try {
-      if (!fs.existsSync(record.sourcePath)) {
-        throw new Error(`原视频文件不存在: ${record.sourcePath}`);
-      }
-
-      // 2. 重新探测关键帧以保证精度
-      const meta = await prober.probe(record.sourcePath);
-
-      // 3. 使用 RetentionDraft 重建不可变切片计划
-      const draft = RetentionDraft.fromRecord(record, meta.durationMs);
-      const isConcat = record.concatSingleFile !== false;
-      const safeOutput = this.resolveSafeSingleOutputPath(
-        record.outputPath || record.sourcePath,
-        record.sourcePath,
-        record.title
-      );
-
-      const retentionPlan = draft.toPlan(meta.keyframes, {
-        outputPath: safeOutput,
-        concatToSingleFile: isConcat,
-        stripOriginalCover: record.stripOriginalCover !== false,
-        title: record.title,
-      });
-
-      // 4. 执行剪辑
-      const result = await this.executeRawPlan(retentionPlan);
-
-      if (result.success) {
-        // 成功状态跃迁
-        record.status = 'completed';
-        record.outputPath = result.outputPath;
-        record.completedAt = new Date().toISOString();
-        delete record.error;
-        if (this.savePlanFn) this.savePlanFn(record);
-        this.notifyStatus(record.id, 'completed', result.outputPath, undefined, record);
-      } else {
-        throw new Error(result.error || '剪辑执行返回失败');
-      }
-    } catch (err: any) {
-      console.error(`[MediaCuttingEngine] 执行方案 ${record.id} 出错:`, err);
-      record.status = 'failed';
-      record.error = err.message || '剪辑过程发生异常';
-      if (this.savePlanFn) this.savePlanFn(record);
-      this.notifyStatus(record.id, 'failed', undefined, record.error, record);
-    } finally {
-      this.activePlanId = null;
-      this.isRunning = false;
-      this.processNext();
-    }
-  }
-
-  private processNext() {
-    if (this.queue.length > 0 && !this.isRunning) {
-      const next = this.queue.shift();
-      if (next) {
-        this.processRecord(next.record, next.prober);
-      }
-    }
-  }
-
-  private notifyStatus(
-    planId: string,
-    status: 'processing' | 'completed' | 'failed',
-    outputPath?: string,
-    error?: string,
-    record?: PlanRecord
-  ) {
-    if (this.onStatusChange) {
+  private blockStorage(error: unknown) { this.storageError = `方案持久化失败：${error instanceof Error ? error.message : String(error)}。已有完整记录保留，请重试保存。`; this.stateChanged(); }
+  private async drain(): Promise<void> {
+    while (this.queue.length && !this.closing && !this.storageError) {
+      const job = this.queue.shift()!; this.active = job; this.controller = new AbortController(); this.stateChanged();
+      const processing = { ...job.record, status: 'processing' as const };
+      try { await this.persist(processing); } catch (error) { this.queue.unshift(job); this.active = null; this.controller = null; this.blockStorage(error); return; }
+      job.record = processing; this.notify(processing);
+      let final: PlanRecord;
       try {
-        this.onStatusChange({ planId, status, outputPath, error, record });
-      } catch (err) {
-        console.error('[MediaCuttingEngine] 状态回调执行异常:', err);
+        const meta = await job.prober.probe(processing.sourcePath);
+        if (this.controller.signal.aborted) throw new Error('上次执行中断，可重试');
+        const draft = RetentionDraft.fromRecord(processing, meta.durationMs);
+        const plan = draft.toPlan(meta.keyframes, { outputPath: processing.outputPath || processing.sourcePath, concatToSingleFile: processing.concatSingleFile !== false, stripOriginalCover: processing.stripOriginalCover !== false, title: processing.title, keyframePoints: meta.keyframePoints });
+        const result = await this.executeRawPlan(plan, this.controller.signal);
+        final = result.success
+          ? { ...processing, status: 'completed', outputPath: result.outputPath, outputPaths: result.outputPaths, resolvedEncoder: result.resolvedEncoder, completedAt: new Date().toISOString(), error: undefined }
+          : { ...processing, status: 'failed', outputPath: result.outputPath, outputPaths: result.outputPaths, error: result.error || '剪辑失败' };
+      } catch (error) { final = { ...processing, status: 'failed', error: error instanceof Error ? error.message : String(error) }; }
+      try { await this.persist(final); this.accepted.delete(final.id); this.notify(final); }
+      catch (error) { this.pendingFinal = final; this.blockStorage(error); }
+      finally { this.active = null; this.controller = null; this.stateChanged(); }
+    }
+  }
+  async retryPendingWrites() {
+    if (this.pendingFinal) { await this.persist(this.pendingFinal); this.accepted.delete(this.pendingFinal.id); this.notify(this.pendingFinal); this.pendingFinal = null; }
+    this.storageError = null; this.stateChanged(); this.startDrain();
+  }
+  async shutdown() {
+    this.closing = true; this.controller?.abort();
+    const probes = [...this.encoderJobs.values()].map(job => { job.controller.abort(); return job.promise.catch(() => {}); });
+    await this.submissionChain; await this.drainPromise; await Promise.all(probes);
+  }
+
+  async probeEncoderSupport(config: CompressConfig = { enabled: true, preset: 'balanced' }, signal?: AbortSignal): Promise<Encoder> {
+    if (signal?.aborted) throw abortError();
+    if (config.hardwareAcceleration === false || config.encoder === 'cpu') return 'cpu';
+    const target = config.preset === 'high_compression' ? 'hevc' : 'h264';
+    const requested = config.encoder || 'auto';
+    const key = `${this.ffmpegPath}:${target}:${requested}`;
+    const existing = this.cachedEncoders.get(key); if (existing) return existing;
+    let job = this.encoderJobs.get(key);
+    if (!job || job.controller.signal.aborted) {
+      const controller = new AbortController(), executable = this.ffmpegPath;
+      const promise = (async (): Promise<Encoder> => {
+      const choices: Encoder[] = requested === 'auto' ? ['nvenc', 'qsv'] : [requested as Encoder];
+      for (const encoder of choices) {
+        try {
+          await runMediaTool(executable, ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=black:s=256x144:r=25:d=0.12', '-c:v', `${target}_${encoder}`, '-f', 'null', '-'], { timeoutMs: 12000, signal: controller.signal });
+          return encoder;
+        } catch { if (controller.signal.aborted) throw abortError(); if (requested !== 'auto') throw new Error(`指定的 ${encoder.toUpperCase()} ${target.toUpperCase()} 编码器不可用，请选择自动或 CPU`); }
       }
+      return 'cpu';
+      })().then(encoder => { if (!controller.signal.aborted) this.cachedEncoders.set(key, encoder); return encoder; }).finally(() => { if (this.encoderJobs.get(key)?.controller === controller) this.encoderJobs.delete(key); });
+      job = { promise, controller, consumers: new Set() }; this.encoderJobs.set(key, job);
     }
-  }
-
-  /**
-   * 探测硬件加速编码器支持情况 (优先探测 NVENC)
-   */
-  public async probeEncoderSupport(): Promise<'cpu' | 'nvenc' | 'qsv'> {
-    if (this.cachedEncoder) {
-      return this.cachedEncoder;
-    }
-
-    return new Promise((resolve) => {
-      const proc = spawn(this.ffmpegPath, ['-encoders']);
-      let stdout = '';
-      proc.stdout.on('data', (d) => (stdout += d));
-      proc.on('close', (code) => {
-        if (code === 0 && (stdout.includes('h264_nvenc') || stdout.includes('nvenc'))) {
-          // 运行一个超轻量的空编码测试，校验真实可用性
-          const testProc = spawn(this.ffmpegPath, [
-            '-f', 'lavfi',
-            '-i', 'color=c=black:s=64x64:d=0.04',
-            '-c:v', 'h264_nvenc',
-            '-f', 'null',
-            '-',
-          ]);
-          testProc.on('close', (testCode) => {
-            if (testCode === 0) {
-              this.cachedEncoder = 'nvenc';
-              resolve('nvenc');
-            } else {
-              this.cachedEncoder = 'cpu';
-              resolve('cpu');
-            }
-          });
-          testProc.on('error', () => {
-            this.cachedEncoder = 'cpu';
-            resolve('cpu');
-          });
-        } else {
-          this.cachedEncoder = 'cpu';
-          resolve('cpu');
-        }
-      });
-      proc.on('error', () => {
-        this.cachedEncoder = 'cpu';
-        resolve('cpu');
-      });
-    });
-  }
-
-  /**
-   * 单次整体降码压制成片
-   * 铁律：音频统一强制无损流复制 (-c:a copy)，绝不重新编码音频
-   */
-  public async compressFile(
-    inputPath: string,
-    outputPath: string,
-    config: CompressConfig,
-    resolvedEncoder: 'cpu' | 'nvenc' | 'qsv' = 'cpu'
-  ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const args = buildCompressArgs(inputPath, outputPath, config, resolvedEncoder);
-      const proc = spawn(this.ffmpegPath, args);
-      let stderr = '';
-
-      proc.stderr.on('data', (chunk) => (stderr += chunk));
-
-      proc.on('close', (code) => {
-        if (code === 0 && fs.existsSync(outputPath)) {
-          resolve();
-        } else {
-          reject(new Error(`FFmpeg 降码压制失败 (code ${code}): ${stderr}`));
-        }
-      });
-
-      proc.on('error', (err) => reject(err));
-    });
-  }
-
-  /**
-   * 底层剪辑执行器（支持无损流复制与智能先切后压）
-   */
-  public async executeRawPlan(plan: MediaRetentionPlan): Promise<CutResult> {
-    if (plan.planSegments.length === 0) {
-      return {
-        success: false,
-        outputPath: plan.outputPath,
-        error: '未选择任何保留片段',
+    const currentJob = job, consumer = Symbol(); currentJob.consumers.add(consumer);
+    return new Promise<Encoder>((resolve, reject) => {
+      const cleanup = () => { currentJob.consumers.delete(consumer); signal?.removeEventListener('abort', cancel); };
+      const cancel = () => {
+        currentJob.consumers.delete(consumer);
+        if (!currentJob.consumers.size) currentJob.controller.abort();
+        else { cleanup(); reject(abortError()); }
       };
-    }
-
-    const outDir = path.dirname(plan.outputPath);
-    if (!fs.existsSync(outDir)) {
-      fs.mkdirSync(outDir, { recursive: true });
-    }
-
-    const needCompress = Boolean(plan.compress?.enabled);
-    const encoder = needCompress
-      ? (plan.compress?.hardwareAcceleration === false ? 'cpu' : await this.probeEncoderSupport())
-      : 'cpu';
-
+      signal?.addEventListener('abort', cancel, { once: true });
+      currentJob.promise.then(encoder => { cleanup(); if (signal?.aborted) reject(abortError()); else resolve(encoder); }, error => { cleanup(); reject(error); });
+    });
+  }
+  async compressFile(input: string, output: string, config: CompressConfig, encoder: Encoder = 'cpu', signal?: AbortSignal): Promise<void> {
+    const info = await probeFile(input, this.ffprobePath, signal);
+    await runMediaTool(this.ffmpegPath, buildCompressArgs(input, output, config, encoder, { streams: info.streams, stripCover: false }), { signal });
+  }
+  private async cut(source: string, segment: PlanSegment, output: string, streams: MediaStreamInfo[], signal?: AbortSignal, offset = millisecondsTime(0)) {
+    let startUs = ceilMicroseconds(addTime(segment.seekTime || millisecondsTime(segment.safeRange.startMs), offset));
+    if (startUs < 0n) startUs = 0n;
+    const endUs = ceilMicroseconds(addTime(millisecondsTime(segment.safeRange.endMs), offset));
+    if (endUs <= startUs) throw new Error('保留区间没有有效时长');
+    await runMediaTool(this.ffmpegPath, ['-n', '-ss', formatMicroseconds(startUs), '-i', source, '-t', formatMicroseconds(endUs - startUs), '-c', 'copy', '-avoid_negative_ts', 'make_zero', ...streams.flatMap(stream => ['-map', `0:${stream.index}`]), ...this.audioDispositions(streams), output], { signal });
+  }
+  private async concat(files: string[], output: string, directory: string, signal?: AbortSignal) {
+    const list = path.join(directory, 'concat.txt');
+    await fs.promises.writeFile(list, files.map(file => `file '${file.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'), 'utf8');
+    const info = await probeFile(files[0], this.ffprobePath, signal);
+    await runMediaTool(this.ffmpegPath, ['-n', '-f', 'concat', '-safe', '0', '-i', list, '-map', '0', '-c', 'copy', ...this.audioDispositions(info.streams), output], { signal });
+  }
+  private audioDispositions(streams: MediaStreamInfo[]) { return streams.filter(stream => stream.type === 'audio').flatMap((stream, index) => [`-disposition:a:${index}`, stream.default ? 'default' : '0']); }
+  private async verify(file: string, expected: MediaStreamInfo[], signal?: AbortSignal) {
+    const info = await probeFile(file, this.ffprobePath, signal);
+    const original = expected.filter(stream => stream.type === 'audio'), actual = info.streams.filter(stream => stream.type === 'audio');
+    if (original.length !== actual.length || original.some((stream, index) => stream.codec !== actual[index].codec || (stream.language && stream.language !== actual[index].language))) throw new Error('导出音轨数量、编码或语言与原片不一致，产物未发布');
+    if (expected.filter(stream => stream.type === 'video' && !stream.attachedPicture).length !== info.streams.filter(stream => stream.type === 'video' && !stream.attachedPicture).length) throw new Error('导出视频流数量不一致，产物未发布');
+  }
+  /** 同卷用排他硬链接避免再次复制；跨卷持有排他创建的文件句柄完成发布。 */
+  private async publishOne(source: string, target: string, signal?: AbortSignal): Promise<fs.Stats> {
+    if (signal?.aborted) throw new Error('操作已取消');
+    try { await fs.promises.link(source, target); return await fs.promises.stat(target); }
+    catch (error: any) { if (!['EXDEV', 'EPERM', 'ENOTSUP', 'EACCES'].includes(error.code)) throw error; }
+    const handle = await fs.promises.open(target, 'wx');
+    const identity = await handle.stat();
+    try { await handle.writeFile(fs.createReadStream(source), { signal }); await handle.sync(); return identity; }
+    catch (error) { await handle.close(); await this.removePublished(target, identity); throw error; }
+    finally { await handle.close().catch(() => {}); }
+  }
+  private async removePublished(file: string, identity: fs.Stats) {
+    try { const current = await fs.promises.lstat(file); if (current.ino === identity.ino && current.dev === identity.dev) await fs.promises.unlink(file); } catch {}
+  }
+  async executeRawPlan(plan: MediaRetentionPlan, signal?: AbortSignal): Promise<CutResult> {
+    const directory = path.join(this.tmpDir, `job_${randomUUID()}`);
+    await fs.promises.mkdir(directory, { recursive: true });
     try {
-      if (plan.planSegments.length === 1) {
-        const seg = plan.planSegments[0];
-        const segStartMs = seg.safeRange?.startMs ?? (seg as any).startMs ?? 0;
-        const segEndMs = seg.safeRange?.endMs ?? (seg as any).endMs ?? plan.durationMs;
-        const finalOutputPath = this.resolveSafeSingleOutputPath(plan.outputPath, plan.sourcePath, plan.title);
-
-        if (!needCompress) {
-          await this.cutSingleSegment(
-            plan.sourcePath,
-            segStartMs,
-            segEndMs,
-            finalOutputPath,
-            plan.stripOriginalCover !== false
-          );
-        } else {
-          // 先切后压：先无损秒切出临时片段，再单次整体压制
-          const ext = path.extname(plan.sourcePath) || '.mp4';
-          const intermediate = path.join(this.tmpDir, `slice_raw_${Date.now()}_0${ext}`);
-          try {
-            await this.cutSingleSegment(
-              plan.sourcePath,
-              segStartMs,
-              segEndMs,
-              intermediate,
-              plan.stripOriginalCover !== false
-            );
-            await this.compressFile(intermediate, finalOutputPath, plan.compress!, encoder);
-          } finally {
-            try {
-              if (fs.existsSync(intermediate)) fs.unlinkSync(intermediate);
-            } catch {}
-          }
-        }
-
-        return {
-          success: true,
-          outputPath: finalOutputPath,
-        };
+      if (!plan.planSegments.length) throw new Error('未选择任何保留片段');
+      const info = await probeFile(plan.sourcePath, this.ffprobePath, signal);
+      const streams = retainedStreams(info.streams, plan.stripOriginalCover !== false);
+      const formats = resolveFormats(plan.sourcePath, info.streams, plan.compress, plan.stripOriginalCover !== false);
+      const needCompress = Boolean(plan.compress?.enabled);
+      const encoder = needCompress ? await this.probeEncoderSupport(plan.compress!, signal) : undefined;
+      let source = plan.sourcePath, sourceStreams = streams, seekOffset: MediaTime = millisecondsTime(0);
+      // 缺失包 PTS 的 AVI 等素材，直接跳转可能选到前一个 GOP。先无损整理时间戳与索引。
+      if (await needsTimestampRepair(source, info, this.ffprobePath, signal)) {
+        const normalized = path.join(directory, `normalized${resolveNormalizationExtension(streams)}`);
+        await runMediaTool(this.ffmpegPath, ['-n', '-fflags', '+genpts', '-copyts', '-start_at_zero', '-i', source, ...streams.flatMap(stream => ['-map', `0:${stream.index}`]), '-c', 'copy', ...this.audioDispositions(streams), normalized], { signal });
+        const normalizedInfo = await probeFile(normalized, this.ffprobePath, signal);
+        seekOffset = subtractTime(await presentationStartTime(normalized, normalizedInfo, this.ffprobePath, signal), await presentationStartTime(source, info, this.ffprobePath, signal));
+        source = normalized; sourceStreams = normalizedInfo.streams;
       }
-
-      const ext = path.extname(plan.sourcePath) || '.mp4';
-      const baseName = path.basename(plan.sourcePath, ext);
-
-      if (plan.concatToSingleFile) {
-        const finalOutputPath = this.resolveSafeSingleOutputPath(plan.outputPath, plan.sourcePath, plan.title);
-        const tempSegments: string[] = [];
-        const timestamp = Date.now();
-        const intermediate = needCompress ? path.join(this.tmpDir, `slice_concat_raw_${timestamp}${ext}`) : null;
-
-        try {
-          for (let i = 0; i < plan.planSegments.length; i++) {
-            const seg = plan.planSegments[i];
-            const segStartMs = seg.safeRange.startMs;
-            const segEndMs = seg.safeRange.endMs;
-            const tempPath = path.join(this.tmpDir, `slice_${timestamp}_${i}${ext}`);
-            tempSegments.push(tempPath);
-
-            await this.cutSingleSegment(
-              plan.sourcePath,
-              segStartMs,
-              segEndMs,
-              tempPath,
-              plan.stripOriginalCover !== false
-            );
-          }
-
-          if (!needCompress) {
-            await this.concatSegments(tempSegments, finalOutputPath);
-          } else {
-            // 先无损合并为单一临时成片，再整体单次压制，彻底杜绝爆音与音画不同步
-            await this.concatSegments(tempSegments, intermediate!);
-            await this.compressFile(intermediate!, finalOutputPath, plan.compress!, encoder);
-          }
-
-          return {
-            success: true,
-            outputPath: finalOutputPath,
-          };
-        } finally {
-          // 确保无论执行成功还是异常抛错，均对临时切片进行保底垃圾回收
-          for (const tempPath of tempSegments) {
-            try {
-              if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-            } catch {
-              // 忽略临时文件释放异常
-            }
-          }
-          if (intermediate) {
-            try {
-              if (fs.existsSync(intermediate)) fs.unlinkSync(intermediate);
-            } catch {}
-          }
-        }
-      } else {
-        const finalDestPaths = this.resolveSafeSegmentPaths(
-          outDir,
-          baseName,
-          ext,
-          plan.planSegments.length,
-          plan.sourcePath,
-          plan.title
-        );
-
-        for (let i = 0; i < plan.planSegments.length; i++) {
-          const seg = plan.planSegments[i];
-          const segStartMs = seg.safeRange?.startMs ?? (seg as any).startMs ?? 0;
-          const segEndMs = seg.safeRange?.endMs ?? (seg as any).endMs ?? plan.durationMs;
-          const destPath = finalDestPaths[i];
-
-          if (!needCompress) {
-            await this.cutSingleSegment(
-              plan.sourcePath,
-              segStartMs,
-              segEndMs,
-              destPath,
-              plan.stripOriginalCover !== false
-            );
-          } else {
-            const intermediate = path.join(this.tmpDir, `slice_seg_raw_${Date.now()}_${i}${ext}`);
-            try {
-              await this.cutSingleSegment(
-                plan.sourcePath,
-                segStartMs,
-                segEndMs,
-                intermediate,
-                plan.stripOriginalCover !== false
-              );
-              await this.compressFile(intermediate, destPath, plan.compress!, encoder);
-            } finally {
-              try {
-                if (fs.existsSync(intermediate)) fs.unlinkSync(intermediate);
-              } catch {}
-            }
-          }
-        }
-
-        return {
-          success: true,
-          outputPath: finalDestPaths[0] || outDir,
-        };
+      const pieces: string[] = [];
+      for (let i = 0; i < plan.planSegments.length; i++) {
+        const piece = path.join(directory, `segment_${i}${formats.intermediateExtension}`);
+        await this.cut(source, plan.planSegments[i], piece, sourceStreams, signal, seekOffset); pieces.push(piece);
       }
-    } catch (err: any) {
-      console.error('[MediaCuttingEngine] executeRawPlan 发生异常:', err);
-      return {
-        success: false,
-        outputPath: plan.outputPath,
-        error: err.message || '剪辑执行过程发生未知错误',
-      };
-    }
-  }
-
-  public resolveSafeSingleOutputPath(
-    candidatePath: string,
-    sourcePath: string,
-    planTitle?: string
-  ): string {
-    const ext = path.extname(candidatePath) || path.extname(sourcePath) || '.mp4';
-    const outDir = path.dirname(candidatePath);
-    const rawSourceBase = path.basename(sourcePath, ext);
-    let rawCandidateBase = path.basename(candidatePath, ext);
-    const resolvedSource = path.resolve(sourcePath);
-
-    const isConflict = (p: string) => path.resolve(p) === resolvedSource || fs.existsSync(p);
-
-    const cleanTitle = planTitle?.trim();
-    const hasCustomTitle = Boolean(
-      cleanTitle &&
-      cleanTitle !== rawSourceBase &&
-      !/^plan_\d+$/.test(cleanTitle)
-    );
-
-    // 如果 candidateBase 尚未带有 YYYYMMDD_HHmm 时间戳前缀，则主动补全
-    const hasTimestampPrefix = /^\d{8}_\d{4}_/.test(rawCandidateBase);
-    let baseWithPrefix = rawCandidateBase;
-
-    if (!hasTimestampPrefix) {
+      let originals = pieces;
+      if (plan.concatToSingleFile && pieces.length > 1) { const merged = path.join(directory, `merged${formats.intermediateExtension}`); await this.concat(pieces, merged, directory, signal); originals = [merged]; }
+      const finalFiles: string[] = [];
+      for (let i = 0; i < originals.length; i++) {
+        let output = originals[i];
+        if (needCompress) { output = path.join(directory, `encoded_${i}${formats.outputExtension}`); await this.compressFile(originals[i], output, plan.compress!, encoder, signal); }
+        await this.verify(output, streams, signal); finalFiles.push(output);
+      }
+      const destination = path.dirname(plan.outputPath || plan.sourcePath);
+      await fs.promises.mkdir(destination, { recursive: true });
       const timestamp = formatTaskTimestamp();
-      let prefix = `${timestamp}_`;
-      if (hasCustomTitle && !rawCandidateBase.includes(`[${cleanTitle}]`)) {
-        prefix += `[${cleanTitle}]`;
-      }
-      baseWithPrefix = `${prefix}${rawSourceBase}`;
-      if (!hasCustomTitle && !baseWithPrefix.endsWith('_cut')) {
-        baseWithPrefix += '_cut';
-      }
-    }
-
-    const initial = path.join(outDir, `${baseWithPrefix}${ext}`);
-    if (!isConflict(initial)) {
-      return initial;
-    }
-
-    let counter = 1;
-    while (true) {
-      const suffix = `_${String(counter).padStart(2, '0')}`;
-      const safeCandidate = path.join(outDir, `${baseWithPrefix}${suffix}${ext}`);
-      if (!isConflict(safeCandidate)) {
-        return safeCandidate;
-      }
-      counter++;
-    }
-  }
-
-  public resolveSafeSegmentPaths(
-    outDir: string,
-    rawSourceBase: string,
-    ext: string,
-    count: number,
-    sourcePath: string,
-    planTitle?: string
-  ): string[] {
-    const resolvedSource = path.resolve(sourcePath);
-    const isConflict = (p: string) => path.resolve(p) === resolvedSource || fs.existsSync(p);
-
-    const timestamp = formatTaskTimestamp();
-    const cleanTitle = planTitle?.trim();
-    const hasCustomTitle = Boolean(
-      cleanTitle &&
-      cleanTitle !== rawSourceBase &&
-      !/^plan_\d+$/.test(cleanTitle)
-    );
-
-    let prefixPart = `${timestamp}_`;
-    if (hasCustomTitle) {
-      prefixPart += `[${cleanTitle}]`;
-    }
-    const basePrefix = `${prefixPart}${rawSourceBase}`;
-
-    const defaultSeg1 = path.join(outDir, `${basePrefix}_seg01${ext}`);
-    let batchSuffix = '';
-
-    if (isConflict(defaultSeg1)) {
-      let counter = 1;
-      while (true) {
-        const candidateSuffix = `_${String(counter).padStart(2, '0')}`;
-        let batchAllFree = true;
-        for (let i = 0; i < count; i++) {
-          const pad = String(i + 1).padStart(2, '0');
-          const segPath = path.join(outDir, `${basePrefix}_seg${pad}${candidateSuffix}${ext}`);
-          if (isConflict(segPath)) {
-            batchAllFree = false;
-            break;
-          }
-        }
-        if (batchAllFree) {
-          batchSuffix = candidateSuffix;
-          break;
-        }
-        counter++;
-      }
-    }
-
-    const result: string[] = [];
-    for (let i = 0; i < count; i++) {
-      const pad = String(i + 1).padStart(2, '0');
-      result.push(path.join(outDir, `${basePrefix}_seg${pad}${batchSuffix}${ext}`));
-    }
-    return result;
-  }
-
-  private cutSingleSegment(
-    sourcePath: string,
-    startMs: number,
-    endMs: number,
-    outputPath: string,
-    stripOriginalCover: boolean = true
-  ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const startSec = (startMs / 1000).toFixed(3);
-      const durationSec = ((endMs - startMs) / 1000).toFixed(3);
-
-      const mapArgs = stripOriginalCover
-        ? ['-map', '0:V', '-map', '0:a?']
-        : ['-map', '0'];
-
-      const args = [
-        '-y',
-        '-ss', startSec,
-        '-i', sourcePath,
-        '-t', durationSec,
-        '-c', 'copy',
-        '-avoid_negative_ts', 'make_zero',
-        ...mapArgs,
-        outputPath,
-      ];
-
-      const proc = spawn(this.ffmpegPath, args);
-      let stderr = '';
-
-      proc.stderr.on('data', (chunk) => (stderr += chunk));
-
-      proc.on('close', (code) => {
-        if (code === 0 && fs.existsSync(outputPath)) {
-          resolve();
-        } else {
-          reject(new Error(`FFmpeg 流复制切片失败 (code ${code}): ${stderr}`));
-        }
-      });
-
-      proc.on('error', (err) => reject(err));
-    });
-  }
-
-  private concatSegments(segmentPaths: string[], outputPath: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const listFilePath = path.join(this.tmpDir, `concat_list_${Date.now()}.txt`);
-      const lines = segmentPaths.map((p) => `file '${p.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n');
-      fs.writeFileSync(listFilePath, lines, 'utf-8');
-
-      const args = [
-        '-y',
-        '-f', 'concat',
-        '-safe', '0',
-        '-i', listFilePath,
-        '-c', 'copy',
-        outputPath,
-      ];
-
-      const proc = spawn(this.ffmpegPath, args);
-      let stderr = '';
-
-      proc.stderr.on('data', (chunk) => (stderr += chunk));
-
-      proc.on('close', (code) => {
+      for (let attempt = 0; attempt < 10; attempt++) {
+        if (signal?.aborted) throw new Error('操作已取消');
+        const targets = resolveOutputBatch({ directory: destination, source: plan.sourcePath, title: plan.title, extension: formats.outputExtension, count: finalFiles.length, segmented: !plan.concatToSingleFile, timestamp });
+        const published: Array<{ file: string; identity: fs.Stats }> = [];
         try {
-          if (fs.existsSync(listFilePath)) fs.unlinkSync(listFilePath);
-        } catch {
-          // 忽略清理异常
+          for (let i = 0; i < targets.length; i++) published.push({ file: targets[i], identity: await this.publishOne(finalFiles[i], targets[i], signal) });
+          return { success: true, outputPath: targets[0], outputPaths: targets, resolvedEncoder: encoder };
+        } catch (error: any) {
+          if (error.code !== 'EEXIST') return { success: false, outputPath: published[0]?.file || plan.outputPath, outputPaths: published.map(entry => entry.file), error: `${error.message || error}${published.length ? `；已保留 ${published.length} 个完整分段：${published.map(entry => entry.file).join('、')}` : ''}` };
+          for (const entry of published) await this.removePublished(entry.file, entry.identity);
         }
-
-        if (code === 0 && fs.existsSync(outputPath)) {
-          resolve();
-        } else {
-          reject(new Error(`FFmpeg Concat 合并失败 (code ${code}): ${stderr}`));
-        }
-      });
-
-      proc.on('error', (err) => reject(err));
-    });
+      }
+      throw new Error('输出目录持续出现同名文件，未覆盖已有文件，请重试');
+    } catch (error) { return { success: false, outputPath: plan.outputPath, error: error instanceof Error ? error.message : String(error) }; }
+    finally { await removeOwnedDirectory(this.tmpDir, directory).catch(error => console.warn('本次切片缓存清理失败：', error)); }
   }
+  resolveSafeSingleOutputPath(candidate: string, source: string, title?: string) { return resolveOutputBatch({ directory: path.dirname(candidate), source, extension: path.extname(candidate) || path.extname(source), title })[0]; }
+  resolveSafeSegmentPaths(directory: string, _base: string, extension: string, count: number, source: string, title?: string) { return resolveOutputBatch({ directory, source, extension, count, title, segmented: true }); }
 }

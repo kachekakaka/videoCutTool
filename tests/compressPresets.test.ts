@@ -35,7 +35,7 @@ describe('buildCompressArgs', () => {
     });
 
     expect(args).toContain('-vf');
-    expect(args).toContain("scale='min(1920,iw)':-2");
+    expect(args).toContain("scale='max(2,trunc(iw*min(1,1080/ih)/2)*2)':'max(2,trunc(ih*min(1,1080/ih)/2)*2)'");
     expect(args).toContain('-c:a');
     expect(args).toContain('copy');
   });

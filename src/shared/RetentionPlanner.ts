@@ -1,4 +1,5 @@
-import { Segment, MediaRetentionPlan, PlanSegment } from './types';
+import { Segment, MediaRetentionPlan, PlanSegment, KeyframePoint } from './types';
+import { compareTime, millisecondsTime } from './mediaTime';
 
 /**
  * 关键帧保全规划器纯函数 (RetentionPlanner)
@@ -11,7 +12,8 @@ export function planRetention(
   keyframes: number[],
   outputPath: string,
   concatToSingleFile: boolean = true,
-  stripOriginalCover: boolean = true
+  stripOriginalCover: boolean = true,
+  keyframePoints?: KeyframePoint[]
 ): MediaRetentionPlan {
   const sortedKeyframes = [...keyframes].sort((a, b) => a - b);
   // 确保关键帧列表中至少包含 0
@@ -32,6 +34,10 @@ export function planRetention(
       }
     }
 
+    const exact = keyframePoints && [...keyframePoints].reverse().find(point => compareTime(point.time, millisecondsTime(seg.startMs)) <= 0);
+    if (keyframePoints?.length && !exact && seg.startMs > 0) throw new Error('保留区间之前没有可用关键帧，无法保证无损裁剪起点');
+    if (exact) safeStart = Math.max(0, exact.timeMs);
+
     // 2. 终点保全：不能少于用户指定的 endMs，且不超过总时长
     const safeEnd = Math.min(totalDurationMs, seg.endMs);
 
@@ -40,6 +46,7 @@ export function planRetention(
       userRange: { startMs: seg.startMs, endMs: seg.endMs },
       safeRange: { startMs: safeStart, endMs: safeEnd },
       sourceKeyframeMs: safeStart,
+      ...(exact ? { seekTime: exact.time } : {}),
     });
   }
 

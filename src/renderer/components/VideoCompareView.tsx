@@ -295,10 +295,6 @@ export const VideoCompareView: React.FC<VideoCompareViewProps> = ({
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   };
 
-  const reductionPercent = currentSample
-    ? (((currentSample.originalSizeBytes - currentSample.compressedSizeBytes) / currentSample.originalSizeBytes) * 100).toFixed(1)
-    : '0.0';
-
   return (
     <div className="w-full h-full flex flex-col bg-[#0b0e14] relative select-none overflow-hidden font-sans">
       {/* 1. 紧凑型顶部控制条 */}
@@ -401,7 +397,7 @@ export const VideoCompareView: React.FC<VideoCompareViewProps> = ({
         {loading ? (
           <div className="flex flex-col items-center gap-2.5 text-zinc-400">
             <Loader2 className="w-7 h-7 animate-spin text-blue-400" />
-            <span className="text-xs">正在抽取关键帧并执行单帧量化对比...</span>
+            <span className="text-xs">正在编码局部视频并提取对比画格...</span>
           </div>
         ) : error ? (
           <div className="flex flex-col items-center gap-2 text-rose-400 px-4 text-center">
@@ -422,7 +418,7 @@ export const VideoCompareView: React.FC<VideoCompareViewProps> = ({
                 }}
               >
                 <img
-                  src={currentSample.originalBase64}
+                  src={currentSample.originalUrl || currentSample.originalBase64}
                   alt="原画"
                   className={`max-w-full max-h-full ${aspectClass} pointer-events-none`}
                 />
@@ -443,7 +439,7 @@ export const VideoCompareView: React.FC<VideoCompareViewProps> = ({
                   }}
                 >
                   <img
-                    src={currentSample.compressedBase64}
+                    src={currentSample.compressedUrl || currentSample.compressedBase64}
                     alt="降码"
                     className={`max-w-full max-h-full ${aspectClass}`}
                   />
@@ -507,7 +503,7 @@ export const VideoCompareView: React.FC<VideoCompareViewProps> = ({
                 </div>
                 <div className="flex-1 flex items-center justify-center p-1.5 min-h-0">
                   <img
-                    src={currentSample.originalBase64}
+                    src={currentSample.originalUrl || currentSample.originalBase64}
                     alt="原片画质"
                     className="max-w-full max-h-full object-contain"
                   />
@@ -521,12 +517,12 @@ export const VideoCompareView: React.FC<VideoCompareViewProps> = ({
                     <span className="w-1.5 h-1.5 rounded-full bg-purple-400" /> 降码 (CRF {crfDisplay})
                   </span>
                   <span className="text-emerald-400 font-bold">
-                    {formatBytes(currentSample.compressedSizeBytes)} (-{reductionPercent}%)
+                    画格 {formatBytes(currentSample.compressedSizeBytes)}
                   </span>
                 </div>
                 <div className="flex-1 flex items-center justify-center p-1.5 min-h-0">
                   <img
-                    src={currentSample.compressedBase64}
+                    src={currentSample.compressedUrl || currentSample.compressedBase64}
                     alt="降码画质"
                     className="max-w-full max-h-full object-contain"
                   />
@@ -701,10 +697,7 @@ export const VideoCompareView: React.FC<VideoCompareViewProps> = ({
         {currentSample && (
           <div className="hidden md:flex items-center gap-3 text-[11px] font-mono">
             <span className="text-zinc-400">
-              单帧缩减:{' '}
-              <span className="text-emerald-400 font-bold">
-                {reductionPercent}%
-              </span>
+              局部抽样 · {currentSample.resolvedEncoder?.toUpperCase() || 'CPU'} · 不保证与整片每帧相同；画格大小不代表成片体积
             </span>
           </div>
         )}

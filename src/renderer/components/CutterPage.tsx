@@ -6,6 +6,7 @@ import { VideoPlayer, VideoPlayerRef, formatTimecode } from './VideoPlayer';
 import { Timeline } from './Timeline';
 import { SegmentCardsGrid } from './SegmentCardsGrid';
 import { RetentionDraft, DraftSnapshot } from '../../shared/RetentionDraft';
+import { useAppData } from '../AppDataContext';
 import {
   Film,
   Scissors,
@@ -34,6 +35,9 @@ interface CutterPageProps {
   loadedPlanRecord?: PlanRecord | null;
   onPlanSaved?: () => void;
   isActive?: boolean;
+  loadGeneration?: number;
+  onRequestVideo: (path: string) => void;
+  onVideoLoaded: (path: string) => void;
 }
 
 const getCompareCacheKey = (videoPath: string, config: CompressConfig, timestamps: number[]) =>
@@ -45,7 +49,13 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   loadedPlanRecord,
   onPlanSaved,
   isActive = true,
+  loadGeneration,
+  onRequestVideo,
+  onVideoLoaded,
 }) => {
+  const { config: appConfig, plans, saveConfig } = useAppData();
+  const loadEpoch = useRef(0);
+  const submitLock = useRef(false);
   const [metadata, setMetadata] = useState<MediaMetadata | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isKeyframeScanning, setIsKeyframeScanning] = useState(false);
@@ -91,9 +101,12 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const [currentPlanId, setCurrentPlanId] = useState<string | null>(loadedPlanRecord ? loadedPlanRecord.id : null);
   const [currentPlanTitle, setCurrentPlanTitle] = useState<string>(loadedPlanRecord ? loadedPlanRecord.title : '');
   const [showSaveModal, setShowSaveModal] = useState(false);
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
   const [planTitleInput, setPlanTitleInput] = useState('');
   const [saveMode, setSaveMode] = useState<'update' | 'new'>('update');
   const [showNoCutWarningModal, setShowNoCutWarningModal] = useState(false);
+  const boundPlanBusy = plans.some(plan => plan.id === currentPlanId && (plan.status === 'queued' || plan.status === 'processing'));
 
   // 降码设置面板与就地画质对比视窗状态
   const [showCompressSettings, setShowCompressSettings] = useState(false);
@@ -108,8 +121,9 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const [customSampleTimestampsMs, setCustomSampleTimestampsMs] = useState<number[] | null>(null);
   const [isAddingCompareSample, setIsAddingCompareSample] = useState(false);
   const compareEpochRef = useRef(0);
-  const pendingCompareAdditionRef = useRef<object | null>(null);
+  const pendingCompareAdditionRef = useRef<{ id: string } | null>(null);
   const cancelCompareAddition = useCallback(() => {
+    if (pendingCompareAdditionRef.current) void window.electronAPI?.cancelCompressionPreview(pendingCompareAdditionRef.current.id).catch(() => {});
     pendingCompareAdditionRef.current = null;
     setIsAddingCompareSample(false);
   }, []);
@@ -119,6 +133,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     setCompareCache({ key: '', samples: [] });
     setCompareError(null);
   }, [cancelCompareAddition]);
+  useEffect(() => { invalidateComparePreview(); }, [appConfig.ffmpegPath, appConfig.ffprobePath]);
 
   // 从领域模型派生数据（受 draftVersion 驱动响应式刷新）
   const cuts = useMemo(() => (draft ? draft.getCuts() : []), [draft, draftVersion]);
@@ -187,24 +202,26 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
   useEffect(() => {
     cancelCompareAddition();
-  }, [compareRequestKey, mainViewportMode, cancelCompareAddition]);
+  }, [compareRequestKey, mainViewportMode, isActive, cancelCompareAddition]);
 
   useEffect(() => () => {
     compareEpochRef.current += 1;
-    pendingCompareAdditionRef.current = null;
+    cancelCompareAddition();
+    loadEpoch.current++;
   }, []);
 
   // 首批加载也由工作台持有；视图只呈现结果，不再与新增请求各自维护一套缓存。
   useEffect(() => {
-    if (mainViewportMode !== 'compare' || isLoading || !metadata?.filePath || compareCache.key === compareRequestKey) return;
+    if (!isActive || mainViewportMode !== 'compare' || isLoading || !metadata?.filePath || compareCache.key === compareRequestKey) return;
     let active = true;
+    const requestId = crypto.randomUUID();
     const epoch = compareEpochRef.current;
     setCompareError(null);
     const isCurrent = () => active && epoch === compareEpochRef.current && currentCompareKeyRef.current === compareRequestKey;
     const fetchSamples = async () => {
       try {
         if (!window.electronAPI?.previewCompressionSamples) throw new Error('未检测到预览采样服务通道');
-        const result = await window.electronAPI.previewCompressionSamples(metadata.filePath, effectiveSampleTimestamps, currentCompressConfig);
+        const result = await window.electronAPI.previewCompressionSamples(metadata.filePath, effectiveSampleTimestamps, currentCompressConfig, requestId);
         if (!isCurrent()) return;
         const samples = effectiveSampleTimestamps.flatMap((timestampMs) => {
           const sample = result.find((item) => item.timestampMs === timestampMs);
@@ -219,9 +236,9 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         setCompareError(err instanceof Error ? err.message : '加载预览抽样失败');
       }
     };
-    void fetchSamples();
-    return () => { active = false; };
-  }, [compareRequestKey, compareCache, mainViewportMode, isLoading]);
+    const timer = setTimeout(() => void fetchSamples(), 300);
+    return () => { active = false; clearTimeout(timer); void window.electronAPI?.cancelCompressionPreview(requestId).catch(() => {}); };
+  }, [compareRequestKey, compareCache, mainViewportMode, isLoading, isActive]);
 
   // 实时推导预定安全产物路径
   useEffect(() => {
@@ -232,25 +249,27 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     let isCancelled = false;
     if (window.electronAPI?.resolveOutputPath) {
       window.electronAPI
-        .resolveOutputPath(metadata.filePath, concatSingleFile, currentPlanTitle)
+        .resolveOutputPath(metadata.filePath, concatSingleFile, currentPlanTitle, currentCompressConfig, stripOriginalCover)
         .then((resolved) => {
           if (!isCancelled) {
             setSafeOutputPath(resolved);
           }
         })
         .catch((err) => {
-          console.warn('推导安全输出路径失败:', err);
+          if (!isCancelled) { setSafeOutputPath(''); setNotice({ type: 'error', message: `输出格式或路径不可用：${String(err)}` }); }
         });
     }
     return () => {
       isCancelled = true;
     };
-  }, [metadata?.filePath, concatSingleFile, currentPlanTitle]);
+  }, [metadata?.filePath, concatSingleFile, currentPlanTitle, currentCompressConfig, stripOriginalCover, appConfig]);
 
 
 
   const playerRef = useRef<VideoPlayerRef | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const shortcutsEnabled = isActive && !isLoading && !showSaveModal && !showNoCutWarningModal && !showCompressSettings;
+  useEffect(() => { if (!isActive || mainViewportMode !== 'player') { playerRef.current?.pause(); setAuditionRange(null); } }, [isActive, mainViewportMode]);
 
   // 提交草稿操作变更至撤销栈
   const commitDraftChange = useCallback(
@@ -292,7 +311,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   // 全局快捷键监听撤销、重做与弹窗 Esc 关闭
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) return;
+      if (!isActive || e.defaultPrevented || (e.target as HTMLElement).closest('input, textarea, select, [contenteditable="true"]')) return;
 
       if (e.key === 'Escape') {
         if (showNoCutWarningModal) {
@@ -311,6 +330,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           return;
         }
       }
+      if (!shortcutsEnabled) return;
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
@@ -326,32 +346,13 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUndo, handleRedo, showNoCutWarningModal, showSaveModal, showCompressSettings]);
+  }, [handleUndo, handleRedo, showNoCutWarningModal, showSaveModal, showCompressSettings, shortcutsEnabled, isActive]);
 
   // 双保险文件选择唤起逻辑 (Electron 原生对话框 + HTML5 文件选择器兜底)
   const handleChooseFile = async (e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
 
-    // 1. 尝试 Electron 原生对话框
-    if (window.electronAPI) {
-      try {
-        const filePath = await window.electronAPI.openVideoDialog();
-        if (filePath) {
-          loadAndProbeVideo(filePath);
-          return;
-        }
-      } catch (err) {
-        console.warn('原生对话框调用异常，回退至标准文件选择器', err);
-      }
-    }
-
-    if (onOpenVideo) {
-      onOpenVideo();
-      return;
-    }
-
-    // 2. 兜底方案：触发内置的 HTML5 文件选择器
-    fileInputRef.current?.click();
+    onOpenVideo();
   };
 
   const getFilePathFromFile = (file: File): string => {
@@ -371,15 +372,19 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     if (file) {
       const fullPath = getFilePathFromFile(file);
       if (fullPath) {
-        loadAndProbeVideo(fullPath);
+        onRequestVideo(fullPath);
       } else {
         setNotice({ type: 'error', message: '无法获取视频文件的物理绝对路径，请拖拽载入或使用原生选择框' });
       }
     }
+    e.target.value = '';
   };
 
   // 载入视频并探测关键帧 (两阶段秒开机制：300ms 快速出图，后台静默扫描关键帧并落盘缓存)
   const loadAndProbeVideo = async (filePath: string, recordToLoad?: PlanRecord | null) => {
+    const epoch = ++loadEpoch.current;
+    const isCurrent = () => loadEpoch.current === epoch;
+    playerRef.current?.pause();
     invalidateComparePreview();
     setIsLoading(true);
     setIsKeyframeScanning(false);
@@ -391,7 +396,10 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           ? await window.electronAPI.probeBasic(filePath)
           : await window.electronAPI.probeMedia(filePath);
 
+        if (!isCurrent()) return;
         setMetadata(basicMeta);
+        playerRef.current?.seekTo(0);
+        onVideoLoaded(filePath);
         setCurrentTimeMs(0);
         setHistory([]);
         setFuture([]);
@@ -406,6 +414,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           setCurrentPlanTitle(recordToLoad.title);
         } else {
           newDraft = new RetentionDraft(filePath, basicMeta.durationMs);
+          newDraft.concatSingleFile = appConfig.autoConcatSingleFile;
+          newDraft.stripOriginalCover = appConfig.stripOriginalCover;
           setCurrentPlanId(null);
           setCurrentPlanTitle('');
         }
@@ -421,35 +431,30 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           window.electronAPI
             .probeKeyframes(filePath)
             .then((keyframes) => {
+              if (!isCurrent()) return;
               setMetadata((prev) => (prev && prev.filePath === filePath ? { ...prev, keyframes } : prev));
               setIsKeyframeScanning(false);
             })
             .catch((scanErr) => {
-              console.warn('后台扫描关键帧异常:', scanErr);
+              if (!isCurrent()) return;
+              setNotice({ type: 'error', message: `关键帧扫描失败，执行时将重新探测：${String(scanErr)}` });
               setIsKeyframeScanning(false);
             });
         }
       }
     } catch (err: any) {
+      if (!isCurrent()) return;
       console.error('探测视频失败:', err);
       setNotice({ type: 'error', message: err.message || '探测视频元数据失败' });
       setIsLoading(false);
     }
   };
 
-  // 跨 Tab 或方案中心加载新方案时同步方案状态
-  useEffect(() => {
-    if (loadedPlanRecord) {
-      setCurrentPlanId(loadedPlanRecord.id);
-      setCurrentPlanTitle(loadedPlanRecord.title);
-    }
-  }, [loadedPlanRecord]);
-
   useEffect(() => {
     if (initialVideoPath) {
       loadAndProbeVideo(initialVideoPath, loadedPlanRecord);
     }
-  }, [initialVideoPath, loadedPlanRecord]);
+  }, [initialVideoPath, loadedPlanRecord, loadGeneration]);
 
   // 插入切点
   const handleInsertCut = () => {
@@ -587,7 +592,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   // 增量添加单个画质对比场景点
   const handleAddCompareSample = useCallback(
     async (targetMs: number) => {
-      if (!metadata?.filePath || isLoading || isLoadingCompareSamples || pendingCompareAdditionRef.current || mainViewportMode !== 'compare') return false;
+      if (!isActive || !metadata?.filePath || isLoading || isLoadingCompareSamples || pendingCompareAdditionRef.current || mainViewportMode !== 'compare') return false;
       const baseList = cachedCompareSamples.map((sample) => sample.timestampMs);
       if (baseList.length === 0 || baseList.length >= 5) return false;
       const timestampMs = Math.round(targetMs);
@@ -600,7 +605,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         return false;
       }
 
-      const request = {};
+      const request = { id: crypto.randomUUID() };
       const epoch = compareEpochRef.current;
       pendingCompareAdditionRef.current = request;
       setIsAddingCompareSample(true);
@@ -608,7 +613,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         epoch === compareEpochRef.current && currentCompareKeyRef.current === compareRequestKey;
       try {
         if (!window.electronAPI?.previewCompressionSamples) throw new Error('未检测到预览采样服务通道');
-        const result = await window.electronAPI.previewCompressionSamples(metadata.filePath, [timestampMs], currentCompressConfig);
+        const result = await window.electronAPI.previewCompressionSamples(metadata.filePath, [timestampMs], currentCompressConfig, request.id);
         if (!isCurrent()) return false;
         const sample = result.find((item) => item.timestampMs === timestampMs);
         if (!sample) throw new Error('该位置未能抽取到有效画面，请换一个时间点重试');
@@ -630,7 +635,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         if (pendingCompareAdditionRef.current === request) cancelCompareAddition();
       }
     },
-    [metadata, isLoading, isLoadingCompareSamples, mainViewportMode, cachedCompareSamples, currentCompressConfig, compareRequestKey, cancelCompareAddition]
+    [metadata, isLoading, isLoadingCompareSamples, mainViewportMode, cachedCompareSamples, currentCompressConfig, compareRequestKey, cancelCompareAddition, isActive]
   );
 
   // 删除特定画质对比场景点
@@ -662,8 +667,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const buildCurrentRecord = async (): Promise<PlanRecord | null> => {
     if (!draft || !metadata || !window.electronAPI) return null;
     const title = currentPlanTitle || metadata.fileName.replace(/\.[^/.]+$/, '');
-    const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.concatSingleFile, title);
-    const planId = currentPlanId || `plan_${Date.now()}`;
+    const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.concatSingleFile, title, draft.compress, draft.stripOriginalCover);
+    const planId = currentPlanId || `plan_${crypto.randomUUID()}`;
     return draft.toRecord({
       id: planId,
       title: title,
@@ -676,19 +681,20 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     if (!metadata || !draft) return;
     const defaultTitle = currentPlanTitle || metadata.fileName.replace(/\.[^/.]+$/, '');
     setPlanTitleInput(defaultTitle);
-    setSaveMode(currentPlanId ? 'update' : 'new');
+    setSaveMode(currentPlanId && !boundPlanBusy ? 'update' : 'new');
     setShowSaveModal(true);
   };
 
   // 确认保存方案（支持用户自定义方案名，支持更新原方案与另存为新方案）
   const handleConfirmSavePlan = async () => {
     const trimmedTitle = planTitleInput.trim();
-    if (!trimmedTitle || !draft || !metadata || !window.electronAPI) return;
-
+    if (!trimmedTitle || !draft || !metadata || !window.electronAPI || savingRef.current || (saveMode === 'update' && boundPlanBusy)) return;
+    savingRef.current = true; setSaving(true);
+    const epoch = loadEpoch.current;
     try {
-      const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.concatSingleFile, trimmedTitle);
+      const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.concatSingleFile, trimmedTitle, draft.compress, draft.stripOriginalCover);
       const isUpdating = saveMode === 'update' && Boolean(currentPlanId);
-      const targetId = isUpdating && currentPlanId ? currentPlanId : `plan_${Date.now()}`;
+      const targetId = isUpdating && currentPlanId ? currentPlanId : `plan_${crypto.randomUUID()}`;
 
       const record = draft.toRecord({
         id: targetId,
@@ -697,6 +703,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       });
 
       await window.electronAPI.savePlan(record);
+      if (epoch !== loadEpoch.current) return;
       setCurrentPlanId(targetId);
       setCurrentPlanTitle(trimmedTitle);
       setShowSaveModal(false);
@@ -709,18 +716,21 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       });
       if (onPlanSaved) onPlanSaved();
     } catch (err: any) {
-      setNotice({ type: 'error', message: err.message || '保存方案失败' });
-    }
+      if (epoch === loadEpoch.current) setNotice({ type: 'error', message: err.message || '保存方案失败' });
+    } finally { savingRef.current = false; setSaving(false); }
   };
 
   // 立即执行剪辑（秒级移交后台异步引擎，不阻塞工作台）
   const handleExecuteCut = async (forceBypassNoCutCheck = false) => {
+    if (submitLock.current || isLoading || boundPlanBusy) return;
     // 无损秒切防呆拦截：若未开启降码、且未设切点（只有 1 个保留分段），不处理并弹窗提醒
     if (!forceBypassNoCutCheck && !isCompressMode && cuts.length === 0 && segments.length === 1 && segments[0].decision === 'keep') {
       setShowNoCutWarningModal(true);
       return;
     }
 
+    submitLock.current = true;
+    const epoch = loadEpoch.current;
     setExecuting(true);
     setNotice(null);
 
@@ -728,6 +738,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       const record = await buildCurrentRecord();
       if (!record || !window.electronAPI) return;
       const res = await window.electronAPI.submitDraft(record);
+      if (epoch !== loadEpoch.current) return;
+      setCurrentPlanId(record.id); setCurrentPlanTitle(record.title);
       if (onPlanSaved) onPlanSaved();
 
       setNotice({
@@ -739,7 +751,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     } catch (err: any) {
       setNotice({ type: 'error', message: err.message || '提交剪辑任务失败' });
     } finally {
-      setExecuting(false);
+      submitLock.current = false; setExecuting(false);
     }
   };
 
@@ -752,7 +764,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     }
     if (metadata?.filePath) {
       try {
-        const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, concatSingleFile, currentPlanTitle);
+        const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, concatSingleFile, currentPlanTitle, currentCompressConfig, stripOriginalCover);
         window.electronAPI.showItemInFolder(outPath);
       } catch {
         window.electronAPI.showItemInFolder(metadata.filePath);
@@ -767,7 +779,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       const currentDir = safeOutputPath ? safeOutputPath.replace(/[\\/][^\\/]+$/, '') : undefined;
       const selectedDir = await window.electronAPI.selectDirectory(currentDir);
       if (selectedDir) {
-        await window.electronAPI.saveConfig({
+        await saveConfig({
           outputDirectoryRule: 'custom_fixed',
           customOutputDirectory: selectedDir,
         });
@@ -776,7 +788,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           message: `输出目录已更新为: ${selectedDir}`,
         });
         if (metadata?.filePath) {
-          const newPath = await window.electronAPI.resolveOutputPath(metadata.filePath, concatSingleFile, currentPlanTitle);
+          const newPath = await window.electronAPI.resolveOutputPath(metadata.filePath, concatSingleFile, currentPlanTitle, currentCompressConfig, stripOriginalCover);
           setSafeOutputPath(newPath);
         }
       }
@@ -803,7 +815,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       const file = e.dataTransfer.files[0];
       const fullPath = getFilePathFromFile(file);
       if (fullPath) {
-        loadAndProbeVideo(fullPath);
+        onRequestVideo(fullPath);
       } else {
         setNotice({ type: 'error', message: '未能解析拖拽文件的完整本地路径' });
       }
@@ -906,12 +918,14 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     <div className="flex-1 h-full overflow-hidden px-4 sm:px-6 xl:px-8 py-3 flex flex-col relative min-h-0">
       <div className="w-full max-w-[1360px] mx-auto space-y-2 flex-1 flex flex-col min-h-0">
         {/* 1. 纯净视频画面视窗 / 降码画质 A/B 对比就地视窗 */}
-        {mainViewportMode === 'player' ? (
-          <div className="relative flex-1 min-h-0 flex flex-col">
+          <div className={mainViewportMode === 'player' ? 'relative flex-1 min-h-0 flex flex-col' : 'hidden'}>
             <VideoPlayer
               ref={playerRef}
               videoPath={metadata.filePath}
               durationMs={metadata.durationMs}
+              fps={metadata.fps}
+              isActive={isActive && !isLoading && mainViewportMode === 'player'}
+              shortcutsEnabled={shortcutsEnabled && mainViewportMode === 'player'}
               onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
               onPlayStateChange={(playing) => setIsPlaying(playing)}
               onInsertCut={handleInsertCut}
@@ -933,7 +947,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               </div>
             )}
           </div>
-        ) : (
+        {mainViewportMode === 'compare' && (
           <div className="relative flex-1 min-h-0 bg-black rounded-2xl overflow-hidden border border-white/10 shadow-2xl flex flex-col">
             <VideoCompareView
               config={currentCompressConfig}
@@ -947,7 +961,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                 cancelCompareAddition();
                 setMainViewportMode('player');
               }}
-              shortcutsEnabled={isActive && !showSaveModal && !showNoCutWarningModal && !showCompressSettings}
+              shortcutsEnabled={shortcutsEnabled}
               viewMode={compareViewMode}
               onViewModeChange={setCompareViewMode}
               aspectRatioMode={aspectRatioMode}
@@ -972,13 +986,15 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             segments={segments}
             videoPath={metadata.filePath}
             isPlaying={isPlaying}
+            isActive={isActive}
+            playbackEnabled={mainViewportMode === 'player' && !isLoading}
             aspectRatioMode={aspectRatioMode}
             onSeek={(ms) => {
               setAuditionRange(null);
               setCurrentTimeMs(ms);
               playerRef.current?.seekTo(ms);
             }}
-            shortcutsEnabled={isActive && !showSaveModal && !showNoCutWarningModal && !showCompressSettings}
+            shortcutsEnabled={shortcutsEnabled}
             onDeleteCut={handleDeleteCut}
             onMoveCut={handleMoveCut}
             onTogglePlay={() => {
@@ -1113,7 +1129,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             stepMs={nudgeStepMs}
             onStepMsChange={setNudgeStepMs}
             onToggleDecision={handleToggleDecision}
-            onAudition={handleAudition}
+            onAudition={mainViewportMode === 'player' && !isLoading ? handleAudition : undefined}
             onNudgeStart={handleNudgeStart}
             onNudgeEnd={handleNudgeEnd}
             onMergeWithPrevious={handleMergeSegment}
@@ -1294,8 +1310,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                           </div>
                           <span className="text-[10px] text-zinc-400 mt-1 line-clamp-1">{meta.summary}</span>
                           <div className="mt-1.5 flex items-center justify-between text-[10px] font-mono">
-                            <span className="text-emerald-400">-{meta.sizeReduceMin}~{meta.sizeReduceMax}% 体积</span>
-                            <span className="text-purple-300">保真 {meta.qualityRetainMin}%+</span>
+                            <span className="text-zinc-400">实际效果随素材变化</span>
+                            <span className="text-purple-300">CRF {meta.defaultCrf}</span>
                           </div>
                         </button>
                       );
@@ -1423,7 +1439,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
               {/* 主执行按钮：根据模式联动文案与渐变色 */}
               <button
-                disabled={executing || keptDurationMs === 0}
+                disabled={executing || boundPlanBusy || isLoading || keptDurationMs === 0}
                 onClick={() => handleExecuteCut()}
                 className={`px-2.5 sm:px-3 py-1.5 rounded-xl text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-lg active:scale-95 shrink-0 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
                   isCompressMode
@@ -1515,10 +1531,11 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                         type="radio"
                         name="saveMode"
                         checked={saveMode === 'update'}
+                        disabled={boundPlanBusy}
                         onChange={() => setSaveMode('update')}
                         className="w-3.5 h-3.5 accent-blue-500 cursor-pointer"
                       />
-                      <span className="font-medium">覆盖更新当前方案</span>
+                      <span className="font-medium">{boundPlanBusy ? '排队或处理中，请另存为新方案' : '覆盖更新当前方案'}</span>
                     </label>
                     <label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-200">
                       <input
@@ -1534,6 +1551,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                 )}
 
                 {/* 方案名称输入框 */}
+                {notice?.type === 'error' && <p role="alert" className="text-xs text-rose-300 break-words">{notice.message}</p>}
                 <div className="space-y-1.5">
                   <label className="text-[11px] font-medium text-zinc-400 block">
                     方案名称
@@ -1582,7 +1600,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               </button>
               <button
                 type="button"
-                disabled={!planTitleInput.trim()}
+                disabled={saving || !planTitleInput.trim() || (saveMode === 'update' && boundPlanBusy)}
                 onClick={handleConfirmSavePlan}
                 className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold transition-all shadow-lg shadow-blue-600/30 active:scale-95 flex items-center gap-1.5"
               >

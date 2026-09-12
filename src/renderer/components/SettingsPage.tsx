@@ -1,9 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { AppConfig, DEFAULT_APP_CONFIG, OutputDirectoryRule } from '../../shared/types';
+import { AppConfig, OutputDirectoryRule } from '../../shared/types';
+import { useAppData } from '../AppDataContext';
 import { Check, Folder, ShieldCheck, HardDrive, FileJson, RefreshCw, AlertCircle } from 'lucide-react';
 
 export const SettingsPage: React.FC = () => {
-  const [config, setConfig] = useState<AppConfig>(DEFAULT_APP_CONFIG);
+  const { config: savedConfig, saveConfig } = useAppData();
+  const [draftPatch, setDraftPatch] = useState<Partial<AppConfig>>({});
+  const config = { ...savedConfig, ...draftPatch };
   const [configPath, setConfigPath] = useState<string>('');
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -15,9 +18,7 @@ export const SettingsPage: React.FC = () => {
   const loadConfig = async () => {
     try {
       if (window.electronAPI) {
-        const loaded = await window.electronAPI.getConfig();
         const path = await window.electronAPI.getConfigPath();
-        setConfig(loaded);
         setConfigPath(path);
       }
     } catch (err) {
@@ -27,19 +28,15 @@ export const SettingsPage: React.FC = () => {
   };
 
   const handleRuleChange = async (rule: OutputDirectoryRule) => {
-    const updated = { ...config, outputDirectoryRule: rule };
-    setConfig(updated);
-    await persistConfig(updated);
+    await persistConfig({ outputDirectoryRule: rule });
   };
 
   const handleSubFolderChange = async (name: string) => {
-    const updated = { ...config, subFolderName: name };
-    setConfig(updated);
+    setDraftPatch(previous => ({ ...previous, subFolderName: name }));
   };
 
   const handleCustomDirChange = async (dir: string) => {
-    const updated = { ...config, customOutputDirectory: dir };
-    setConfig(updated);
+    setDraftPatch(previous => ({ ...previous, customOutputDirectory: dir }));
   };
 
   const handleBrowseCustomDir = async (e: React.MouseEvent) => {
@@ -48,8 +45,7 @@ export const SettingsPage: React.FC = () => {
       try {
         const selected = await window.electronAPI.selectDirectory(config.customOutputDirectory);
         if (selected) {
-          const updated = { ...config, customOutputDirectory: selected, outputDirectoryRule: 'custom_fixed' as OutputDirectoryRule };
-          setConfig(updated);
+          const updated = { customOutputDirectory: selected, outputDirectoryRule: 'custom_fixed' as OutputDirectoryRule };
           await persistConfig(updated);
         }
       } catch (err) {
@@ -58,11 +54,12 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
-  const persistConfig = async (newCfg: AppConfig) => {
+  const persistConfig = async (newCfg: Partial<AppConfig>) => {
     try {
       if (window.electronAPI) {
-        const saved = await window.electronAPI.saveConfig(newCfg);
-        setConfig(saved);
+        await saveConfig(newCfg);
+        setDraftPatch(previous => Object.fromEntries(Object.entries(previous).filter(([key, value]) => value !== newCfg[key as keyof AppConfig])));
+        setErrorMsg(null);
         setSavedSuccess(true);
         setTimeout(() => setSavedSuccess(false), 2000);
       }
@@ -97,7 +94,7 @@ export const SettingsPage: React.FC = () => {
           </div>
 
           <button
-            onClick={() => persistConfig(config)}
+            onClick={() => persistConfig(draftPatch)}
             className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center gap-1.5 transition-all shadow-md shadow-blue-500/20 active:scale-95"
           >
             <Check className="w-4 h-4" /> 保存所有配置
@@ -144,7 +141,7 @@ export const SettingsPage: React.FC = () => {
                         type="text"
                         value={config.subFolderName}
                         onChange={(e) => handleSubFolderChange(e.target.value)}
-                        onBlur={() => persistConfig(config)}
+                        onBlur={() => persistConfig({ subFolderName: config.subFolderName })}
                         className="bg-black/40 border border-white/15 rounded-md px-2.5 py-1 text-xs text-white font-mono w-32 focus:border-blue-500 focus:outline-none"
                       />
                       <span className="text-xs text-zinc-500 font-mono">例：D:/Videos/_cuts/name_cut.mp4</span>
@@ -205,7 +202,7 @@ export const SettingsPage: React.FC = () => {
                         placeholder="例如 D:/ExportedCuts"
                         value={config.customOutputDirectory}
                         onChange={(e) => handleCustomDirChange(e.target.value)}
-                        onBlur={() => persistConfig(config)}
+                        onBlur={() => persistConfig({ customOutputDirectory: config.customOutputDirectory })}
                         className="flex-1 bg-black/40 border border-white/15 rounded-md px-2.5 py-1.5 text-xs text-white font-mono focus:border-blue-500 focus:outline-none"
                       />
                       <button
@@ -250,8 +247,7 @@ export const SettingsPage: React.FC = () => {
                   type="checkbox"
                   checked={config.autoConcatSingleFile}
                   onChange={(e) => {
-                    const updated = { ...config, autoConcatSingleFile: e.target.checked };
-                    setConfig(updated);
+                    const updated = { autoConcatSingleFile: e.target.checked };
                     persistConfig(updated);
                   }}
                   className="w-4 h-4 accent-blue-500 rounded cursor-pointer"
@@ -266,8 +262,7 @@ export const SettingsPage: React.FC = () => {
                   type="checkbox"
                   checked={config.notifyOnExportComplete !== false}
                   onChange={(e) => {
-                    const updated = { ...config, notifyOnExportComplete: e.target.checked };
-                    setConfig(updated);
+                    const updated = { notifyOnExportComplete: e.target.checked };
                     persistConfig(updated);
                   }}
                   className="w-4 h-4 accent-blue-500 rounded cursor-pointer"

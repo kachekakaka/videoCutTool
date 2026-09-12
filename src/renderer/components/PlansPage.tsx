@@ -18,56 +18,24 @@ import {
   Zap,
 } from 'lucide-react';
 import { formatTimecode } from './VideoPlayer';
+import { useAppData } from '../AppDataContext';
 
 interface PlansPageProps {
   onLoadPlanIntoCutter: (plan: PlanRecord) => void;
   isActive?: boolean;
 }
 
-export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter, isActive }) => {
-  const [plans, setPlans] = useState<PlanRecord[]>([]);
-  const [filter, setFilter] = useState<'all' | 'ready' | 'processing' | 'completed' | 'failed'>('all');
-  const [loading, setLoading] = useState(false);
+export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) => {
+  const { plans, issues, engine, loading, error, refresh: fetchPlans } = useAppData();
+  const [notice, setNotice] = useState('');
+  const [page, setPage] = useState(1);
+  const [filter, setFilter] = useState<'all' | 'ready' | 'queued' | 'processing' | 'completed' | 'failed'>('all');
   const [executingId, setExecutingId] = useState<string | null>(null);
   const [batchRunning, setBatchRunning] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [planToDelete, setPlanToDelete] = useState<PlanRecord | null>(null);
 
-  const fetchPlans = async () => {
-    setLoading(true);
-    try {
-      if (window.electronAPI) {
-        const loaded = await window.electronAPI.listPlans();
-        setPlans(loaded);
-      }
-    } catch (err) {
-      console.error('获取方案列表失败:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // 每次切换至本 Tab 时立即刷新方案列表，彻底根除跨 Tab 数据丢失假象
-  useEffect(() => {
-    if (isActive) {
-      fetchPlans();
-    }
-  }, [isActive]);
-
-  useEffect(() => {
-    if (!window.electronAPI) return;
-
-    const unsubStatus = window.electronAPI.onPlanStatusChanged?.(() => {
-      fetchPlans();
-    });
-    const unsubCompleted = window.electronAPI.onPlanCompleted?.(() => {
-      fetchPlans();
-    });
-    return () => {
-      if (unsubStatus) unsubStatus();
-      if (unsubCompleted) unsubCompleted();
-    };
-  }, []);
+  useEffect(() => setPage(1), [filter]);
 
   // Esc 键关闭删除确认模态框
   useEffect(() => {
@@ -84,11 +52,11 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter, isAc
     setExecutingId(planId);
     try {
       if (window.electronAPI) {
-        await window.electronAPI.executePlan(planId);
-        await fetchPlans();
+        const result = await window.electronAPI.executePlan(planId);
+        setNotice(result.message);
       }
     } catch (err) {
-      console.error('执行方案失败:', err);
+      setNotice(`执行方案失败：${String(err)}`);
     } finally {
       setExecutingId(null);
     }
@@ -98,11 +66,11 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter, isAc
     setBatchRunning(true);
     try {
       if (window.electronAPI) {
-        await window.electronAPI.batchExecutePlans();
-        await fetchPlans();
+        const result = await window.electronAPI.batchExecutePlans();
+        setNotice(`已接受 ${result.queued} / ${result.total} 个方案${result.errors?.length ? '；' + result.errors.join('；') : ''}`);
       }
     } catch (err) {
-      console.error('批量执行方案失败:', err);
+      setNotice(`批量执行失败：${String(err)}`);
     } finally {
       setBatchRunning(false);
     }
@@ -119,9 +87,8 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter, isAc
     if (window.electronAPI) {
       try {
         await window.electronAPI.deletePlan(targetId);
-        await fetchPlans();
       } catch (err) {
-        console.error('删除方案失败:', err);
+        setNotice(`删除方案失败：${String(err)}`);
       }
     }
   };
@@ -141,6 +108,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter, isAc
   // 过滤方案
   const filteredPlans = plans.filter((p) => {
     if (filter === 'ready') return p.status === 'ready';
+    if (filter === 'queued') return p.status === 'queued';
     if (filter === 'processing') return p.status === 'processing';
     if (filter === 'completed') return p.status === 'completed';
     if (filter === 'failed') return p.status === 'failed';
@@ -151,10 +119,14 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter, isAc
   const processingCount = plans.filter((p) => p.status === 'processing').length;
   const completedCount = plans.filter((p) => p.status === 'completed').length;
   const failedCount = plans.filter((p) => p.status === 'failed').length;
+  const queuedCount = plans.filter(p => p.status === 'queued').length;
+  const pages = Math.max(1, Math.ceil(filteredPlans.length / 50)), visiblePage = Math.min(page, pages);
 
   return (
     <div className="flex-1 h-full overflow-y-auto px-8 py-6">
       <div className="max-w-[1360px] mx-auto space-y-6">
+        {(notice || error || engine.storageError) && <div role="status" className="p-3 rounded-xl bg-amber-500/10 text-amber-200 text-xs break-words">{engine.storageError || error || notice}{engine.storageError && <button className="ml-3 underline" onClick={() => window.electronAPI?.retryPendingWrites().catch(error => setNotice(String(error)))}>重试保存并继续队列</button>}</div>}
+        {issues.length > 0 && <details className="p-3 text-amber-200 bg-amber-500/10 rounded-xl text-xs"><summary>方案恢复与读取提示（{issues.length}）</summary>{issues.map((issue, index) => <p className="mt-2 break-all" key={index}>{issue}</p>)}</details>}
         {/* 顶部标题与控制栏 */}
         <div className="flex items-center justify-between pb-6 border-b border-white/10">
           <div>
@@ -194,6 +166,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter, isAc
                 <Clock className="w-3.5 h-3.5 text-amber-400" />
                 <span>待执行 ({readyCount})</span>
               </button>
+              {queuedCount > 0 && <button onClick={() => setFilter('queued')} className={`px-3 py-1.5 rounded-lg text-xs ${filter === 'queued' ? 'bg-blue-600 text-white' : 'text-blue-300'}`}>排队中 ({queuedCount})</button>}
               {processingCount > 0 && (
                 <button
                   onClick={() => setFilter('processing')}
@@ -275,9 +248,10 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter, isAc
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {filteredPlans.map((plan) => {
+            {filteredPlans.slice((visiblePage - 1) * 50, visiblePage * 50).map((plan) => {
               const isCompleted = plan.status === 'completed';
               const isProcessing = plan.status === 'processing';
+              const isQueued = plan.status === 'queued';
               const isFailed = plan.status === 'failed';
               const isRunning = executingId === plan.id;
 
@@ -333,7 +307,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter, isAc
                             <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
                             <span>处理中...</span>
                           </span>
-                        ) : isFailed ? (
+                        ) : isQueued ? <span className="text-xs text-blue-300">排队中</span> : isFailed ? (
                           <span className="text-xs bg-rose-500/20 text-rose-300 border border-rose-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-medium">
                             <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
                             <span>失败</span>
@@ -373,6 +347,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter, isAc
                       </div>
                     )}
 
+                    {plan.resolvedEncoder && <p className="text-xs text-zinc-400 mb-2">实际编码器：{plan.resolvedEncoder.toUpperCase()}</p>}
                     {/* 统计指标行 */}
                     <div className="grid grid-cols-3 gap-2 py-2 px-3 rounded-xl bg-black/40 border border-white/5 text-xs font-mono mb-3">
                       <div>
@@ -421,13 +396,13 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter, isAc
                       </button>
 
                       {/* 立即执行 / 重新导出 / 重试 */}
-                      {isProcessing ? (
+                      {isProcessing || isQueued ? (
                         <button
                           disabled={true}
                           className="px-3 py-1.5 rounded-lg text-white font-semibold flex items-center gap-1.5 bg-blue-600/50 cursor-not-allowed opacity-80 text-xs"
                         >
                           <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          <span>后台处理中...</span>
+                          <span>{isQueued ? '排队中...' : '后台处理中...'}</span>
                         </button>
                       ) : isFailed ? (
                         <button
@@ -488,8 +463,9 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter, isAc
                       {/* 删除按钮 */}
                       <button
                         onClick={() => handleDeleteClick(plan)}
+                        disabled={isProcessing}
                         className="p-1.5 rounded-lg bg-white/5 hover:bg-rose-500/15 text-rose-400/80 hover:text-rose-300 transition-colors focus-visible:ring-2 focus-visible:ring-rose-500/40"
-                        title="删除方案"
+                        title={isProcessing ? '处理中，完成后可删除' : isQueued ? '移出队列并删除方案' : '删除方案'}
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -500,6 +476,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter, isAc
             })}
           </div>
         )}
+        {pages > 1 && <div className="flex justify-center gap-4 text-xs text-zinc-300"><button disabled={visiblePage === 1} onClick={() => setPage(visiblePage - 1)}>上一页</button><span>第 {visiblePage} / {pages} 页，每页 50 项</span><button disabled={visiblePage === pages} onClick={() => setPage(visiblePage + 1)}>下一页</button></div>}
       </div>
 
       {/* 应用内置暗黑确认删除模态框（彻底消除白底系统弹窗） */}
