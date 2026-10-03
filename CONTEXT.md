@@ -46,6 +46,37 @@ _Avoid_: Video hover tooltip, slice popup, mini player
 Direct keyboard text entry and validation of a cut point's timestamp via double-click on the timeline or single-click on the segment card, updating the retention draft with instant millisecond precision.
 _Avoid_: Time dialog, manual timestamp entry, direct box
 
+**Spatial Crop**:
+An operator-defined rectangular canvas boundary applied to a segment or full media, retaining enclosed visual content while discarding outer areas and adjusting export resolution accordingly.
+_Avoid_: Video crop, region cut, picture cut, frame slice
+
+**Crop Aspect Ratio Lock**:
+The optional geometric constraint fixing the proportional dimensions (e.g. 16:9, 9:16, 1:1, or native source aspect) of a Spatial Crop bounding box during interactive resizing.
+_Avoid_: Ratio snap, fixed shape, size lock
+
+
+**Region Mask**:
+An operator-defined rectangular overlay obscuring targeted on-screen content (such as logos, watermarks, or sensitive data) via solid blackout, blur, or pixelation, strictly preserving original canvas dimensions.
+_Avoid_: Blackout box, sticker, cover box, censor box
+
+**Watermark Delogo**:
+The targeted elimination of static on-screen logos, identifiers, or watermarks within an operator-defined rectangular boundary using surrounding-pixel edge interpolation (FFmpeg delogo) to achieve smooth, dependency-free background restoration without inflating binary footprint.
+_Avoid_: Watermark erase, AI inpaint, logo remover, de-watermark
+
+**Global Box Propagation**:
+The one-way batch replication of a designated segment's spatial crop or mask parameters across all other segments within the active retention draft.
+_Avoid_: Apply to all, global sync, copy crop
+
+**Dual-Mode Workbench Decoupling**:
+The interaction architecture dividing the workspace into two mutually exclusive visual modes within the workbench: Temporal Cut Mode (pure timeline segmentation with zero on-canvas handles) and Spatial Edit Mode (canvas-focused cropping and masking with paused timeline), saving into a unified retention plan.
+_Avoid_: Split editor, dual window, multi-screen mode
+
+**Global-First Spatial Scope**:
+The scoping policy where spatial crops and masks apply globally across the entire media by default, while permitting optional segment-level overrides for tailored regional edits.
+_Avoid_: Default all, global override, segment-first
+
+
+
 ### Management & Execution Concepts
 
 **Media Cutting Engine**:
@@ -103,3 +134,12 @@ _Avoid_: Sample viewer, quality test, transcode check
 **Preview Sample Point**:
 A discrete millisecond timestamp designated specifically for the Visual Compression Preview, indicating an exact video frame sampled for original vs compressed quality inspection. Strictly decoupled from Cut Points, it does not alter media segmentation or retention decisions, supports timeline double-click or timecode entry for addition, and can be removed via scene capsule interaction without leaving clutter on the primary timeline.
 _Avoid_: Cut marker, test cut, compare marker, sample slice
+
+**Transcode Auto-Escalation**:
+The automated pipeline policy that upgrades an export job from lossless stream copy to the compression and re-encoding engine whenever spatial cropping, masking, or visual filters are configured.
+_Avoid_: Force compress, auto transcode, transcode bump
+
+**Letterbox Normalization**:
+The automatic visual alignment mechanism that embeds cropped segments with disparate resolutions onto a uniform canvas using letterbox padding and centered scaling during single-file concatenation.
+_Avoid_: Canvas fit, auto pad, dimension align
+

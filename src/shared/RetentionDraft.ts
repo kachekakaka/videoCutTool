@@ -1,5 +1,6 @@
-import { Segment, RetentionDecision, MediaRetentionPlan, PlanRecord, CompressConfig, KeyframePoint } from './types';
+import { Segment, RetentionDecision, MediaRetentionPlan, PlanRecord, CompressConfig, KeyframePoint, SpatialConfig, SpatialCropBox, SpatialMaskItem } from './types';
 import { planRetention } from './RetentionPlanner';
+import { hasSpatialEffects } from './spatialFiltergraph';
 
 export interface DraftSnapshot {
   cuts: number[];
@@ -7,6 +8,8 @@ export interface DraftSnapshot {
   concatSingleFile: boolean;
   stripOriginalCover: boolean;
   compress?: CompressConfig;
+  spatialConfig?: SpatialConfig;
+  segmentSpatialOverrides?: Record<string, SpatialConfig>;
 }
 
 /**
@@ -22,6 +25,8 @@ export class RetentionDraft {
   public concatSingleFile: boolean = true;
   public stripOriginalCover: boolean = true;
   public compress?: CompressConfig;
+  public spatialConfig?: SpatialConfig;
+  public segmentSpatialOverrides: Record<string, SpatialConfig> = {};
 
   constructor(mediaPath: string, totalDurationMs: number) {
     this.mediaPath = mediaPath;
@@ -77,7 +82,10 @@ export class RetentionDraft {
       decision: originalDecision,
     };
 
+    const spatial = this.spatialByInterval();
+    spatial.splice(targetIdx, 1, structuredClone(spatial[targetIdx]), structuredClone(spatial[targetIdx]));
     this.intervals.splice(targetIdx, 1, leftInterval, rightInterval);
+    this.restoreSpatialIntervals(spatial);
     this.rebuildCuts();
     return true;
   }
@@ -127,7 +135,10 @@ export class RetentionDraft {
       decision: mergedDecision,
     };
 
+    const spatial = this.spatialByInterval();
+    spatial.splice(cutIdx, 2, spatial[cutIdx]);
     this.intervals.splice(cutIdx, 2, mergedInterval);
+    this.restoreSpatialIntervals(spatial);
     this.rebuildCuts();
     return true;
   }
@@ -270,6 +281,13 @@ export class RetentionDraft {
     if (options.compress || this.compress) {
       plan.compress = options.compress ? { ...options.compress } : this.compress ? { ...this.compress } : undefined;
     }
+    if (this.spatialConfig) {
+      plan.spatialConfig = structuredClone(this.spatialConfig);
+    }
+    if (Object.keys(this.segmentSpatialOverrides).length > 0) {
+      plan.segmentSpatialOverrides = structuredClone(this.segmentSpatialOverrides);
+    }
+    plan.spatialSegments = planRetention(this.mediaPath, this.totalDurationMs, this.getSegments(), keyframes, options.outputPath, false, stripCover, options.keyframePoints).planSegments.map(segment => ({ ...segment, spatialConfig: structuredClone(this.getEffectiveSpatialConfig(segment.segmentId)) }));
     return plan;
   }
 
@@ -308,6 +326,8 @@ export class RetentionDraft {
       concatSingleFile: this.concatSingleFile,
       stripOriginalCover: this.stripOriginalCover,
       compress: compress ? { ...compress } : undefined,
+      spatialConfig: this.spatialConfig ? structuredClone(this.spatialConfig) : undefined,
+      segmentSpatialOverrides: Object.keys(this.segmentSpatialOverrides).length > 0 ? structuredClone(this.segmentSpatialOverrides) : undefined,
     };
   }
 
@@ -320,6 +340,12 @@ export class RetentionDraft {
     draft.stripOriginalCover = record.stripOriginalCover ?? true;
     if (record.compress) {
       draft.compress = { ...record.compress };
+    }
+    if (record.spatialConfig) {
+      draft.spatialConfig = structuredClone(record.spatialConfig);
+    }
+    if (record.segmentSpatialOverrides) {
+      draft.segmentSpatialOverrides = structuredClone(record.segmentSpatialOverrides);
     }
 
     draft.rebuildFromCutsAndDecisions(record.cuts || [], record.decisions || {});
@@ -340,6 +366,8 @@ export class RetentionDraft {
       concatSingleFile: this.concatSingleFile,
       stripOriginalCover: this.stripOriginalCover,
       compress: this.compress ? { ...this.compress } : undefined,
+      spatialConfig: this.spatialConfig ? structuredClone(this.spatialConfig) : undefined,
+      segmentSpatialOverrides: structuredClone(this.segmentSpatialOverrides),
     };
   }
 
@@ -350,13 +378,82 @@ export class RetentionDraft {
     this.concatSingleFile = snapshot.concatSingleFile;
     this.stripOriginalCover = snapshot.stripOriginalCover;
     this.compress = snapshot.compress ? { ...snapshot.compress } : undefined;
+    this.spatialConfig = snapshot.spatialConfig ? structuredClone(snapshot.spatialConfig) : undefined;
+    this.segmentSpatialOverrides = snapshot.segmentSpatialOverrides ? structuredClone(snapshot.segmentSpatialOverrides) : {};
     this.rebuildFromCutsAndDecisions(snapshot.cuts || [], snapshot.decisions || {});
+  }
+
+  /**
+   * 获取生效的空间配置（若分段有独立覆盖则取分段，否则取全局）
+   */
+  public getEffectiveSpatialConfig(segmentId?: string): SpatialConfig | undefined {
+    if (segmentId && this.segmentSpatialOverrides[segmentId]) {
+      return this.segmentSpatialOverrides[segmentId];
+    }
+    return this.spatialConfig;
+  }
+
+  /**
+   * 设置全局或分段裁切框
+   */
+  public setCrop(crop?: SpatialCropBox, segmentId?: string): void {
+    this.editSpatial(segmentId).crop = crop ? structuredClone(crop) : undefined;
+  }
+
+  /**
+   * 添加遮罩选区
+   */
+  public addMask(mask: SpatialMaskItem, segmentId?: string): void {
+    this.editSpatial(segmentId).masks.push(structuredClone(mask));
+  }
+
+  /**
+   * 移除遮罩选区
+   */
+  public removeMask(maskId: string, segmentId?: string): boolean {
+    if (!this.getEffectiveSpatialConfig(segmentId)?.masks.some(mask => mask.id === maskId)) return false;
+    const target = this.editSpatial(segmentId);
+    const initialLen = target.masks.length;
+    target.masks = target.masks.filter((m) => m.id !== maskId);
+    return target.masks.length < initialLen;
+  }
+
+  /**
+   * 更新遮罩选区
+   */
+  public updateMask(mask: SpatialMaskItem, segmentId?: string): boolean {
+    if (!this.getEffectiveSpatialConfig(segmentId)?.masks.some(item => item.id === mask.id)) return false;
+    const target = this.editSpatial(segmentId);
+    const idx = target.masks.findIndex((m) => m.id === mask.id);
+    if (idx === -1) return false;
+    target.masks[idx] = structuredClone(mask);
+    return true;
+  }
+
+  /**
+   * 检查是否配置了有效的画面空间滤镜（裁切或遮罩）
+   */
+  public hasSpatialConfig(videoMeta?: { width?: number; height?: number }): boolean {
+    const size = videoMeta?.width && videoMeta?.height ? { width: videoMeta.width, height: videoMeta.height } : undefined;
+    return this.getSegments().some(segment => segment.decision === 'keep' && hasSpatialEffects(this.getEffectiveSpatialConfig(segment.id), size));
+  }
+
+  private editSpatial(segmentId?: string): SpatialConfig {
+    if (!segmentId) return this.spatialConfig ??= { scope: 'global', masks: [] };
+    const index = this.parseSegmentIndex(segmentId);
+    if (index < 0 || index >= this.intervals.length) throw new Error('分段不存在');
+    return this.segmentSpatialOverrides[segmentId] ??= { ...structuredClone(this.spatialConfig ?? { masks: [] }), scope: 'segment' };
+  }
+  private spatialByInterval() { return this.intervals.map((_, index) => this.segmentSpatialOverrides[`seg_${index}`]); }
+  private restoreSpatialIntervals(configs: Array<SpatialConfig | undefined>) {
+    this.segmentSpatialOverrides = Object.fromEntries(configs.flatMap((config, index) => config ? [[`seg_${index}`, config]] : []));
   }
 
   /**
    * 统一根据切点列表和决策字典重建区间（消除重复代码）
    */
   private rebuildFromCutsAndDecisions(cuts: number[], decisions: Record<string, RetentionDecision>): void {
+    if (cuts.some((cut, index) => !Number.isFinite(cut) || cut <= 0 || cut >= this.totalDurationMs || (index > 0 && cut <= cuts[index - 1]))) throw new Error('方案切点超出素材范围或顺序无效，请重新编辑');
     if (!cuts || cuts.length === 0) {
       this.intervals = [
         {

@@ -48,14 +48,24 @@ export function buildCompressArgs(
   outputPath: string,
   config: CompressConfig,
   resolvedEncoder: 'cpu' | 'nvenc' | 'qsv' = 'cpu',
-  options: { streams?: MediaStreamInfo[]; stripCover?: boolean; videoOnly?: boolean; startSeconds?: string; durationSeconds?: string } = {}
+  options: {
+    streams?: MediaStreamInfo[];
+    stripCover?: boolean;
+    videoOnly?: boolean;
+    startSeconds?: string;
+    durationSeconds?: string;
+    spatialFilterArgs?: string[];
+    videoFilterGraph?: { graph: string; streamIndex: number; output: string; timeBase: string };
+  } = {}
 ): string[] {
   const args: string[] = ['-n'];
   if (options.startSeconds !== undefined) args.push('-ss', options.startSeconds);
   args.push('-i', inputPath);
   if (options.durationSeconds !== undefined) args.push('-t', options.durationSeconds);
   const selected = options.streams?.filter(stream => options.videoOnly ? stream.type === 'video' && !stream.attachedPicture : options.stripCover !== false ? (stream.type === 'video' && !stream.attachedPicture) || stream.type === 'audio' : true);
-  if (selected) selected.forEach(stream => args.push('-map', `0:${stream.index}`));
+  const complex = options.videoFilterGraph;
+  if (complex) args.push('-filter_complex', complex.graph);
+  if (selected) selected.forEach(stream => args.push('-map', complex?.streamIndex === stream.index ? `[${complex.output}]` : `0:${stream.index}`));
   else args.push('-map', '0:V', ...(options.videoOnly ? [] : ['-map', '0:a?']));
   args.push('-c', 'copy');
 
@@ -88,14 +98,34 @@ export function buildCompressArgs(
     args.push('-c:v', encoder, '-crf', String(crf), '-preset', presetSpeed);
   }
 
-  // 3. 分辨率限高/缩放
-  const scaleArgs = buildScaleFilterArgs(config);
-  if (selected?.some(stream => stream.attachedPicture) && scaleArgs.length) {
-    selected.filter(stream => stream.type === 'video').forEach((stream, index) => {
-      if (!stream.attachedPicture) args.push(`-filter:v:${index}`, scaleArgs[1]);
-    });
-  } else args.push(...scaleArgs);
+  // 3. 分辨率限高/缩放与空间滤镜串联
+  const scaleArgs = complex ? [] : buildScaleFilterArgs(config);
+  const filterParts: string[] = [];
+  if (options.spatialFilterArgs && options.spatialFilterArgs.length === 2 && options.spatialFilterArgs[0] === '-vf') {
+    filterParts.push(options.spatialFilterArgs[1]);
+  }
+  if (scaleArgs.length === 2 && scaleArgs[0] === '-vf') {
+    filterParts.push(scaleArgs[1]);
+  }
+  const mergedVf = filterParts.join(',');
+
+  if (mergedVf) {
+    if (selected?.some(stream => stream.attachedPicture)) {
+      selected.filter(stream => stream.type === 'video').forEach((stream, index) => {
+        if (!stream.attachedPicture) args.push(`-filter:v:${index}`, mergedVf);
+      });
+    } else {
+      args.push('-vf', mergedVf);
+    }
+  }
   args.push('-pix_fmt', 'yuv420p');
+  // 保留空间处理输入的 VFR 时间戳，不补出重复帧。
+  if (complex && selected) {
+    const videoIndex = selected.filter(stream => stream.type === 'video').findIndex(stream => stream.index === complex.streamIndex);
+    if (videoIndex >= 0) args.push(`-fps_mode:v:${videoIndex}`, 'passthrough', `-enc_time_base:v:${videoIndex}`, complex.timeBase);
+    // 保留 VFR 的原始 PTS 时，NVENC 的 B 帧重排可能产生非单调 DTS；关闭该路重排。
+    if (videoIndex >= 0 && resolvedEncoder === 'nvenc') args.push(`-bf:v:${videoIndex}`, '0');
+  }
   selected?.filter(stream => stream.type === 'video').forEach((stream, index) => {
     if (stream.attachedPicture) args.push(`-c:v:${index}`, 'copy', `-disposition:v:${index}`, 'attached_pic');
   });

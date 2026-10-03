@@ -8,12 +8,10 @@ const subscribe = <T>(channel: string, callback: (value: T) => void) => {
 };
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  getPathForFile: (file: File): string => {
-    try {
-      return webUtils.getPathForFile(file);
-    } catch {
-      return (file as any).path || '';
-    }
+  getPathForFile: async (file: File): Promise<string> => {
+    const physical = webUtils.getPathForFile(file);
+    if (!physical) throw new Error('无法获取拖入文件的物理路径');
+    return ipcRenderer.invoke('media:registerDroppedFile', physical);
   },
   // 配置相关
   getConfig: (): Promise<AppConfig> => ipcRenderer.invoke('config:get'),
@@ -27,7 +25,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectDirectory: (defaultPath?: string): Promise<string | null> => ipcRenderer.invoke('dialog:selectDirectory', defaultPath),
   probeMedia: (filePath: string): Promise<MediaMetadata> => ipcRenderer.invoke('media:probe', filePath),
   probeBasic: (filePath: string): Promise<MediaMetadata> => ipcRenderer.invoke('media:probeBasic', filePath),
-  probeKeyframes: (filePath: string): Promise<number[]> => ipcRenderer.invoke('media:probeKeyframes', filePath),
+  probeKeyframes: (filePath: string, id: string): Promise<number[]> => ipcRenderer.invoke('media:probeKeyframes', filePath, id),
+  cancelKeyframes: id => ipcRenderer.invoke('media:cancelKeyframes', id),
   adjacentFrame: (file, time, direction) => ipcRenderer.invoke('media:adjacentFrame', file, time, direction),
   preparePlayback: (file, convert, id) => ipcRenderer.invoke('media:preparePlayback', file, convert, id),
   cancelPlayback: id => ipcRenderer.invoke('media:cancelPlayback', id),
@@ -35,7 +34,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 降码与画质对比预览
   previewCompressionSamples: (videoPath: string, timestampsMs: number[], config: CompressConfig, id?: string): Promise<PreviewSample[]> =>
-    ipcRenderer.invoke('compress:previewSamples', videoPath, timestampsMs, config, id),
+    ipcRenderer.invoke('compress:previewSamples', videoPath, timestampsMs, config, id ?? crypto.randomUUID()),
   cancelCompressionPreview: id => ipcRenderer.invoke('compress:cancelPreview', id),
   probeHardwareEncoder: config => ipcRenderer.invoke('compress:probeEncoder', config),
 
@@ -58,6 +57,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 方案管理
   listPlans: (): Promise<PlanRecord[]> => ipcRenderer.invoke('plan:list'),
+  loadPlan: id => ipcRenderer.invoke('plan:load', id),
   getPlanDetails: () => ipcRenderer.invoke('plan:details'),
   refreshPlans: () => ipcRenderer.invoke('plan:refresh'),
   onPlanChanged: callback => subscribe('plan:changed', callback),

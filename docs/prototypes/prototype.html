@@ -944,7 +944,323 @@
       border-top: 1px solid var(--border-subtle);
       display: flex;
       justify-content: flex-end;
+    /* ========================================================= */
+    /* 10. 双模式物理解耦工作台与空间修饰 (Dual-Mode & Spatial Edit) */
+    /* ========================================================= */
+    .workbench-mode-bar {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .mode-capsule-group {
+      display: inline-flex;
+      background: #121620;
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 4px;
+      gap: 6px;
+      align-self: flex-start;
+    }
+
+    .mode-capsule-btn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 16px;
+      border-radius: 9px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .mode-capsule-btn:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .mode-capsule-btn.active {
+      background: rgba(88, 166, 255, 0.15);
+      border-color: rgba(88, 166, 255, 0.35);
+      color: #fff;
+      box-shadow: 0 2px 10px rgba(88, 166, 255, 0.15);
+    }
+
+    .mode-capsule-btn .mode-label {
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .mode-capsule-btn .mode-sub {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-left: 2px;
+    }
+
+    .spatial-sub-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      background: #161b24;
+      border: 1px solid rgba(88, 166, 255, 0.25);
+      border-radius: 10px;
+      padding: 8px 14px;
+      animation: fadeIn 0.2s ease-in-out;
+    }
+
+    .spatial-sub-toggle {
+      display: inline-flex;
+      background: #0d1117;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 3px;
+      gap: 4px;
+    }
+
+    .spatial-tab-btn {
+      padding: 5px 12px;
+      border-radius: 6px;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .spatial-tab-btn.active {
+      background: #1f6feb;
+      color: #fff;
+      box-shadow: 0 2px 6px rgba(31, 111, 235, 0.4);
+    }
+
+    .spatial-tool-group {
+      display: flex;
+      align-items: center;
       gap: 10px;
+    }
+
+    .ratio-pill-group, .mask-type-pills {
+      display: inline-flex;
+      background: #0d1117;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 2px;
+      gap: 2px;
+    }
+
+    .ratio-pill, .mask-type-pill {
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 11.5px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .ratio-pill.active, .mask-type-pill.active {
+      background: rgba(255, 255, 255, 0.12);
+      color: #58a6ff;
+      font-weight: 600;
+    }
+
+    .scope-pill-indicator {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(88, 166, 255, 0.1);
+      border: 1px solid rgba(88, 166, 255, 0.25);
+      padding: 4px 10px;
+      border-radius: 8px;
+      font-size: 11.5px;
+      cursor: pointer;
+    }
+
+    /* 播放器视窗内空间编辑交互覆层 */
+    .spatial-canvas-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 25;
+      pointer-events: auto;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    .crop-bounding-box {
+      position: absolute;
+      border: 2px dashed #58a6ff;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+      cursor: move;
+      transition: border-color 0.15s;
+    }
+
+    .crop-grid-line-h1, .crop-grid-line-h2, .crop-grid-line-v1, .crop-grid-line-v2 {
+      position: absolute;
+      pointer-events: none;
+      background: rgba(88, 166, 255, 0.25);
+    }
+    .crop-grid-line-h1 { top: 33.33%; left: 0; right: 0; height: 1px; }
+    .crop-grid-line-h2 { top: 66.66%; left: 0; right: 0; height: 1px; }
+    .crop-grid-line-v1 { left: 33.33%; top: 0; bottom: 0; width: 1px; }
+    .crop-grid-line-v2 { left: 66.66%; top: 0; bottom: 0; width: 1px; }
+
+    .crop-handle {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      background: #58a6ff;
+      border: 2px solid #fff;
+      border-radius: 2px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+    }
+    .crop-handle.handle-nw { top: -6px; left: -6px; cursor: nwse-resize; }
+    .crop-handle.handle-ne { top: -6px; right: -6px; cursor: nesw-resize; }
+    .crop-handle.handle-sw { bottom: -6px; left: -6px; cursor: nesw-resize; }
+    .crop-handle.handle-se { bottom: -6px; right: -6px; cursor: nwse-resize; }
+    .crop-handle.handle-n { top: -6px; left: calc(50% - 5px); cursor: ns-resize; }
+    .crop-handle.handle-s { bottom: -6px; left: calc(50% - 5px); cursor: ns-resize; }
+    .crop-handle.handle-w { top: calc(50% - 5px); left: -6px; cursor: ew-resize; }
+    .crop-handle.handle-e { top: calc(50% - 5px); right: -6px; cursor: ew-resize; }
+
+    .crop-coord-badge {
+      position: absolute;
+      top: -28px;
+      left: 0;
+      background: rgba(13, 17, 23, 0.9);
+      border: 1px solid rgba(88, 166, 255, 0.4);
+      color: #58a6ff;
+      font-size: 11px;
+      font-family: ui-monospace, monospace;
+      padding: 2px 8px;
+      border-radius: 4px;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+
+    /* 遮罩修补框视觉 */
+    .mask-box-item {
+      position: absolute;
+      cursor: move;
+      border-radius: 4px;
+      user-select: none;
+      box-sizing: border-box;
+      transition: box-shadow 0.15s;
+    }
+    .mask-box-item.active {
+      box-shadow: 0 0 0 2px #fff, 0 4px 14px rgba(0, 0, 0, 0.6);
+    }
+    .mask-box-item.type-delogo {
+      border: 2px solid #58a6ff;
+      background: rgba(88, 166, 255, 0.2);
+      backdrop-filter: blur(8px);
+    }
+    .mask-box-item.type-black {
+      background: #000;
+      border: 1px solid #444;
+    }
+    .mask-box-item.type-mosaic {
+      border: 2px dashed #bc8cff;
+      background: repeating-linear-gradient(45deg, rgba(188, 140, 255, 0.2) 0, rgba(188, 140, 255, 0.2) 4px, rgba(0, 0, 0, 0.6) 4px, rgba(0, 0, 0, 0.6) 8px);
+    }
+
+    .mask-tag-label {
+      position: absolute;
+      top: -22px;
+      left: 0;
+      font-size: 10.5px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: #161b24;
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      white-space: nowrap;
+      pointer-events: none;
+    }
+
+    /* 视窗右侧浮动图层面板 */
+    .floating-layer-inspector {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      width: 250px;
+      max-height: calc(100% - 28px);
+      background: rgba(22, 27, 36, 0.92);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
+      display: flex;
+      flex-direction: column;
+      z-index: 30;
+      overflow: hidden;
+    }
+
+    .inspector-header {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .inspector-body {
+      padding: 8px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .layer-card-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 10px;
+      background: #0d1117;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 11.5px;
+      transition: all 0.15s;
+    }
+
+    .layer-card-item:hover {
+      border-color: rgba(88, 166, 255, 0.4);
+    }
+
+    .layer-card-item.active {
+      background: rgba(88, 166, 255, 0.15);
+      border-color: #58a6ff;
+    }
+
+    .spatial-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 7px;
+      border-radius: 6px;
+      background: rgba(188, 140, 255, 0.15);
+      border: 1px solid rgba(188, 140, 255, 0.35);
+      color: #bc8cff;
+      font-size: 11px;
+      font-family: ui-monospace, monospace;
+      margin-left: 6px;
+      cursor: pointer;
     }
   </style>
 </head>
@@ -998,6 +1314,13 @@
           <line x1="12" y1="17" x2="12" y2="21"></line>
         </svg>
       </div>
+
+      <div class="nav-item" id="tab-btn-spatial" onclick="switchTab('spatial')" title="画面空间编辑与去水印演进实验室">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M6 2v14a2 2 0 0 0 2 2h14"></path>
+          <path d="M18 22V8a2 2 0 0 0-2-2H2"></path>
+        </svg>
+      </div>
     </div>
 
     <div class="sidebar-footer">
@@ -1047,15 +1370,122 @@
 
     <!-- Tab 1: 视频裁剪工作台 -->
     <div class="tab-page active" id="tab-page-cutter">
+      <!-- 工作台顶栏双模式解耦控制栏 -->
+      <div class="workbench-mode-bar">
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <div class="mode-capsule-group">
+            <button class="mode-capsule-btn active" id="mode-btn-temporal" onclick="setWorkbenchMode('temporal')">
+              <span>⏱️</span>
+              <span class="mode-label">时间分段剪辑</span>
+              <span class="mode-sub">· 精确切点与关键帧吸附</span>
+            </button>
+            <button class="mode-capsule-btn" id="mode-btn-spatial" onclick="setWorkbenchMode('spatial')">
+              <span>📐</span>
+              <span class="mode-label">画面空间修饰</span>
+              <span class="mode-sub">· 画幅裁切与去水印遮罩</span>
+            </button>
+          </div>
+
+          <div id="spatial-status-tip" style="font-size: 12px; color: var(--text-dim); display: flex; align-items: center; gap: 6px;">
+            <span>💡 提示：时间剪辑与空间修饰物理解耦，所有修改统一汇聚存入同一方案</span>
+          </div>
+        </div>
+
+        <!-- 空间修饰二级控制工具条 (空间模式下激活) -->
+        <div id="spatial-sub-toolbar" class="spatial-sub-toolbar" style="display: none;">
+          <div style="display: flex; align-items: center; gap: 14px;">
+            <div class="spatial-sub-toggle">
+              <button class="spatial-tab-btn active" id="spatial-sub-crop-btn" onclick="setSpatialSubMode('crop')">
+                📐 画面裁切 (构图)
+              </button>
+              <button class="spatial-tab-btn" id="spatial-sub-mask-btn" onclick="setSpatialSubMode('mask')">
+                🛡️ 去水印与遮罩
+              </button>
+            </div>
+
+            <!-- 裁切工具组 -->
+            <div id="spatial-crop-controls" class="spatial-tool-group">
+              <span style="font-size: 12px; color: var(--text-muted);">快速比例:</span>
+              <div class="ratio-pill-group">
+                <button class="ratio-pill active" id="ratio-pill-free" onclick="setCropRatio('free')">自由</button>
+                <button class="ratio-pill" id="ratio-pill-source" onclick="setCropRatio('source')">原片 16:9</button>
+                <button class="ratio-pill" id="ratio-pill-9-16" onclick="setCropRatio('9:16')">9:16 竖屏</button>
+                <button class="ratio-pill" id="ratio-pill-1-1" onclick="setCropRatio('1:1')">1:1 正方</button>
+              </div>
+              <button class="btn" id="btn-crop-lock" style="padding: 3px 8px; font-size: 11px;" onclick="toggleCropRatioLock()">
+                🔒 比例锁: 关
+              </button>
+              <button class="btn" style="padding: 3px 8px; font-size: 11px;" onclick="resetCropToFull()">
+                ↺ 还原全画幅
+              </button>
+            </div>
+
+            <!-- 遮罩工具组 -->
+            <div id="spatial-mask-controls" class="spatial-tool-group" style="display: none;">
+              <span style="font-size: 12px; color: var(--text-muted);">修补类型:</span>
+              <div class="mask-type-pills">
+                <button class="mask-type-pill active" id="mask-pill-delogo" onclick="setMaskType('delogo')">💧 去水印(平滑插值)</button>
+                <button class="mask-type-pill" id="mask-pill-black" onclick="setMaskType('black')">⬛ 纯黑遮蔽</button>
+                <button class="mask-type-pill" id="mask-pill-mosaic" onclick="setMaskType('mosaic')">🌫️ 马赛克模糊</button>
+              </div>
+              <button class="btn btn-primary" style="padding: 3px 10px; font-size: 11px;" onclick="addMaskBox()">
+                + 添加修补框
+              </button>
+            </div>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <div class="scope-pill-indicator" id="spatial-scope-btn" onclick="toggleSpatialScope()" title="点击切换全局默认或分段覆盖">
+              <span id="spatial-scope-label">🌐 全片全局生效 (默认)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <section class="player-section">
-        <div class="video-viewport">
+        <div class="video-viewport" id="cutter-video-viewport">
           <video id="real-video" style="display: none;" playsinline></video>
           <details style="position:absolute;bottom:12px;left:12px;z-index:20;background:#161b22;padding:8px;border-radius:8px;font-size:12px;"><summary>播放失败状态示意</summary><p>此素材无法直接播放，可生成兼容预览。导出仍使用原片。</p><button class="btn" onclick="this.parentElement.querySelector('p').innerText='正在生成兼容预览 35%（示意）'">生成兼容预览</button><button class="btn" onclick="this.parentElement.querySelector('p').innerText='已取消生成，可重试播放或重新生成。'">取消生成</button></details>
           <canvas id="virtual-screen"></canvas>
+
+          <!-- 空间修饰交互覆层 (选框拖拽与遮罩管理) -->
+          <div id="spatial-canvas-overlay" class="spatial-canvas-overlay" style="display: none;">
+            <!-- 裁切框 -->
+            <div id="proto-crop-box" class="crop-bounding-box" style="left: 10%; top: 10%; width: 80%; height: 80%;">
+              <div class="crop-grid-line-h1"></div>
+              <div class="crop-grid-line-h2"></div>
+              <div class="crop-grid-line-v1"></div>
+              <div class="crop-grid-line-v2"></div>
+              <div class="crop-handle handle-nw" data-handle="nw"></div>
+              <div class="crop-handle handle-ne" data-handle="ne"></div>
+              <div class="crop-handle handle-sw" data-handle="sw"></div>
+              <div class="crop-handle handle-se" data-handle="se"></div>
+              <div class="crop-handle handle-n" data-handle="n"></div>
+              <div class="crop-handle handle-s" data-handle="s"></div>
+              <div class="crop-handle handle-w" data-handle="w"></div>
+              <div class="crop-handle handle-e" data-handle="e"></div>
+              <div class="crop-coord-badge" id="crop-coord-display">裁切画幅: 768 × 432 (16:9)</div>
+            </div>
+
+            <!-- 动态遮罩框容器 -->
+            <div id="proto-masks-container"></div>
+          </div>
+
+          <!-- 右侧浮动图层面板 (遮罩模式下激活) -->
+          <div id="floating-layer-inspector" class="floating-layer-inspector" style="display: none;">
+            <div class="inspector-header">
+              <span id="inspector-header-title">🛡️ 画面遮罩图层 (2)</span>
+              <button class="btn" style="padding: 2px 6px; font-size: 11px;" onclick="addMaskBox()">+ 选区</button>
+            </div>
+            <div class="inspector-body" id="inspector-layer-list">
+              <!-- 动态图层列表 -->
+            </div>
+          </div>
+
           <div class="video-overlay-info">
             <span id="video-name-tag">示例影片: sample_movie.mp4</span>
             <div style="display: flex; align-items: center; gap: 8px;">
-              <span style="color: #3fb950;">● 关键帧保全已激活</span>
+              <span style="color: #3fb950;" id="cutter-engine-badge">● 关键帧保全已激活</span>
               <button class="btn" onclick="switchTab('compress')" style="padding: 3px 8px; font-size: 11px; background: rgba(188, 140, 255, 0.2); border: 1px solid rgba(188, 140, 255, 0.4); color: #bc8cff; border-radius: 6px; cursor: pointer;">
                 🔍 就地画质对比
               </button>
@@ -1337,6 +1767,114 @@
           </div>
         </div>
       </div>
+
+    <!-- Tab 5: 画面空间编辑与去水印演进实验室 (Spatial Editing & Delogo Lab) -->
+    <div class="tab-page" id="tab-page-spatial">
+      <div style="display: flex; flex-direction: column; gap: 18px;">
+        <!-- 顶部架构规范说明条 -->
+        <div style="background: rgba(88, 166, 255, 0.08); border: 1px solid rgba(88, 166, 255, 0.25); border-radius: 12px; padding: 12px 18px; font-size: 12.5px; color: #58a6ff; display: flex; align-items: center; justify-content: space-between;">
+          <span>📐 <b>画面空间编辑架构</b>：双模式解耦、全局优先作用域、FFmpeg 原生免安装 <code>delogo</code> / <code>crop</code> 极速算子，自动升轨为智能转码。</span>
+          <span style="color: #bc8cff; font-family: monospace;">原片绝对坐标锚定 · 零额外体积 · 统一方案归一</span>
+        </div>
+
+        <!-- 空间演进交互沙盒 -->
+        <div style="display: grid; grid-template-columns: 1fr 340px; gap: 18px;">
+          <!-- 左侧互动视窗 -->
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 10px 16px;">
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <span style="font-size: 13px; font-weight: 600; color: #fff;">沙盒模式:</span>
+                <div class="spatial-sub-toggle">
+                  <button class="spatial-tab-btn active" id="lab-sub-crop-btn" onclick="setLabSubMode('crop')">📐 画幅裁切</button>
+                  <button class="spatial-tab-btn" id="lab-sub-mask-btn" onclick="setLabSubMode('mask')">🛡️ 去水印遮罩</button>
+                  <button class="spatial-tab-btn" id="lab-sub-letterbox-btn" onclick="setLabSubMode('letterbox')">⬛ 多分段黑边对齐</button>
+                </div>
+              </div>
+
+              <div id="lab-crop-pills" style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 11.5px; color: var(--text-muted);">快速比例:</span>
+                <div class="ratio-pill-group">
+                  <button class="ratio-pill" onclick="setLabRatio('16:9')">16:9</button>
+                  <button class="ratio-pill active" onclick="setLabRatio('9:16')">9:16 竖屏</button>
+                  <button class="ratio-pill" onclick="setLabRatio('1:1')">1:1</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 沙盒视窗画布 -->
+            <div id="spatial-lab-viewport" style="position: relative; width: 100%; height: 440px; background: #000; border-radius: 12px; border: 1px solid var(--border-subtle); overflow: hidden; display: flex; align-items: center; justify-content: center;">
+              <canvas id="lab-canvas" width="800" height="450" style="max-width: 100%; max-height: 100%; object-fit: contain;"></canvas>
+
+              <!-- 沙盒裁切覆盖层 -->
+              <div id="lab-crop-overlay" style="position: absolute; inset: 0; pointer-events: none;">
+                <div id="lab-crop-box" style="position: absolute; left: 30%; top: 5%; width: 40%; height: 90%; border: 2px dashed #58a6ff; box-shadow: 0 0 0 9999px rgba(0,0,0,0.65); pointer-events: auto;">
+                  <div class="crop-grid-line-h1"></div>
+                  <div class="crop-grid-line-h2"></div>
+                  <div class="crop-grid-line-v1"></div>
+                  <div class="crop-grid-line-v2"></div>
+                  <div style="position: absolute; top: -26px; left: 0; background: #161b24; border: 1px solid #58a6ff; color: #58a6ff; font-size: 11px; padding: 2px 6px; border-radius: 4px; font-family: monospace;">
+                    9:16 移动竖屏选区 (506 × 900)
+                  </div>
+                </div>
+              </div>
+
+              <!-- 沙盒水印与遮罩选区 -->
+              <div id="lab-mask-overlay" style="position: absolute; inset: 0; pointer-events: auto; display: none;">
+                <!-- 模拟台标 delogo -->
+                <div style="position: absolute; top: 20px; right: 30px; width: 110px; height: 48px; border: 2px solid #58a6ff; background: rgba(88,166,255,0.2); backdrop-filter: blur(10px); border-radius: 4px;">
+                  <span class="mask-tag-label" style="color: #58a6ff;">💧 delogo 平滑插值消除</span>
+                </div>
+                <!-- 模拟字幕纯黑遮罩 -->
+                <div style="position: absolute; bottom: 25px; left: 20%; width: 60%; height: 36px; background: #000; border: 1px solid #444; border-radius: 4px;">
+                  <span class="mask-tag-label" style="color: #fff;">⬛ 纯黑敏感信息遮罩</span>
+                </div>
+              </div>
+
+              <!-- 多分段黑边对齐 (Letterbox) 模拟展示 -->
+              <div id="lab-letterbox-overlay" style="position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; background: #0a0e17;">
+                <div style="width: 560px; height: 315px; border: 2px solid #58a6ff; background: #000; position: relative; display: flex; align-items: center; justify-content: center;">
+                  <div id="letterbox-inner-content" style="width: 177px; height: 315px; background: rgba(88,166,255,0.25); border: 1px dashed #58a6ff; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 6px;">
+                    <span style="font-size: 13px; font-weight: bold; color: #fff;">片段 #2 (9:16 竖屏)</span>
+                    <span style="font-size: 11px; color: #bc8cff;">居中嵌入 16:9 首段母版</span>
+                  </div>
+                  <div style="position: absolute; left: 10px; top: 10px; font-size: 11px; color: #7ee787;">
+                    Letterbox Normalization 黑边等比填充保障单文件顺利拼接
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 右侧原理与流水线解说面板 -->
+          <div style="display: flex; flex-direction: column; gap: 14px;">
+            <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 16px;">
+              <h4 style="font-size: 13px; color: #fff; margin-bottom: 10px; display: flex; align-items: center; gap: 6px;">
+                <span>⚙️</span> 底层 FFmpeg Filtergraph 串联管线
+              </h4>
+              <div style="font-size: 11.5px; color: var(--text-muted); line-height: 1.6; margin-bottom: 12px;">
+                为避免选区位移漂移，系统强制执行“原片绝对坐标系修补先行，再做画幅裁切”的确定性顺序：
+              </div>
+              <div style="background: #0d1117; border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px; font-family: monospace; font-size: 11px; color: #7ee787; line-height: 1.5;">
+                [in] delogo=x=75:y=8:w=18:h=10,<br/>
+                drawbox=y=ih-40:color=black:t=fill,<br/>
+                crop=608:1080:120:0,<br/>
+                scale=flags=bicubic [out]
+              </div>
+            </div>
+
+            <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 16px;">
+              <h4 style="font-size: 13px; color: #fff; margin-bottom: 10px; display: flex; align-items: center; gap: 6px;">
+                <span>🚀</span> 转码自动升轨策略 (Auto-Escalation)
+              </h4>
+              <ul style="font-size: 11.5px; color: var(--text-muted); line-height: 1.6; padding-left: 18px; margin: 0;">
+                <li>只要方案包含任何裁切或去水印遮罩，导出引擎自动由 <code>-c copy</code> 升轨为高质量智能转码；</li>
+                <li>若用户强切回流复制，交互拦截并提示需先清空空间配置；</li>
+                <li>分段独立导出时保留各自画幅分辨率，单文件合并时自动启用 Letterbox 居中对齐。</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 底部 Dock 状态栏：内部与 1360px 轴线完全对齐 -->
@@ -1354,9 +1892,9 @@
             <span class="stat-value" id="stat-discarded-duration">00:00.000</span>
           </div>
           <div class="stat-item">
-            <span class="stat-dot blue"></span>
+            <span class="stat-dot blue" id="stat-export-dot"></span>
             <span>模式:</span>
-            <span style="color: #7ee787; font-weight: 500;">极速流拷贝 (-c copy)</span>
+            <span id="stat-export-mode" style="color: #7ee787; font-weight: 500;">极速流拷贝 (-c copy)</span>
           </div>
         </div>
 
@@ -1417,6 +1955,23 @@
         seg_3: 'keep'
       },
       keyframes: [0, 2400, 4800, 7200, 9600, 12000, 14400, 16800, 19200, 21600, 24000, 26400, 28800, 31200, 45000, 60000, 75000, 90000, 92800, 105000, 108000, 112000, 120000, 135000, 150000],
+      workbenchMode: 'temporal', // 'temporal' | 'spatial'
+      spatialSubMode: 'crop',    // 'crop' | 'mask'
+      cropConfig: {
+        x: 10,
+        y: 10,
+        width: 80,
+        height: 80,
+        ratio: 'free',
+        locked: false
+      },
+      maskList: [
+        { id: 'mask_1', name: '台标水印 (右上角)', x: 75, y: 8, width: 18, height: 10, type: 'delogo' },
+        { id: 'mask_2', name: '底部字幕敏感区', x: 20, y: 85, width: 60, height: 8, type: 'black' }
+      ],
+      selectedMaskId: 'mask_1',
+      spatialScope: 'global', // 'global' | 'segment'
+      activeMaskType: 'delogo',
       savedPlans: [
         {
           id: 'plan_20260903_01',
@@ -1427,6 +1982,8 @@
           keptDurationMs: 103055,
           cutsCount: 3,
           status: 'ready',
+          spatialCrop: '9:16 (竖屏)',
+          masksCount: 2,
           updatedAt: '2026-09-03 20:45',
           completedAt: null,
           cuts: [30000, 93055, 110000],
@@ -1460,9 +2017,10 @@
         cutter: '视频裁剪工作台',
         plans: '方案管理中心 (Plan Manager)',
         settings: '系统配置与输出偏好',
-        compress: '智能降码预设与画质双模对比实验室'
+        compress: '智能降码预设与画质双模对比实验室',
+        spatial: '画面空间编辑与去水印演进实验室'
       };
-      document.getElementById('page-heading').innerText = headings[tabId];
+      document.getElementById('page-heading').innerText = headings[tabId] || '视频裁剪工作台';
 
       const isCutter = (tabId === 'cutter');
       document.getElementById('header-cutter-actions').style.display = isCutter ? 'flex' : 'none';
@@ -1470,6 +2028,7 @@
 
       if (tabId === 'plans') renderPlansList();
       if (tabId === 'compress') initCompressLab();
+      if (tabId === 'spatial') initSpatialLab();
     }
 
     function formatTime(ms) {
@@ -1527,6 +2086,12 @@
               <span class="decision-pill ${isKeep ? 'keep' : 'discard'}">
                 ${isKeep ? '✔ 保留' : '✖ 丢弃'}
               </span>
+              ${isKeep && (state.cropConfig.ratio !== 'free' || state.maskList.length > 0) ? `
+                <span class="spatial-badge" onclick="event.stopPropagation(); setWorkbenchMode('spatial')" title="已生效画面空间修饰：点击快速进入调整">
+                  ${state.cropConfig.ratio !== 'free' ? `📐 ${state.cropConfig.ratio}` : ''}
+                  ${state.maskList.length > 0 ? ` · 💧 ${state.maskList.length}处修补` : ''}
+                </span>
+              ` : ''}
             </div>
             <span class="duration-pill">⏱ ${formatDuration(seg.durationMs)}</span>
           </div>
@@ -1658,6 +2223,8 @@
               <span class="status-tag ${isCompleted ? 'completed' : 'ready'}">
                 ${isCompleted ? '✔ 已完成剪辑' : plan.status === 'queued' ? '排队中' : plan.status === 'processing' ? '处理中' : '⏳ 待执行'}
               </span>
+              ${plan.spatialCrop ? `<span class="spatial-badge" title="包含画幅裁切配置">📐 ${plan.spatialCrop}</span>` : ''}
+              ${plan.masksCount ? `<span class="spatial-badge" title="包含去水印遮罩">💧 ${plan.masksCount}处去水印</span>` : ''}
             </div>
             <div class="plan-path-sub">来源: ${plan.sourcePath}</div>
             <div class="plan-path-sub" style="color: ${isCompleted ? '#3fb950' : '#58a6ff'};">
@@ -1667,6 +2234,7 @@
               <span>切点: ${plan.cutsCount} 个</span>
               <span>保留正片: ${formatDuration(plan.keptDurationMs)}</span>
               <span>更新时间: ${plan.updatedAt}</span>
+              ${plan.spatialCrop || plan.masksCount ? '<span style="color: #bc8cff;">● 包含空间修饰 (智能转码升轨)</span>' : ''}
               ${isCompleted && plan.completedAt ? `<span style="color: #3fb950;">执行完成于: ${plan.completedAt}</span>` : ''}
             </div>
           </div>
@@ -2293,10 +2861,344 @@
       drawProtoCompareTimeline();
     }
 
+    // ==========================================
+    // 空间编辑与双模式解耦交互 (Dual-Mode Workbench & Spatial Edit)
+    // ==========================================
+    function setWorkbenchMode(mode) {
+      state.workbenchMode = mode;
+      const isSpatial = (mode === 'spatial');
+
+      document.getElementById('mode-btn-temporal').classList.toggle('active', !isSpatial);
+      document.getElementById('mode-btn-spatial').classList.toggle('active', isSpatial);
+
+      const subBar = document.getElementById('spatial-sub-toolbar');
+      const overlay = document.getElementById('spatial-canvas-overlay');
+      const inspector = document.getElementById('floating-layer-inspector');
+      const statusTip = document.getElementById('spatial-status-tip');
+
+      if (isSpatial) {
+        if (state.isPlaying) togglePlay(); // 空间模式暂停播放，专心修饰
+        subBar.style.display = 'flex';
+        overlay.style.display = 'block';
+        if (state.spatialSubMode === 'mask') {
+          inspector.style.display = 'flex';
+        }
+        statusTip.innerHTML = '<span style="color: #bc8cff;">📐 空间修饰已激活：拉动画布边角手柄裁切，或切换去水印添加遮罩</span>';
+      } else {
+        subBar.style.display = 'none';
+        overlay.style.display = 'none';
+        inspector.style.display = 'none';
+        statusTip.innerHTML = '<span>💡 提示：时间剪辑与空间修饰物理解耦，所有修改统一汇聚存入同一方案</span>';
+      }
+
+      updateExportModeIndicator();
+      renderSpatialOverlay();
+      renderSegmentCards();
+    }
+
+    function setSpatialSubMode(sub) {
+      state.spatialSubMode = sub;
+      const isCrop = (sub === 'crop');
+
+      document.getElementById('spatial-sub-crop-btn').classList.toggle('active', isCrop);
+      document.getElementById('spatial-sub-mask-btn').classList.toggle('active', !isCrop);
+
+      document.getElementById('spatial-crop-controls').style.display = isCrop ? 'flex' : 'none';
+      document.getElementById('spatial-mask-controls').style.display = !isCrop ? 'flex' : 'none';
+
+      document.getElementById('proto-crop-box').style.display = isCrop ? 'block' : 'none';
+      document.getElementById('floating-layer-inspector').style.display = !isCrop ? 'flex' : 'none';
+
+      renderSpatialOverlay();
+    }
+
+    function setCropRatio(ratio) {
+      state.cropConfig.ratio = ratio;
+      document.querySelectorAll('.ratio-pill').forEach(btn => btn.classList.remove('active'));
+      const activeBtn = document.getElementById(`ratio-pill-${ratio.replace(':', '-')}`) || document.getElementById('ratio-pill-free');
+      if (activeBtn) activeBtn.classList.add('active');
+
+      const cropBox = document.getElementById('proto-crop-box');
+      const badge = document.getElementById('crop-coord-display');
+
+      if (ratio === '9:16') {
+        cropBox.style.left = '32%';
+        cropBox.style.top = '5%';
+        cropBox.style.width = '36%';
+        cropBox.style.height = '90%';
+        badge.innerText = '9:16 移动竖屏 (405 × 720)';
+      } else if (ratio === '16:9' || ratio === 'source') {
+        cropBox.style.left = '10%';
+        cropBox.style.top = '10%';
+        cropBox.style.width = '80%';
+        cropBox.style.height = '80%';
+        badge.innerText = '16:9 原片画幅 (768 × 432)';
+      } else if (ratio === '1:1') {
+        cropBox.style.left = '25%';
+        cropBox.style.top = '10%';
+        cropBox.style.width = '50%';
+        cropBox.style.height = '80%';
+        badge.innerText = '1:1 正方形画幅 (432 × 432)';
+      } else {
+        badge.innerText = '自由构图画幅';
+      }
+
+      updateExportModeIndicator();
+      renderSegmentCards();
+    }
+
+    function toggleCropRatioLock() {
+      state.cropConfig.locked = !state.cropConfig.locked;
+      const btn = document.getElementById('btn-crop-lock');
+      btn.innerText = `🔒 比例锁: ${state.cropConfig.locked ? '开' : '关'}`;
+      btn.style.color = state.cropConfig.locked ? '#58a6ff' : 'var(--text-muted)';
+    }
+
+    function resetCropToFull() {
+      const cropBox = document.getElementById('proto-crop-box');
+      cropBox.style.left = '0%';
+      cropBox.style.top = '0%';
+      cropBox.style.width = '100%';
+      cropBox.style.height = '100%';
+      document.getElementById('crop-coord-display').innerText = '100% 全画幅 (未裁切)';
+      state.cropConfig.ratio = 'free';
+      document.querySelectorAll('.ratio-pill').forEach(btn => btn.classList.remove('active'));
+      const freeBtn = document.getElementById('ratio-pill-free');
+      if (freeBtn) freeBtn.classList.add('active');
+      updateExportModeIndicator();
+      renderSegmentCards();
+    }
+
+    function setMaskType(type) {
+      state.activeMaskType = type;
+      ['delogo', 'black', 'mosaic'].forEach(t => {
+        const el = document.getElementById(`mask-pill-${t}`);
+        if (el) el.classList.toggle('active', t === type);
+      });
+
+      if (state.selectedMaskId) {
+        const target = state.maskList.find(m => m.id === state.selectedMaskId);
+        if (target) {
+          target.type = type;
+          renderSpatialOverlay();
+        }
+      }
+    }
+
+    function addMaskBox() {
+      const newIndex = state.maskList.length + 1;
+      const names = { delogo: '去台标水印', black: '纯黑遮罩', mosaic: '马赛克' };
+      const newMask = {
+        id: 'mask_' + Date.now(),
+        name: `${names[state.activeMaskType] || '修补选区'} #${newIndex}`,
+        x: 25 + (newIndex * 8) % 45,
+        y: 20 + (newIndex * 8) % 50,
+        width: 22,
+        height: 12,
+        type: state.activeMaskType
+      };
+      state.maskList.push(newMask);
+      state.selectedMaskId = newMask.id;
+      renderSpatialOverlay();
+      updateExportModeIndicator();
+      renderSegmentCards();
+    }
+
+    function deleteMaskBox(id) {
+      state.maskList = state.maskList.filter(m => m.id !== id);
+      if (state.selectedMaskId === id) {
+        state.selectedMaskId = state.maskList.length > 0 ? state.maskList[0].id : null;
+      }
+      renderSpatialOverlay();
+      updateExportModeIndicator();
+      renderSegmentCards();
+    }
+
+    function selectMaskBox(id) {
+      state.selectedMaskId = id;
+      renderSpatialOverlay();
+    }
+
+    function toggleSpatialScope() {
+      state.spatialScope = (state.spatialScope === 'global' ? 'segment' : 'global');
+      const label = document.getElementById('spatial-scope-label');
+      if (state.spatialScope === 'global') {
+        label.innerText = '🌐 全片全局生效 (默认)';
+        label.style.color = '#58a6ff';
+      } else {
+        const seg = getSegments().find(s => state.currentMs >= s.startMs && state.currentMs <= s.endMs);
+        label.innerText = `✂️ 仅作用于片段 #${seg ? seg.index : 1} (局部覆盖)`;
+        label.style.color = '#bc8cff';
+      }
+      renderSegmentCards();
+    }
+
+    function updateExportModeIndicator() {
+      const hasSpatial = (state.cropConfig.ratio !== 'free') || (state.maskList.length > 0);
+      const modeText = document.getElementById('stat-export-mode');
+      const dot = document.getElementById('stat-export-dot');
+      const badge = document.getElementById('cutter-engine-badge');
+
+      if (hasSpatial) {
+        if (modeText) {
+          modeText.innerHTML = '<span style="color: #bc8cff; font-weight: 600;">智能转码升轨 (-vf delogo/crop)</span>';
+          modeText.title = '检测到包含画面裁切或去水印遮罩，系统已自动升轨为智能转码编码，确保画面处理生效';
+        }
+        if (dot) {
+          dot.className = 'stat-dot';
+          dot.style.background = '#bc8cff';
+        }
+        if (badge) {
+          badge.innerText = '● 关键帧保全 + 智能转码升轨';
+          badge.style.color = '#bc8cff';
+        }
+      } else {
+        if (modeText) {
+          modeText.innerHTML = '<span style="color: #7ee787; font-weight: 500;">极速流拷贝 (-c copy)</span>';
+          modeText.title = '未配置画面空间滤镜，采用无损关键帧秒切';
+        }
+        if (dot) {
+          dot.className = 'stat-dot blue';
+          dot.style.background = '';
+        }
+        if (badge) {
+          badge.innerText = '● 关键帧保全已激活';
+          badge.style.color = '#3fb950';
+        }
+      }
+    }
+
+    function renderSpatialOverlay() {
+      const masksContainer = document.getElementById('proto-masks-container');
+      const layerList = document.getElementById('inspector-layer-list');
+      const headerTitle = document.getElementById('inspector-header-title');
+
+      if (!masksContainer || !layerList) return;
+
+      masksContainer.innerHTML = '';
+      layerList.innerHTML = '';
+
+      if (headerTitle) {
+        headerTitle.innerText = `🛡️ 画面遮罩图层 (${state.maskList.length})`;
+      }
+
+      state.maskList.forEach(m => {
+        const isSelected = (m.id === state.selectedMaskId);
+        const typeLabels = { delogo: '💧 delogo 去水印', black: '⬛ 纯黑遮罩', mosaic: '🌫️ 马赛克' };
+
+        const box = document.createElement('div');
+        box.className = `mask-box-item type-${m.type} ${isSelected ? 'active' : ''}`;
+        box.style.left = `${m.x}%`;
+        box.style.top = `${m.y}%`;
+        box.style.width = `${m.width}%`;
+        box.style.height = `${m.height}%`;
+        box.onclick = (e) => {
+          e.stopPropagation();
+          selectMaskBox(m.id);
+        };
+
+        box.innerHTML = `
+          <div class="mask-tag-label">${typeLabels[m.type] || '选框'}</div>
+        `;
+        masksContainer.appendChild(box);
+
+        const item = document.createElement('div');
+        item.className = `layer-card-item ${isSelected ? 'active' : ''}`;
+        item.onclick = () => selectMaskBox(m.id);
+        item.innerHTML = `
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span>${m.type === 'delogo' ? '💧' : m.type === 'black' ? '⬛' : '🌫️'}</span>
+            <span style="font-weight: 500; color: #fff;">${m.name}</span>
+          </div>
+          <button class="btn btn-sm" style="padding: 1px 6px; font-size: 11px; color: #f85149;" onclick="event.stopPropagation(); deleteMaskBox('${m.id}')" title="删除该遮罩">✕</button>
+        `;
+        layerList.appendChild(item);
+      });
+    }
+
+    // ==========================================
+    // Tab 5 画面空间编辑与去水印演进实验室逻辑
+    // ==========================================
+    let labSpatialState = {
+      subMode: 'crop',
+      ratio: '9:16'
+    };
+
+    function initSpatialLab() {
+      drawLabSimulationCanvas();
+    }
+
+    function setLabSubMode(mode) {
+      labSpatialState.subMode = mode;
+      document.getElementById('lab-sub-crop-btn').classList.toggle('active', mode === 'crop');
+      document.getElementById('lab-sub-mask-btn').classList.toggle('active', mode === 'mask');
+      document.getElementById('lab-sub-letterbox-btn').classList.toggle('active', mode === 'letterbox');
+
+      document.getElementById('lab-crop-pills').style.display = (mode === 'crop') ? 'flex' : 'none';
+      document.getElementById('lab-crop-overlay').style.display = (mode === 'crop') ? 'block' : 'none';
+      document.getElementById('lab-mask-overlay').style.display = (mode === 'mask') ? 'block' : 'none';
+      document.getElementById('lab-letterbox-overlay').style.display = (mode === 'letterbox') ? 'flex' : 'none';
+
+      drawLabSimulationCanvas();
+    }
+
+    function setLabRatio(ratio) {
+      labSpatialState.ratio = ratio;
+      document.querySelectorAll('#lab-crop-pills .ratio-pill').forEach(b => b.classList.remove('active'));
+      const active = [...document.querySelectorAll('#lab-crop-pills .ratio-pill')].find(b => b.innerText.includes(ratio));
+      if (active) active.classList.add('active');
+
+      const box = document.getElementById('lab-crop-box');
+      if (ratio === '9:16') {
+        box.style.left = '30%';
+        box.style.top = '5%';
+        box.style.width = '40%';
+        box.style.height = '90%';
+      } else if (ratio === '16:9') {
+        box.style.left = '5%';
+        box.style.top = '10%';
+        box.style.width = '90%';
+        box.style.height = '80%';
+      } else if (ratio === '1:1') {
+        box.style.left = '25%';
+        box.style.top = '5%';
+        box.style.width = '50%';
+        box.style.height = '90%';
+      }
+    }
+
+    function drawLabSimulationCanvas() {
+      const c = document.getElementById('lab-canvas');
+      if (!c) return;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#121620';
+      ctx.fillRect(0, 0, c.width, c.height);
+
+      ctx.strokeStyle = 'rgba(88, 166, 255, 0.15)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x < c.width; x += 40) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, c.height); ctx.stroke();
+      }
+      for (let y = 0; y < c.height; y += 40) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(c.width, y); ctx.stroke();
+      }
+
+      ctx.fillStyle = '#f0f6fc';
+      ctx.font = 'bold 26px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('1080P 原画测试源: 1920 × 1080', c.width / 2, c.height / 2 - 20);
+
+      ctx.font = '14px sans-serif';
+      ctx.fillStyle = '#8b949e';
+      ctx.fillText('模拟电视台标在右上角 (delogo 区域) · 滚动字幕在底部', c.width / 2, c.height / 2 + 20);
+    }
+
     window.addEventListener('resize', resizeTimeline);
     resizeTimeline();
     renderSegmentCards();
     updateUI();
+    renderSpatialOverlay();
+    updateExportModeIndicator();
   </script>
 </body>
 </html>

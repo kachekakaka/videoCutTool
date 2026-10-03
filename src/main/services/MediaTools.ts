@@ -5,6 +5,18 @@ import { MediaStreamInfo, MediaTime } from '../../shared/types';
 import { frameTime, secondsTime, timeMs } from '../../shared/mediaTime';
 
 const children = new Set<ChildProcess>();
+let closing = false;
+export interface SharedJob<T> { promise: Promise<T>; controller: AbortController; consumers: Set<symbol> }
+export function consumeJob<T>(job: SharedJob<T>, signal?: AbortSignal): Promise<T> {
+  if (signal?.aborted) return Promise.reject(abortError());
+  const consumer = Symbol(); job.consumers.add(consumer);
+  return new Promise((resolve, reject) => {
+    const cleanup = () => { job.consumers.delete(consumer); signal?.removeEventListener('abort', cancel); };
+    const cancel = () => { cleanup(); if (!job.consumers.size) job.controller.abort(); reject(abortError()); };
+    signal?.addEventListener('abort', cancel, { once: true });
+    job.promise.then(value => { cleanup(); if (signal?.aborted) reject(abortError()); else resolve(value); }, error => { cleanup(); reject(error); });
+  });
+}
 export const abortError = () => Object.assign(new Error('操作已取消'), { name: 'AbortError' });
 export function resolveTool(name: 'ffmpeg' | 'ffprobe', preferred?: string): string {
   const resources = (process as any).resourcesPath;
@@ -12,15 +24,16 @@ export function resolveTool(name: 'ffmpeg' | 'ffprobe', preferred?: string): str
   return candidates.find(file => fs.existsSync(file)) || name;
 }
 export async function stopMediaProcesses(): Promise<void> {
+  closing = true;
   await Promise.all([...children].map(child => new Promise<void>(resolve => {
     child.once('close', () => resolve());
     if (child.exitCode !== null || child.signalCode !== null) return resolve();
     child.kill();
   })));
 }
-export function runMediaTool(executable: string, args: string[], options: { signal?: AbortSignal; timeoutMs?: number; onOutput?: (text: string) => void; maxOutputBytes?: number } = {}): Promise<string> {
+export function runMediaTool(executable: string, args: string[], options: { signal?: AbortSignal; timeoutMs?: number; onOutput?: (text: string) => void; maxOutputBytes?: number; captureOutput?: boolean } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
-    if (options.signal?.aborted) return reject(abortError());
+    if (closing || options.signal?.aborted) return reject(abortError());
     const proc = spawn(executable, args, { windowsHide: true });
     children.add(proc);
     let stdout = '', stderr = '', failure: Error | undefined;
@@ -28,8 +41,8 @@ export function runMediaTool(executable: string, args: string[], options: { sign
     options.signal?.addEventListener('abort', cancel, { once: true });
     const timer = options.timeoutMs ? setTimeout(() => { failure = new Error('媒体处理超时'); proc.kill(); }, options.timeoutMs) : undefined;
     proc.stdout.on('data', chunk => {
-      stdout += chunk.toString();
-      options.onOutput?.(chunk.toString());
+      if (options.captureOutput !== false) stdout += chunk.toString();
+      try { options.onOutput?.(chunk.toString()); } catch (error) { failure = error instanceof Error ? error : new Error(String(error)); proc.kill(); }
       if (stdout.length > (options.maxOutputBytes ?? 64 * 1024 * 1024)) { failure = new Error('媒体探测结果超过可处理大小'); proc.kill(); }
     });
     proc.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-24000); });
@@ -46,9 +59,35 @@ export function runMediaTool(executable: string, args: string[], options: { sign
 }
 export interface ProbedFile {
   durationMs: number; width: number; height: number; fps: number; origin: MediaTime;
+  containerDurationMs: number;
+  displayAspectRatio: number;
   videoIndex: number; timeBase: string; streams: MediaStreamInfo[]; videoStartMs: number;
 }
+const basicJobs = new Map<string, SharedJob<ProbedFile>>();
+const basicCache = new Map<string, { time: number; value: ProbedFile }>();
 export async function probeFile(file: string, ffprobe: string, signal?: AbortSignal): Promise<ProbedFile> {
+  if (closing || signal?.aborted) throw abortError();
+  const key = `${ffprobe}:${await fileIdentityAsync(file)}`;
+  if (signal?.aborted) throw abortError();
+  const cached = basicCache.get(key);
+  if (cached && Date.now() - cached.time < 30000) return structuredClone(cached.value);
+  let job = basicJobs.get(key);
+  if (!job || job.controller.signal.aborted) {
+    const controller = new AbortController();
+    const created: SharedJob<ProbedFile> = { controller, consumers: new Set(), promise: Promise.resolve(null as any) };
+    created.promise = probeUncached(file, ffprobe, controller.signal).then(value => {
+      if (!controller.signal.aborted) {
+        basicCache.set(key, { time: Date.now(), value });
+        if (basicCache.size > 64) basicCache.delete(basicCache.keys().next().value!);
+      }
+      return value;
+    }).finally(() => { if (basicJobs.get(key) === created) basicJobs.delete(key); });
+    job = created; basicJobs.set(key, job);
+  }
+  return structuredClone(await consumeJob(job, signal));
+}
+export function clearProbeCache() { basicCache.clear(); }
+async function probeUncached(file: string, ffprobe: string, signal?: AbortSignal): Promise<ProbedFile> {
   const data = JSON.parse(await runMediaTool(ffprobe, ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', file], { signal, timeoutMs: 30000 }));
   const rawStreams = data.streams || [];
   const video = rawStreams.find((stream: any) => stream.codec_type === 'video' && !stream.disposition?.attached_pic);
@@ -60,15 +99,24 @@ export async function probeFile(file: string, ffprobe: string, signal?: AbortSig
   const fps = rate[0] / rate[1] || fallback[0] / fallback[1] || 30;
   const rotation = Number(video.side_data_list?.find((item: any) => item.rotation !== undefined)?.rotation || video.tags?.rotate || 0);
   const rotated = Math.abs(rotation) % 180 === 90;
+  const sarParts = String(video.sample_aspect_ratio || '1:1').split(':').map(Number);
+  const sar = sarParts[0] / sarParts[1] || 1;
+  const displayRatio = video.width * sar / video.height;
   return {
-    durationMs: Math.round(duration * 1000), width: rotated ? video.height : video.width, height: rotated ? video.width : video.height,
+    durationMs: Math.round(duration * 1000), containerDurationMs: duration * 1000, width: rotated ? video.height : video.width, height: rotated ? video.width : video.height,
     fps, videoIndex: video.index, timeBase: video.time_base, videoStartMs: (Number(video.start_time || 0) - Number(data.format?.start_time || 0)) * 1000,
+    displayAspectRatio: rotated ? 1 / displayRatio : displayRatio,
     origin: secondsTime(String(data.format?.start_time ?? '0')),
     streams: rawStreams.map((stream: any) => ({ index: stream.index, type: stream.codec_type, codec: stream.codec_name, language: stream.tags?.language, attachedPicture: Boolean(stream.disposition?.attached_pic), default: Boolean(stream.disposition?.default) })),
   };
 }
 export function fileIdentity(file: string): string {
   const stat = fs.statSync(file);
+  return `${path.resolve(file)}:${stat.size}:${stat.mtimeMs}`;
+}
+export async function fileIdentityAsync(file: string): Promise<string> {
+  const stat = await fs.promises.stat(file);
+  if (!stat.isFile()) throw new Error('素材路径不是普通文件');
   return `${path.resolve(file)}:${stat.size}:${stat.mtimeMs}`;
 }
 /** 用解码后的首个展示帧校准播放副本，兼容缺少包 PTS 的 AVI。 */

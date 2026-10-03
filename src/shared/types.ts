@@ -57,6 +57,7 @@ export interface MediaMetadata {
   width: number;
   height: number;
   fps: number;
+  displayAspectRatio?: number;
   keyframes: number[]; // 全片关键帧毫秒时间戳有序列表
   keyframePoints?: KeyframePoint[];
   timeOrigin?: MediaTime;
@@ -73,6 +74,8 @@ export interface MediaStreamInfo {
   language?: string;
   attachedPicture: boolean;
   default: boolean;
+  width?: number;
+  height?: number;
 }
 export interface ExportFormats { intermediateExtension: string; outputExtension: string }
 
@@ -95,6 +98,34 @@ export interface CompressConfig {
   hardwareAcceleration?: boolean; // 硬件加速开关 (默认 true)
 }
 
+export type MaskType = 'delogo' | 'black' | 'mosaic';
+export type CropRatioOption = 'free' | '16:9' | '9:16' | '1:1' | 'source';
+
+export interface SpatialMaskItem {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  type: MaskType;
+}
+
+export interface SpatialCropBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  ratio: CropRatioOption;
+  locked: boolean;
+}
+
+export interface SpatialConfig {
+  crop?: SpatialCropBox;
+  masks: SpatialMaskItem[];
+  scope: 'global' | 'segment';
+}
+
 export interface MediaRetentionPlan {
   version: '1.0';
   title?: string;
@@ -104,9 +135,12 @@ export interface MediaRetentionPlan {
   stripOriginalCover: boolean;
   outputPath: string;
   planSegments: PlanSegment[];
+  spatialSegments?: Array<PlanSegment & { spatialConfig?: SpatialConfig }>;
   totalKeptDurationMs: number;
   blockers: string[];
   compress?: CompressConfig;
+  spatialConfig?: SpatialConfig;
+  segmentSpatialOverrides?: Record<string, SpatialConfig>;
 }
 
 export type ExecutionStatus = 'ready' | 'queued' | 'processing' | 'completed' | 'failed';
@@ -127,6 +161,8 @@ export interface PlanRecord {
   concatSingleFile?: boolean;
   stripOriginalCover?: boolean;
   compress?: CompressConfig;
+  spatialConfig?: SpatialConfig;
+  segmentSpatialOverrides?: Record<string, SpatialConfig>;
   error?: string;
   outputPaths?: string[];
   resolvedEncoder?: 'cpu' | 'nvenc' | 'qsv';

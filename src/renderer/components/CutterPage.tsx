@@ -1,11 +1,14 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { MediaMetadata, RetentionDecision, PlanRecord, CompressConfig } from '../../shared/types';
+import { MediaMetadata, RetentionDecision, PlanRecord, CompressConfig, SpatialCropBox, SpatialMaskItem } from '../../shared/types';
 import { COMPRESS_PRESETS } from '../../shared/compressPresets';
 import { VideoCompareView, PreviewSample } from './VideoCompareView';
 import { VideoPlayer, VideoPlayerRef, formatTimecode } from './VideoPlayer';
 import { Timeline } from './Timeline';
 import { SegmentCardsGrid } from './SegmentCardsGrid';
+import { WorkbenchModeBar, WorkbenchMode, SpatialSubMode, CropRatioType, MaskType, SpatialScope } from './WorkbenchModeBar';
+import { SpatialOverlay } from './SpatialOverlay';
 import { RetentionDraft, DraftSnapshot } from '../../shared/RetentionDraft';
+import { makeEven, hasSpatialEffects } from '../../shared/spatialFiltergraph';
 import { useAppData } from '../AppDataContext';
 import {
   Film,
@@ -55,6 +58,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 }) => {
   const { config: appConfig, plans, saveConfig } = useAppData();
   const loadEpoch = useRef(0);
+  const scanId = useRef<string | null>(null);
+  const cancelScan = () => { if (scanId.current) void window.electronAPI?.cancelKeyframes(scanId.current).catch(() => {}); scanId.current = null; };
   const submitLock = useRef(false);
   const [metadata, setMetadata] = useState<MediaMetadata | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -113,6 +118,23 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const [mainViewportMode, setMainViewportMode] = useState<'player' | 'compare'>('player');
   const [showAdvancedCompress, setShowAdvancedCompress] = useState(false);
 
+  // 工作台双模式解耦状态 (时间分段剪辑 ↔ 画面空间修饰)
+  const [workbenchMode, setWorkbenchMode] = useState<WorkbenchMode>('temporal');
+  const [spatialSubMode, setSpatialSubMode] = useState<SpatialSubMode>('crop');
+  const [cropRatio, setCropRatio] = useState<CropRatioType>('free');
+  const [isCropLocked, setIsCropLocked] = useState(false);
+  const [activeMaskType, setActiveMaskType] = useState<MaskType>('delogo');
+  const [spatialScope, setSpatialScope] = useState<SpatialScope>('global');
+  const [selectedMaskId, setSelectedMaskId] = useState<string | null>(null);
+
+  const handleSwitchWorkbenchMode = useCallback((newMode: WorkbenchMode) => {
+    if (newMode === 'spatial') {
+      playerRef.current?.pause();
+      setIsPlaying(false);
+    }
+    setWorkbenchMode(newMode);
+  }, []);
+
   // 画质对比抽样画格、选中的场景页码及视图模式常驻工作台（跨 Tab / 跨视窗绝不丢失）
   const [compareCache, setCompareCache] = useState<{ key: string; samples: PreviewSample[] }>({ key: '', samples: [] });
   const [compareError, setCompareError] = useState<string | null>(null);
@@ -152,6 +174,36 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       crf: 22,
       hardwareAcceleration: true,
     };
+  }, [draft, draftVersion]);
+
+  // 当前播放头所在分段（用于分段级空间修饰局部覆盖）
+  const currentSegment = useMemo(() => {
+    if (segments.length === 0) return null;
+    const found = segments.find((s) => currentTimeMs >= s.startMs && currentTimeMs < s.endMs);
+    return found || segments[segments.length - 1];
+  }, [segments, currentTimeMs]);
+
+  const targetSegmentId = spatialScope === 'segment' ? currentSegment?.id : undefined;
+
+  // 派生当前生效的空间配置
+  const effectiveSpatial = useMemo(() => {
+    return draft?.getEffectiveSpatialConfig(targetSegmentId);
+  }, [draft, draftVersion, targetSegmentId]);
+
+  const currentCropBox = effectiveSpatial?.crop;
+  const currentMasks = effectiveSpatial?.masks || [];
+  const hasSpatialActive = Boolean(draft?.hasSpatialConfig(metadata ? { width: metadata.width, height: metadata.height } : undefined));
+  const exportCompressConfig: CompressConfig = hasSpatialActive && !isCompressMode ? { enabled: true, preset: 'balanced', crf: 22 } : currentCompressConfig;
+  const outputPolicyKey = JSON.stringify([exportCompressConfig.enabled, exportCompressConfig.preset, appConfig.outputDirectoryRule, appConfig.subFolderName, appConfig.customOutputDirectory, appConfig.ffprobePath]);
+  useEffect(() => { setCropRatio(currentCropBox?.ratio ?? 'free'); setIsCropLocked(currentCropBox?.locked ?? false); }, [draft, draftVersion, targetSegmentId]);
+
+  const segmentSpatialMap = useMemo(() => {
+    if (!draft) return undefined;
+    const map: Record<string, boolean> = {};
+    for (const [segId, cfg] of Object.entries(draft.segmentSpatialOverrides)) {
+      map[segId] = hasSpatialEffects(cfg, metadata ? { width: metadata.width, height: metadata.height } : undefined);
+    }
+    return map;
   }, [draft, draftVersion]);
 
   // 计算用于画质对比抽样的代表性时间戳 (系统自动推荐保证至少 3 个场景)
@@ -208,6 +260,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     compareEpochRef.current += 1;
     cancelCompareAddition();
     loadEpoch.current++;
+    cancelScan();
   }, []);
 
   // 首批加载也由工作台持有；视图只呈现结果，不再与新增请求各自维护一套缓存。
@@ -249,7 +302,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     let isCancelled = false;
     if (window.electronAPI?.resolveOutputPath) {
       window.electronAPI
-        .resolveOutputPath(metadata.filePath, concatSingleFile, currentPlanTitle, currentCompressConfig, stripOriginalCover)
+        .resolveOutputPath(metadata.filePath, concatSingleFile, currentPlanTitle, exportCompressConfig, stripOriginalCover)
         .then((resolved) => {
           if (!isCancelled) {
             setSafeOutputPath(resolved);
@@ -262,13 +315,13 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     return () => {
       isCancelled = true;
     };
-  }, [metadata?.filePath, concatSingleFile, currentPlanTitle, currentCompressConfig, stripOriginalCover, appConfig]);
+  }, [metadata?.filePath, concatSingleFile, currentPlanTitle, outputPolicyKey, stripOriginalCover]);
 
 
 
   const playerRef = useRef<VideoPlayerRef | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const shortcutsEnabled = isActive && !isLoading && !showSaveModal && !showNoCutWarningModal && !showCompressSettings;
+  const shortcutsEnabled = isActive && !isLoading && !showSaveModal && !showNoCutWarningModal && !showCompressSettings && workbenchMode === 'temporal';
   useEffect(() => { if (!isActive || mainViewportMode !== 'player') { playerRef.current?.pause(); setAuditionRange(null); } }, [isActive, mainViewportMode]);
 
   // 提交草稿操作变更至撤销栈
@@ -277,8 +330,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       if (!draft) return;
       const snap = draft.snapshot();
       const res = mutator(draft);
-      if (res !== false) {
-        setHistory((prev) => [...prev, snap]);
+      if (res !== false && JSON.stringify(snap) !== JSON.stringify(draft.snapshot())) {
+        setHistory((prev) => [...prev, snap].slice(-100));
         setFuture([]);
         setDraftVersion((v) => v + 1);
       }
@@ -292,7 +345,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     const previous = history[history.length - 1];
     const currentSnap = draft.snapshot();
     setHistory((prev) => prev.slice(0, prev.length - 1));
-    setFuture((prev) => [currentSnap, ...prev]);
+    setFuture((prev) => [currentSnap, ...prev].slice(0, 100));
     draft.restore(previous);
     setDraftVersion((v) => v + 1);
   }, [draft, history]);
@@ -303,7 +356,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     const next = future[0];
     const currentSnap = draft.snapshot();
     setFuture((prev) => prev.slice(1));
-    setHistory((prev) => [...prev, currentSnap]);
+    setHistory((prev) => [...prev, currentSnap].slice(-100));
     draft.restore(next);
     setDraftVersion((v) => v + 1);
   }, [draft, future]);
@@ -355,22 +408,22 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     onOpenVideo();
   };
 
-  const getFilePathFromFile = (file: File): string => {
+  const getFilePathFromFile = async (file: File): Promise<string> => {
     if (window.electronAPI?.getPathForFile) {
       try {
-        const p = window.electronAPI.getPathForFile(file);
+        const p = await window.electronAPI.getPathForFile(file);
         if (p) return p;
       } catch (err) {
         console.warn('getPathForFile 解析失败:', err);
       }
     }
-    return (file as any).path || '';
+    return '';
   };
 
-  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const fullPath = getFilePathFromFile(file);
+      const fullPath = await getFilePathFromFile(file);
       if (fullPath) {
         onRequestVideo(fullPath);
       } else {
@@ -382,6 +435,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
   // 载入视频并探测关键帧 (两阶段秒开机制：300ms 快速出图，后台静默扫描关键帧并落盘缓存)
   const loadAndProbeVideo = async (filePath: string, recordToLoad?: PlanRecord | null) => {
+    cancelScan();
     const epoch = ++loadEpoch.current;
     const isCurrent = () => loadEpoch.current === epoch;
     playerRef.current?.pause();
@@ -406,6 +460,12 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         setCurrentCompareSampleIndex(0);
         setCustomSampleTimestampsMs(null);
         setMainViewportMode('player');
+        setWorkbenchMode('temporal');
+        setSpatialSubMode('crop');
+        setCropRatio('free');
+        setIsCropLocked(false);
+        setSelectedMaskId(null);
+        setSpatialScope('global');
 
         let newDraft: RetentionDraft;
         if (recordToLoad && recordToLoad.sourcePath === filePath) {
@@ -428,12 +488,14 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         // 第二阶段：若未命中本地关键帧缓存，后台异步静默提取物理关键帧
         if (basicMeta.keyframes.length <= 1 && window.electronAPI.probeKeyframes) {
           setIsKeyframeScanning(true);
+          const id = crypto.randomUUID(); scanId.current = id;
           window.electronAPI
-            .probeKeyframes(filePath)
+            .probeKeyframes(filePath, id)
             .then((keyframes) => {
               if (!isCurrent()) return;
               setMetadata((prev) => (prev && prev.filePath === filePath ? { ...prev, keyframes } : prev));
               setIsKeyframeScanning(false);
+              if (scanId.current === id) scanId.current = null;
             })
             .catch((scanErr) => {
               if (!isCurrent()) return;
@@ -589,6 +651,118 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     });
   };
 
+  // 调整裁切框
+  const handleCropChange = (newCrop: SpatialCropBox) => {
+    commitDraftChange((d) => {
+      d.setCrop(newCrop, targetSegmentId);
+    });
+  };
+
+  // 切换裁切比例
+  const handleCropRatioChange = (ratio: CropRatioType) => {
+    setCropRatio(ratio);
+    if (!metadata) return;
+    commitDraftChange((d) => {
+      const current = d.getEffectiveSpatialConfig(targetSegmentId)?.crop;
+      let w = current?.width || metadata.width;
+      let h = current?.height || metadata.height;
+      let x = current?.x || 0;
+      let y = current?.y || 0;
+
+      if (ratio === 'source') {
+        w = makeEven(metadata.width); h = makeEven(metadata.height); x = 0; y = 0;
+      } else if (ratio !== 'free') {
+        const pixelAspect = (metadata.displayAspectRatio || metadata.width / metadata.height) / (metadata.width / metadata.height);
+        const displayRatio = ratio === '16:9' ? 16 / 9 : ratio === '9:16' ? 9 / 16 : 1;
+        const pixelRatio = displayRatio / pixelAspect;
+        w = makeEven(Math.min(metadata.width, metadata.height * pixelRatio));
+        h = makeEven(Math.min(metadata.height, w / pixelRatio));
+        x = makeEven(Math.max(0, (metadata.width - w) / 2));
+        y = makeEven(Math.max(0, (metadata.height - h) / 2));
+      }
+      d.setCrop(
+        {
+          x,
+          y,
+          width: w,
+          height: h,
+          ratio,
+          locked: isCropLocked,
+        },
+        targetSegmentId
+      );
+    });
+  };
+
+  // 还原全画幅
+  const handleResetCropToFull = () => {
+    if (!metadata) return;
+    setCropRatio('free');
+    commitDraftChange((d) => {
+      d.setCrop(
+        {
+          x: 0,
+          y: 0,
+          width: makeEven(metadata.width),
+          height: makeEven(metadata.height),
+          ratio: 'free',
+          locked: false,
+        },
+        targetSegmentId
+      );
+    });
+  };
+
+  // 添加遮罩选区
+  const handleAddMask = () => {
+    if (!metadata) return;
+    const existingCount = currentMasks.length;
+    const newId = `mask_${Date.now()}`;
+    const typeNames: Record<MaskType, string> = {
+      delogo: '去台标水印',
+      black: '纯黑遮罩',
+      mosaic: '马赛克模糊',
+    };
+    const defaultW = makeEven(Math.round(metadata.width * 0.22));
+    const defaultH = makeEven(Math.round(metadata.height * 0.12));
+    const offsetX = makeEven((existingCount * 28) % Math.round(metadata.width * 0.3));
+    const offsetY = makeEven((existingCount * 28) % Math.round(metadata.height * 0.3));
+    const defaultX = makeEven(Math.min(metadata.width - defaultW, Math.round(metadata.width * 0.2) + offsetX));
+    const defaultY = makeEven(Math.min(metadata.height - defaultH, Math.round(metadata.height * 0.15) + offsetY));
+
+    const newMask: SpatialMaskItem = {
+      id: newId,
+      name: `${typeNames[activeMaskType]} #${existingCount + 1}`,
+      x: defaultX,
+      y: defaultY,
+      width: defaultW,
+      height: defaultH,
+      type: activeMaskType,
+    };
+
+    commitDraftChange((d) => {
+      d.addMask(newMask, targetSegmentId);
+    });
+    setSelectedMaskId(newId);
+  };
+
+  // 删除遮罩选区
+  const handleDeleteMask = (id: string) => {
+    commitDraftChange((d) => {
+      d.removeMask(id, targetSegmentId);
+    });
+    if (selectedMaskId === id) {
+      setSelectedMaskId(null);
+    }
+  };
+
+  // 更新遮罩选区
+  const handleMaskChange = (updatedMask: SpatialMaskItem) => {
+    commitDraftChange((d) => {
+      d.updateMask(updatedMask, targetSegmentId);
+    });
+  };
+
   // 增量添加单个画质对比场景点
   const handleAddCompareSample = useCallback(
     async (targetMs: number) => {
@@ -667,7 +841,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const buildCurrentRecord = async (): Promise<PlanRecord | null> => {
     if (!draft || !metadata || !window.electronAPI) return null;
     const title = currentPlanTitle || metadata.fileName.replace(/\.[^/.]+$/, '');
-    const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.concatSingleFile, title, draft.compress, draft.stripOriginalCover);
+    const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.concatSingleFile, title, exportCompressConfig, draft.stripOriginalCover);
     const planId = currentPlanId || `plan_${crypto.randomUUID()}`;
     return draft.toRecord({
       id: planId,
@@ -692,7 +866,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     savingRef.current = true; setSaving(true);
     const epoch = loadEpoch.current;
     try {
-      const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.concatSingleFile, trimmedTitle, draft.compress, draft.stripOriginalCover);
+      const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.concatSingleFile, trimmedTitle, exportCompressConfig, draft.stripOriginalCover);
       const isUpdating = saveMode === 'update' && Boolean(currentPlanId);
       const targetId = isUpdating && currentPlanId ? currentPlanId : `plan_${crypto.randomUUID()}`;
 
@@ -723,8 +897,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   // 立即执行剪辑（秒级移交后台异步引擎，不阻塞工作台）
   const handleExecuteCut = async (forceBypassNoCutCheck = false) => {
     if (submitLock.current || isLoading || boundPlanBusy) return;
-    // 无损秒切防呆拦截：若未开启降码、且未设切点（只有 1 个保留分段），不处理并弹窗提醒
-    if (!forceBypassNoCutCheck && !isCompressMode && cuts.length === 0 && segments.length === 1 && segments[0].decision === 'keep') {
+    // 无损秒切防呆拦截：若未开启降码、未设置画面空间滤镜、且未设切点（只有 1 个保留分段），不处理并弹窗提醒
+    if (!forceBypassNoCutCheck && !isCompressMode && !hasSpatialActive && cuts.length === 0 && segments.length === 1 && segments[0].decision === 'keep') {
       setShowNoCutWarningModal(true);
       return;
     }
@@ -808,12 +982,12 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     setIsDraggingOver(false);
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDraggingOver(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const file = e.dataTransfer.files[0];
-      const fullPath = getFilePathFromFile(file);
+      const fullPath = await getFilePathFromFile(file);
       if (fullPath) {
         onRequestVideo(fullPath);
       } else {
@@ -917,6 +1091,26 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   return (
     <div className="flex-1 h-full overflow-hidden px-4 sm:px-6 xl:px-8 py-3 flex flex-col relative min-h-0">
       <div className="w-full max-w-[1360px] mx-auto space-y-2 flex-1 flex flex-col min-h-0">
+        {/* 工作台顶栏双模式解耦控制栏 */}
+        <WorkbenchModeBar
+          mode={workbenchMode}
+          onModeChange={handleSwitchWorkbenchMode}
+          subMode={spatialSubMode}
+          onSubModeChange={setSpatialSubMode}
+          cropRatio={cropRatio}
+          onCropRatioChange={handleCropRatioChange}
+          isCropLocked={isCropLocked}
+          onToggleCropLock={() => commitDraftChange(d => d.setCrop({ ...(currentCropBox ?? { x: 0, y: 0, width: makeEven(metadata.width), height: makeEven(metadata.height), ratio: 'free' }), locked: !isCropLocked }, targetSegmentId))}
+          onResetCropToFull={handleResetCropToFull}
+          activeMaskType={activeMaskType}
+          onActiveMaskTypeChange={setActiveMaskType}
+          onAddMask={handleAddMask}
+          scope={spatialScope}
+          onToggleScope={() => setSpatialScope(spatialScope === 'global' ? 'segment' : 'global')}
+          currentSegmentIndex={currentSegment ? currentSegment.index : 1}
+          hasSpatialActive={hasSpatialActive}
+        />
+
         {/* 1. 纯净视频画面视窗 / 降码画质 A/B 对比就地视窗 */}
           <div className={mainViewportMode === 'player' ? 'relative flex-1 min-h-0 flex flex-col' : 'hidden'}>
             <VideoPlayer
@@ -924,6 +1118,9 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               videoPath={metadata.filePath}
               durationMs={metadata.durationMs}
               fps={metadata.fps}
+              videoWidth={metadata.width}
+              videoHeight={metadata.height}
+              displayAspectRatio={metadata.displayAspectRatio}
               isActive={isActive && !isLoading && mainViewportMode === 'player'}
               shortcutsEnabled={shortcutsEnabled && mainViewportMode === 'player'}
               onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
@@ -932,7 +1129,26 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               aspectRatioMode={aspectRatioMode}
               auditionRange={auditionRange}
               onAuditionEnd={() => setAuditionRange(null)}
-            />
+            >
+              {workbenchMode === 'spatial' && isActive && !isLoading && mainViewportMode === 'player' && metadata && (
+                <SpatialOverlay
+                  key={`${metadata.filePath}:${loadGeneration}:${targetSegmentId ?? 'global'}:${spatialSubMode}`}
+                  videoWidth={metadata.width || 1920}
+                  videoHeight={metadata.height || 1080}
+                  displayAspectRatio={metadata.displayAspectRatio}
+                  subMode={spatialSubMode}
+                  cropBox={currentCropBox}
+                  isCropLocked={isCropLocked}
+                  onCropChange={handleCropChange}
+                  masks={currentMasks}
+                  selectedMaskId={selectedMaskId}
+                  onSelectMask={setSelectedMaskId}
+                  onMaskChange={handleMaskChange}
+                  onDeleteMask={handleDeleteMask}
+                  onAddMask={handleAddMask}
+                />
+              )}
+            </VideoPlayer>
             {/* 降码模式下右上角提供就地画质对比切换药丸 */}
             {isCompressMode && (
               <div className="absolute top-3 right-3 z-20 flex items-center">
@@ -949,6 +1165,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           </div>
         {mainViewportMode === 'compare' && (
           <div className="relative flex-1 min-h-0 bg-black rounded-2xl overflow-hidden border border-white/10 shadow-2xl flex flex-col">
+            {hasSpatialActive && <p className="px-4 py-2 text-xs text-amber-200 bg-amber-500/10">此处仅比较压缩质量，不含裁剪与遮罩；最终导出会应用画面配置。</p>}
             <VideoCompareView
               config={currentCompressConfig}
               cachedSamples={cachedCompareSamples}
@@ -1137,6 +1354,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               setAuditionRange(null);
               playerRef.current?.seekTo(ms);
             }}
+            segmentSpatialMap={segmentSpatialMap}
+            hasGlobalSpatial={Boolean(draft?.spatialConfig && draft.hasSpatialConfig(metadata ? { width: metadata.width, height: metadata.height } : undefined))}
           />
         </div>
 
@@ -1215,6 +1434,18 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
             {/* 右侧动作按钮组 */}
             <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 ml-auto lg:ml-0 relative z-50">
+              {/* 空间编辑转码升轨状态指示 */}
+              {hasSpatialActive && (
+                <div
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-purple-500/15 border border-purple-500/30 text-purple-300 text-xs font-mono font-medium"
+                  title="检测到已配置画面空间修饰（裁切/遮罩），系统已自动升轨为智能转码，确保滤镜生效，同时保持无损原声音频"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
+                  <span className="hidden sm:inline">智能转码升轨 (-vf 空间滤镜)</span>
+                  <span className="sm:hidden">智能转码升轨</span>
+                </div>
+              )}
+
               {/* 模式选择胶囊：无损秒切 vs 智能降码 */}
               <div className="flex items-center bg-black/40 border border-white/10 p-0.5 rounded-xl text-xs font-medium">
                 <button

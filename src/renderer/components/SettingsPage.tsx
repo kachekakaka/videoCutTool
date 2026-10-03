@@ -112,7 +112,6 @@ export const SettingsPage: React.FC = () => {
             <div className="space-y-3.5">
               {/* sub_folder */}
               <label 
-                onClick={() => handleRuleChange('sub_folder')}
                 className={`flex items-start gap-3.5 p-4 rounded-xl border cursor-pointer transition-all ${
                   config.outputDirectoryRule === 'sub_folder'
                     ? 'bg-blue-500/10 border-blue-500/40 text-white'
@@ -152,7 +151,6 @@ export const SettingsPage: React.FC = () => {
 
               {/* same_directory */}
               <label 
-                onClick={() => handleRuleChange('same_directory')}
                 className={`flex items-start gap-3.5 p-4 rounded-xl border cursor-pointer transition-all ${
                   config.outputDirectoryRule === 'same_directory'
                     ? 'bg-blue-500/10 border-blue-500/40 text-white'
@@ -176,7 +174,6 @@ export const SettingsPage: React.FC = () => {
 
               {/* custom_fixed */}
               <label 
-                onClick={() => handleRuleChange('custom_fixed')}
                 className={`flex items-start gap-3.5 p-4 rounded-xl border cursor-pointer transition-all ${
                   config.outputDirectoryRule === 'custom_fixed'
                     ? 'bg-blue-500/10 border-blue-500/40 text-white'

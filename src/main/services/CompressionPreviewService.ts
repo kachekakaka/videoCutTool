@@ -13,13 +13,15 @@ export class CompressionPreviewService {
   private ffprobePath: string;
   private cache: PreviewCache;
   private requests = new Map<string, { controller: AbortController; promise: Promise<PreviewSample[]> }>();
+  private closing = false;
   constructor(preferredPath?: string, directory = path.resolve('../videoCutTool_tmp/preview_cache'), private encoder: (config: CompressConfig, signal?: AbortSignal) => Promise<Encoder> = async () => 'cpu', private limiter = new MediaLimiter(() => 2)) {
     this.ffmpegPath = resolveTool('ffmpeg', preferredPath); this.ffprobePath = resolveTool('ffprobe', preferredPath && path.join(path.dirname(preferredPath), 'ffprobe.exe')); this.cache = new PreviewCache(directory);
   }
-  updateTools(ffmpeg?: string, ffprobe?: string) { this.ffmpegPath = resolveTool('ffmpeg', ffmpeg); this.ffprobePath = resolveTool('ffprobe', ffprobe); }
+  updateTools(ffmpeg?: string, ffprobe?: string) { this.ffmpegPath = resolveTool('ffmpeg', ffmpeg); this.ffprobePath = resolveTool('ffprobe', ffprobe); this.closing = false; }
   async cancel(id: string) { const request = this.requests.get(id); if (request) { request.controller.abort(); await request.promise.catch(() => {}); } }
-  async shutdown() { await Promise.all([...this.requests.keys()].map(id => this.cancel(id))); }
+  async shutdown() { this.closing = true; await Promise.all([...this.requests.keys()].map(id => this.cancel(id))); }
   generatePreviewSamples(video: string, timestamps: number[], config: CompressConfig, requestId: string = randomUUID()): Promise<PreviewSample[]> {
+    if (this.closing) return Promise.reject(abortError());
     if (this.requests.has(requestId)) return this.requests.get(requestId)!.promise;
     const controller = new AbortController();
     const promise = this.generate(video, timestamps, config, controller.signal).finally(() => this.requests.delete(requestId));

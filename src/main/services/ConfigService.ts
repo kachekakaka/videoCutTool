@@ -1,16 +1,15 @@
 import fs from 'fs';
 import path from 'path';
 import { AppConfig, DEFAULT_APP_CONFIG } from '../../shared/types';
-import { CompressConfig, MediaStreamInfo } from '../../shared/types';
+import { CompressConfig } from '../../shared/types';
 import { resolveOutputBatch } from './OutputPathResolver';
 import { resolveFormats } from './MediaFormatResolver';
-import { fileIdentity, probeFile, resolveTool } from './MediaTools';
+import { probeFile, resolveTool } from './MediaTools';
 
 export class ConfigService {
   private configPath: string;
   private currentConfig: AppConfig;
   private dataDir: string;
-  private outputStreams = new Map<string, Promise<MediaStreamInfo[]>>();
 
   constructor(dataDir: string = process.cwd(), configPath?: string) {
     this.dataDir = path.resolve(dataDir);
@@ -153,7 +152,9 @@ export class ConfigService {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    fs.writeFileSync(this.configPath, JSON.stringify(nextConfig, null, 2), 'utf-8');
+    const temporary = `${this.configPath}.${process.pid}.tmp`;
+    try { fs.writeFileSync(temporary, JSON.stringify(nextConfig, null, 2), 'utf-8'); fs.renameSync(temporary, this.configPath); }
+    finally { try { fs.unlinkSync(temporary); } catch {} }
     this.currentConfig = nextConfig;
     return { ...this.currentConfig };
   }
@@ -204,14 +205,8 @@ export class ConfigService {
     compress?: CompressConfig,
     stripCover = true
   ): Promise<string> {
-    const tool = resolveTool('ffprobe', this.currentConfig.ffprobePath), identity = `${tool}:${fileIdentity(videoSourcePath)}`;
-    let streams = this.outputStreams.get(identity);
-    if (!streams) {
-      streams = probeFile(videoSourcePath, tool).then(info => info.streams).catch(error => { this.outputStreams.delete(identity); throw error; });
-      this.outputStreams.set(identity, streams);
-      if (this.outputStreams.size > 64) this.outputStreams.delete(this.outputStreams.keys().next().value!);
-    }
-    const extension = resolveFormats(videoSourcePath, await streams, compress, stripCover).outputExtension;
+    const tool = resolveTool('ffprobe', this.currentConfig.ffprobePath);
+    const extension = resolveFormats(videoSourcePath, (await probeFile(videoSourcePath, tool)).streams, compress, stripCover).outputExtension;
     return resolveOutputBatch({ directory: this.resolveTargetDirectory(videoSourcePath), source: videoSourcePath, extension, title: planTitle, segmented: !isConcat })[0];
   }
 

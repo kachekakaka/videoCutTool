@@ -7,15 +7,27 @@ export interface VideoPlayerRef {
 }
 interface VideoPlayerProps {
   videoPath: string; durationMs: number; fps?: number; isActive?: boolean; shortcutsEnabled?: boolean;
+  videoWidth?: number; videoHeight?: number; displayAspectRatio?: number; children?: React.ReactNode;
   onTimeUpdate: (timeMs: number) => void; onPlayStateChange?: (playing: boolean) => void; onInsertCut?: () => void;
   aspectRatioMode?: 'auto' | '16:9' | '1:1'; auditionRange?: { startMs: number; endMs: number } | null; onAuditionEnd?: () => void;
 }
 export { formatTimecode, parseTimecodeToMs } from '../../shared/timeUtils';
 
 export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
-  videoPath, durationMs, fps = 30, isActive = true, shortcutsEnabled = true, onTimeUpdate, onPlayStateChange, onInsertCut, aspectRatioMode = 'auto', auditionRange, onAuditionEnd,
+  videoPath, durationMs, fps = 30, isActive = true, shortcutsEnabled = true, videoWidth, videoHeight, displayAspectRatio, children, onTimeUpdate, onPlayStateChange, onInsertCut, aspectRatioMode = 'auto', auditionRange, onAuditionEnd,
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement | null>(null), position = useRef(0), navigationEpoch = useRef(0), navigation = useRef(Promise.resolve());
+  const viewport = useRef<HTMLDivElement | null>(null);
+  const [bounds, setBounds] = useState({ width: 0, height: 0 });
+  useEffect(() => {
+    const element = viewport.current; if (!element) return;
+    const observer = new ResizeObserver(() => setBounds({ width: element.clientWidth, height: element.clientHeight }));
+    observer.observe(element); return () => observer.disconnect();
+  }, []);
+  const ratio = displayAspectRatio || (videoWidth && videoHeight ? videoWidth / videoHeight : 16 / 9);
+  const canvasRatio = aspectRatioMode === '16:9' ? 16 / 9 : aspectRatioMode === '1:1' ? 1 : bounds.width / Math.max(1, bounds.height) || ratio;
+  const canvasWidth = Math.min(bounds.width, bounds.height * canvasRatio);
+  const contentWidth = Math.min(canvasWidth, canvasWidth / canvasRatio * ratio);
   const [preview, setPreview] = useState<{ source: string; path: string; offset: number } | null>(null);
   const [error, setError] = useState(''), [progress, setProgress] = useState<number | null>(null);
   const request = useRef<string | null>(null), sourceEpoch = useRef(0), attemptedRemux = useRef(false);
@@ -82,8 +94,11 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
   });
   const source = /^(https?:|media:)/.test(playbackPath) ? playbackPath : `media://video?path=${encodeURIComponent(playbackPath)}`;
   return <div className="w-full flex-1 min-h-[240px] flex flex-col rounded-2xl overflow-hidden bg-[#161b22]/90 border border-white/10 shadow-2xl">
-    <div className="relative flex-1 min-h-0 w-full bg-black/95 flex items-center justify-center overflow-hidden select-none">
-      <div className={`w-full h-full flex items-center justify-center ${aspectRatioMode === '16:9' ? 'aspect-video' : aspectRatioMode === '1:1' ? 'aspect-square' : ''} max-h-full max-w-full`}>
+    <div ref={viewport} className="relative flex-1 min-h-0 w-full bg-black/95 flex items-center justify-center overflow-hidden select-none">
+      <div
+        style={{ width: contentWidth, height: contentWidth / ratio }}
+        className="relative flex-none flex items-center justify-center max-h-full max-w-full"
+      >
         <video ref={videoRef} src={source} onLoadedMetadata={() => seek(position.current)} onTimeUpdate={() => {
           position.current = current(); onTimeUpdate(position.current);
           if (auditionRange && position.current >= auditionRange.endMs) { pause(); onAuditionEnd?.(); }
@@ -92,6 +107,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
           onPlayStateChange?.(false);
           if (!attemptedRemux.current && isActive) { attemptedRemux.current = true; void preparePreview(false); }
         }} className="w-full h-full object-contain cursor-pointer" />
+        {children}
       </div>
       {(error || progress !== null) && <div className="absolute inset-0 flex items-center justify-center bg-black/85 p-6"><div className="max-w-lg text-center text-sm text-zinc-200 space-y-3">
         <p className="break-words">{progress !== null ? `正在生成播放预览 ${Math.round(progress)}%` : error}</p>

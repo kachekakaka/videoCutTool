@@ -15,6 +15,8 @@ interface SegmentCardsGridProps {
   onNudgeEnd: (segmentId: string, deltaMs: number) => void;
   onMergeWithPrevious?: (segmentId: string) => void;
   onSeek?: (timeMs: number) => void;
+  segmentSpatialMap?: Record<string, boolean>;
+  hasGlobalSpatial?: boolean;
 }
 
 const formatStepLabel = (ms: number): string => {
@@ -173,6 +175,7 @@ interface SegmentCardItemProps {
   onNudgeEnd: (segmentId: string, deltaMs: number) => void;
   onMergeWithPrevious?: (segmentId: string) => void;
   onSeek?: (timeMs: number) => void;
+  hasSpatial?: boolean;
 }
 
 const SegmentCardItem: React.FC<SegmentCardItemProps> = ({
@@ -190,6 +193,7 @@ const SegmentCardItem: React.FC<SegmentCardItemProps> = ({
   onNudgeEnd,
   onMergeWithPrevious,
   onSeek,
+  hasSpatial,
 }) => {
   const isKept = seg.decision === 'keep';
   const durationSec = (seg.durationMs / 1000).toFixed(1);
@@ -269,6 +273,15 @@ const SegmentCardItem: React.FC<SegmentCardItemProps> = ({
           >
             #{seg.index}
           </span>
+
+          {hasSpatial && (
+            <span
+              className="text-[9.5px] px-1 py-0.2 rounded bg-purple-500/15 text-purple-300 border border-purple-500/30 font-mono font-medium flex items-center gap-0.5 shrink-0"
+              title="此分段应用了画面空间修饰（画幅裁切或去水印遮罩）"
+            >
+              <span>📐</span>
+            </span>
+          )}
 
           <div className="flex items-center bg-black/60 p-0.5 rounded-md border border-white/10 text-[10px]">
             <button
@@ -411,31 +424,37 @@ export const SegmentCardsGrid: React.FC<SegmentCardsGridProps> = ({
   onNudgeEnd,
   onMergeWithPrevious,
   onSeek,
+  segmentSpatialMap,
+  hasGlobalSpatial,
 }) => {
   const activeStepMs = stepMs;
   const stepLabel = formatStepLabel(activeStepMs);
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5 items-stretch">
-      {segments.map((seg, idx) => (
-        <SegmentCardItem
-          key={seg.id}
-          seg={seg}
-          idx={idx}
-          totalSegments={segments.length}
-          nextSegmentId={idx < segments.length - 1 ? segments[idx + 1].id : undefined}
-          currentTimeMs={currentTimeMs}
-          auditionRange={auditionRange}
-          activeStepMs={activeStepMs}
-          stepLabel={stepLabel}
-          onToggleDecision={onToggleDecision}
-          onAudition={onAudition}
-          onNudgeStart={onNudgeStart}
-          onNudgeEnd={onNudgeEnd}
-          onMergeWithPrevious={onMergeWithPrevious}
-          onSeek={onSeek}
-        />
-      ))}
+      {segments.map((seg, idx) => {
+        const hasSpatial = Boolean((segmentSpatialMap && segmentSpatialMap[seg.id]) || hasGlobalSpatial);
+        return (
+          <SegmentCardItem
+            key={seg.id}
+            seg={seg}
+            idx={idx}
+            totalSegments={segments.length}
+            nextSegmentId={idx < segments.length - 1 ? segments[idx + 1].id : undefined}
+            currentTimeMs={currentTimeMs}
+            auditionRange={auditionRange}
+            activeStepMs={activeStepMs}
+            stepLabel={stepLabel}
+            onToggleDecision={onToggleDecision}
+            onAudition={onAudition}
+            onNudgeStart={onNudgeStart}
+            onNudgeEnd={onNudgeEnd}
+            onMergeWithPrevious={onMergeWithPrevious}
+            onSeek={onSeek}
+            hasSpatial={hasSpatial}
+          />
+        );
+      })}
     </div>
   );
 };

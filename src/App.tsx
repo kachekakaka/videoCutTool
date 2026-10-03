@@ -58,21 +58,27 @@ const AppContent: React.FC = () => {
     globalFileInputRef.current?.click();
   };
 
-  const handleGlobalFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleGlobalFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const fullPath = window.electronAPI?.getPathForFile(file) || '';
-      if (fullPath) requestVideo(fullPath);
-      else setGlobalToast({ message: '无法获取视频的完整路径，请使用桌面应用打开视频' });
+      try {
+        const fullPath = await window.electronAPI?.getPathForFile(file);
+        if (fullPath) requestVideo(fullPath);
+        else setGlobalToast({ message: '无法获取视频的完整路径，请使用桌面应用打开视频' });
+      } catch (error) { setGlobalToast({ message: String(error) }); }
     }
     e.target.value = '';
   };
 
   // 从方案列表回载方案到工作台
-  const handleLoadPlanIntoCutter = (plan: PlanRecord) => {
-    setLoadedPlan(plan);
-    setRequestedVideo(previous => ({ path: plan.sourcePath, generation: (previous?.generation || 0) + 1 }));
-    setActiveTab('cutter');
+  const handleLoadPlanIntoCutter = async (plan: PlanRecord) => {
+    try {
+      const saved = await window.electronAPI?.loadPlan(plan.id);
+      if (!saved) return;
+      setLoadedPlan(saved);
+      setRequestedVideo(previous => ({ path: saved.sourcePath, generation: (previous?.generation || 0) + 1 }));
+      setActiveTab('cutter');
+    } catch (error) { setGlobalToast({ message: `载入方案失败：${String(error)}` }); }
   };
 
   // 打开当前视频对应的输出目录

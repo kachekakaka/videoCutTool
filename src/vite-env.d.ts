@@ -3,7 +3,7 @@
 import { AppConfig, MediaMetadata, PlanRecord, CompressConfig, PreviewSample, PlanChange, PlanListResult, EngineState, ExecutionStatus, PreviewProgress } from './shared/types';
 
 export interface ElectronAPI {
-  getPathForFile: (file: File) => string;
+  getPathForFile: (file: File) => Promise<string>;
   // 配置
   getConfig: () => Promise<AppConfig>;
   saveConfig: (config: Partial<AppConfig>) => Promise<AppConfig>;
@@ -16,7 +16,8 @@ export interface ElectronAPI {
   selectDirectory: (defaultPath?: string) => Promise<string | null>;
   probeMedia: (filePath: string) => Promise<MediaMetadata>;
   probeBasic: (filePath: string) => Promise<MediaMetadata>;
-  probeKeyframes: (filePath: string) => Promise<number[]>;
+  probeKeyframes: (filePath: string, id: string) => Promise<number[]>;
+  cancelKeyframes: (id: string) => Promise<void>;
   adjacentFrame: (file: string, time: number, direction: -1 | 1) => Promise<number>;
   preparePlayback: (file: string, convert: boolean, id: string) => Promise<{ path?: string; needsConversion?: boolean; timeOffsetMs?: number }>;
   cancelPlayback: (id: string) => Promise<void>;
@@ -39,6 +40,7 @@ export interface ElectronAPI {
 
   // 方案管理
   listPlans: () => Promise<PlanRecord[]>;
+  loadPlan: (id: string) => Promise<PlanRecord>;
   getPlanDetails: () => Promise<PlanListResult>;
   refreshPlans: () => Promise<PlanListResult>;
   onPlanChanged: (callback: (change: PlanChange) => void) => () => void;

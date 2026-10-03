@@ -296,6 +296,24 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                           </span>
                         )}
 
+                        {/* 画面空间修饰属性徽章 */}
+                        {plan.spatialConfig && ((plan.spatialConfig.crop && plan.spatialConfig.crop.width > 0) || (plan.spatialConfig.masks && plan.spatialConfig.masks.length > 0)) && (
+                          <span
+                            className="text-[11px] bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 px-2 py-0.5 rounded-full flex items-center gap-1 font-mono font-medium"
+                            title="包含画面空间修饰（画幅裁切或去水印遮罩），导出时自动升轨为智能转码"
+                          >
+                            <span>📐</span>
+                            <span>
+                              {plan.spatialConfig.crop && plan.spatialConfig.crop.width > 0
+                                ? `${plan.spatialConfig.crop.width}×${plan.spatialConfig.crop.height}`
+                                : '空间修饰'}
+                              {plan.spatialConfig.masks && plan.spatialConfig.masks.length > 0
+                                ? ` · 💧${plan.spatialConfig.masks.length}`
+                                : ''}
+                            </span>
+                          </span>
+                        )}
+
                         {/* 状态徽章 */}
                         {isCompleted ? (
                           <span className="text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-bold">

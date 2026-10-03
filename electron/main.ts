@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, protocol, shell, Menu, nativeTheme } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, protocol, shell, Menu, nativeTheme, IpcMainInvokeEvent } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import { Readable } from 'stream';
@@ -9,7 +9,8 @@ import { MediaCuttingEngine } from '../src/main/services/MediaCuttingEngine';
 import { PlanManager } from '../src/main/services/PlanManager';
 import { CompressionPreviewService } from '../src/main/services/CompressionPreviewService';
 import { PlaybackPreviewService } from '../src/main/services/PlaybackPreviewService';
-import { MediaLimiter, stopMediaProcesses } from '../src/main/services/MediaTools';
+import { MediaLimiter, stopMediaProcesses, clearProbeCache } from '../src/main/services/MediaTools';
+import { FileAccessRegistry, localPath, requestId, textValue, validateCompress, validateConfigPatch, validateRecord } from '../src/main/services/IpcSecurity';
 import { AppConfig, PlanRecord, CompressConfig } from '../src/shared/types';
 
 // 全局彻底移除应用菜单，防止 Windows 下用户按 Alt 键唤出原生菜单栏
@@ -36,7 +37,7 @@ protocol.registerSchemesAsPrivileged([
 app.commandLine.appendSwitch('disable-gpu-cache');
 app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 app.commandLine.appendSwitch('disable-http-cache');
-app.commandLine.appendSwitch('no-sandbox');
+app.enableSandbox();
 
 // 强制原生深色沉浸主题
 nativeTheme.themeSource = 'dark';
@@ -81,6 +82,32 @@ let previewService: CompressionPreviewService;
 let playbackService: PlaybackPreviewService;
 
 let mainWindow: BrowserWindow | null = null;
+const files = new FileAccessRegistry();
+const scanRequests = new Map<string, { controller: AbortController; promise: Promise<unknown> }>();
+const canceledRequests = new Set<string>();
+function markCanceled(key: string) { canceledRequests.add(key); if (canceledRequests.size > 256) canceledRequests.delete(canceledRequests.values().next().value!); }
+function checkCanceled(key: string) { if (canceledRequests.delete(key)) throw new Error('操作已取消'); }
+let configChanges: Promise<unknown> = Promise.resolve();
+const ipcActive = new Map<string, number>();
+function handle(channel: string, work: (event: IpcMainInvokeEvent, ...args: any[]) => any) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    const frame = event.senderFrame;
+    if (!mainWindow || event.sender !== mainWindow.webContents || frame !== event.sender.mainFrame) throw new Error('拒绝非可信窗口请求');
+    const url = new URL(frame.url);
+    const trusted = process.env.VITE_DEV_SERVER_URL
+      ? url.origin === new URL(process.env.VITE_DEV_SERVER_URL).origin
+      : url.protocol === 'file:' && path.resolve(fileURLToPath(url)) === path.resolve(__dirname, '../dist/index.html');
+    if (!trusted || quitting) throw new Error('请求来源无效或应用正在关闭');
+    const count = ipcActive.get(channel) ?? 0;
+    if (count >= 32 || args.length > 6) throw new Error('请求过于频繁，请稍后重试');
+    ipcActive.set(channel, count + 1);
+    try {
+      if (/^(media:|compress:|engine:submitDraft)/.test(channel)) await configChanges;
+      return await work(event, ...args);
+    } finally { ipcActive.set(channel, Math.max(0, (ipcActive.get(channel) ?? 1) - 1)); }
+  });
+}
+function rememberPlanOutputs(records: PlanRecord[]) { for (const record of records) { files.allowReveal(record.outputPath); record.outputPaths?.forEach(file => files.allowReveal(file)); } }
 
 app.on('second-instance', () => {
   if (mainWindow) {
@@ -111,12 +138,20 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false,
+      sandbox: true,
     },
   });
 
   // 彻底禁用窗口原生菜单栏，彻底杜绝按 Alt 键浮现菜单
   mainWindow.setMenu(null);
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', event => event.preventDefault());
+  mainWindow.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    const dev = process.env.VITE_DEV_SERVER_URL ? new URL(process.env.VITE_DEV_SERVER_URL).origin : '';
+    const connect = dev ? `${dev} ${dev.replace(/^http/, 'ws')}` : '';
+    callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [`default-src 'self'; script-src 'self' ${dev ? "'unsafe-inline' " + dev : ''}; style-src 'self' 'unsafe-inline'; img-src 'self' media: data:; media-src 'self' media:; connect-src 'self' media: ${connect}; object-src 'none'; frame-src 'none'; base-uri 'none'`] } });
+  });
 
   const htmlPath = path.join(__dirname, '../dist/index.html');
 
@@ -147,6 +182,8 @@ function createWindow() {
   });
 
   mainWindow.on('closed', () => {
+    files.clear();
+    scanRequests.forEach(request => request.controller.abort());
     mainWindow = null;
   });
   mainWindow.on('close', (event) => {
@@ -175,67 +212,97 @@ function getMimeType(filePath: string): string {
 }
 
 // 注册 IPC 通信
-ipcMain.handle('config:get', async () => configService.getConfig());
-ipcMain.handle('config:save', async (_event, patch: Partial<AppConfig>) => {
-  const previous = configService.getConfig();
-  const config = configService.saveConfig(patch);
-  if (previous.ffmpegPath !== config.ffmpegPath || previous.ffprobePath !== config.ffprobePath) {
-    await Promise.all([previewService.shutdown(), playbackService.shutdown()]);
-    prober.updateTool(config.ffprobePath);
-    cuttingEngine.updateTools(config.ffmpegPath, config.ffprobePath);
-    previewService.updateTools(config.ffmpegPath, config.ffprobePath);
-    playbackService.updateTools(config.ffmpegPath, config.ffprobePath);
-  }
-  mainWindow?.webContents.send('config:changed', config);
-  return config;
+handle('config:get', async () => configService.getConfig());
+handle('config:save', async (_event, patch: Partial<AppConfig>) => {
+  validateConfigPatch(patch);
+  const task = configChanges.then(async () => {
+    const previous = configService.getConfig();
+    const next = { ...previous, ...patch };
+    const changed = previous.ffmpegPath !== next.ffmpegPath || previous.ffprobePath !== next.ffprobePath;
+    if (changed) {
+      for (const executable of [patch.ffmpegPath, patch.ffprobePath]) if (executable && !(await fs.promises.stat(executable)).isFile()) throw new Error('媒体工具路径不是文件');
+      const answer = await dialog.showMessageBox(mainWindow!, { type: 'warning', title: '更换媒体处理工具', message: '应用将运行以下程序，请仅使用您信任的媒体工具。', detail: `FFmpeg：${next.ffmpegPath || '随包工具'}\nFFprobe：${next.ffprobePath || '随包工具'}`, buttons: ['取消', '使用这些工具'], defaultId: 0, cancelId: 0 });
+      if (answer.response !== 1) throw new Error('已取消更换媒体工具');
+    }
+    const config = configService.saveConfig(patch);
+    if (changed) {
+      await Promise.all([previewService.shutdown(), playbackService.shutdown()]);
+      clearProbeCache(); prober.updateTool(config.ffprobePath);
+      cuttingEngine.updateTools(config.ffmpegPath, config.ffprobePath);
+      previewService.updateTools(config.ffmpegPath, config.ffprobePath);
+      playbackService.updateTools(config.ffmpegPath, config.ffprobePath);
+    }
+    mainWindow?.webContents.send('config:changed', config); return config;
+  });
+  configChanges = task.catch(() => {}); return task;
 });
-ipcMain.handle('config:getPath', async () => configService.getConfigPath());
-ipcMain.handle('config:resolveOutputPath', async (_event, videoPath: string, isConcat: boolean = true, planTitle?: string, compress?: CompressConfig, stripCover?: boolean) => configService.resolveSafeOutputPath(videoPath, isConcat, planTitle, compress, stripCover));
+handle('config:getPath', async () => configService.getConfigPath());
+handle('config:resolveOutputPath', async (_event, videoPath: string, isConcat: boolean = true, planTitle?: string, compress?: CompressConfig, stripCover?: boolean) => {
+  await files.check(videoPath); validateCompress(compress); if (planTitle) textValue(planTitle, '方案标题', 256);
+  if (typeof isConcat !== 'boolean' || (stripCover !== undefined && typeof stripCover !== 'boolean')) throw new Error('输出选项无效');
+  const output = await configService.resolveSafeOutputPath(videoPath, isConcat, planTitle, compress, stripCover); files.allowReveal(output); return output;
+});
 
-ipcMain.handle('media:probe', async (_event, filePath: string) => prober.probe(filePath));
-ipcMain.handle('media:probeBasic', async (_event, filePath: string) => prober.probeBasic(filePath));
-ipcMain.handle('media:probeKeyframes', async (_event, filePath: string) => prober.probeKeyframes(filePath));
-ipcMain.handle('media:adjacentFrame', async (_event, file: string, time: number, direction: -1 | 1) => prober.adjacentFrame(file, time, direction));
-ipcMain.handle('media:preparePlayback', async (event, file: string, convert: boolean, id: string) => playbackService.prepare(file, convert, id, progress => { if (!event.sender.isDestroyed()) event.sender.send('media:previewProgress', progress); }));
-ipcMain.handle('media:cancelPlayback', async (_event, id: string) => playbackService.cancel(id));
+handle('media:registerDroppedFile', async (_event, file: string) => files.authorize(file));
+handle('media:probe', async (_event, filePath: string) => { await files.check(filePath); return prober.probe(filePath); });
+handle('media:probeBasic', async (_event, filePath: string) => { await files.check(filePath); return prober.probeBasic(filePath); });
+handle('media:probeKeyframes', async (event, filePath: string, id: string) => {
+  requestId(id); const key = `${event.sender.id}:${id}`;
+  if (scanRequests.has(key)) return scanRequests.get(key)!.promise;
+  const controller = new AbortController();
+  const promise = (async () => { await files.check(filePath); checkCanceled(`scan:${key}`); return prober.probeKeyframes(filePath, controller.signal); })().finally(() => scanRequests.delete(key));
+  scanRequests.set(key, { controller, promise }); return promise;
+});
+handle('media:cancelKeyframes', async (event, id: string) => { requestId(id); const key = `${event.sender.id}:${id}`; markCanceled(`scan:${key}`); scanRequests.get(key)?.controller.abort(); });
+handle('media:adjacentFrame', async (_event, file: string, time: number, direction: -1 | 1) => { await files.check(file); return prober.adjacentFrame(file, time, direction); });
+handle('media:preparePlayback', async (event, file: string, convert: boolean, id: string) => {
+  requestId(id); if (typeof convert !== 'boolean') throw new Error('播放选项无效'); await files.check(file);
+  checkCanceled(`play:${event.sender.id}:${id}`);
+  const result = await playbackService.prepare(file, convert, `${event.sender.id}:${id}`, progress => { if (!event.sender.isDestroyed()) event.sender.send('media:previewProgress', { ...progress, requestId: id }); });
+  if (result.path) await files.authorize(result.path); return result;
+});
+handle('media:cancelPlayback', async (event, id: string) => { requestId(id); markCanceled(`play:${event.sender.id}:${id}`); return playbackService.cancel(`${event.sender.id}:${id}`); });
 
 // 降码画质抽样对比与硬件探测
-ipcMain.handle('compress:previewSamples', async (_event, videoPath: string, timestampsMs: number[], config: CompressConfig, id?: string) => {
-  return previewService.generatePreviewSamples(videoPath, timestampsMs, config, id);
+handle('compress:previewSamples', async (event, videoPath: string, timestampsMs: number[], config: CompressConfig, id: string) => {
+  requestId(id); validateCompress(config); await files.check(videoPath);
+  checkCanceled(`compare:${event.sender.id}:${id}`);
+  if (!Array.isArray(timestampsMs) || timestampsMs.length > 5 || !timestampsMs.length || timestampsMs.some(time => !Number.isFinite(time) || time < 0)) throw new Error('抽样时间点无效');
+  const result = await previewService.generatePreviewSamples(videoPath, timestampsMs, config, `${event.sender.id}:${id}`);
+  await Promise.all(result.flatMap(sample => [sample.originalUrl!, sample.compressedUrl!]).map(url => files.authorize(new URL(url).searchParams.get('path')!))); return result;
 });
-ipcMain.handle('compress:cancelPreview', async (_event, id: string) => previewService.cancel(id));
-ipcMain.handle('compress:probeEncoder', async (_event, config?: CompressConfig) => cuttingEngine.probeEncoderSupport(config));
+handle('compress:cancelPreview', async (event, id: string) => { requestId(id); markCanceled(`compare:${event.sender.id}:${id}`); return previewService.cancel(`${event.sender.id}:${id}`); });
+handle('compress:probeEncoder', async (_event, config?: CompressConfig) => { validateCompress(config); return cuttingEngine.probeEncoderSupport(config); });
 
 // 剪辑引擎与后台任务
-ipcMain.handle('engine:submitDraft', async (_event, record: PlanRecord) => planManager.submitDraft(record));
+handle('engine:submitDraft', async (_event, record: PlanRecord) => { validateRecord(record); await files.check(record.sourcePath); return planManager.submitDraft(record); });
 
-ipcMain.handle('plan:list', async () => planManager.listPlans());
-ipcMain.handle('plan:details', async () => planManager.details());
-ipcMain.handle('plan:refresh', async () => planManager.refreshPlans());
-ipcMain.handle('engine:state', async () => cuttingEngine.getState());
-ipcMain.handle('engine:retryPendingWrites', async () => cuttingEngine.retryPendingWrites());
-ipcMain.handle('plan:save', async (_event, record: PlanRecord) => planManager.savePlan(record));
-ipcMain.handle('plan:delete', async (_event, id: string) => planManager.deletePlan(id));
-ipcMain.handle('plan:execute', async (_event, id: string) => planManager.executePlan(id));
-ipcMain.handle('plan:batchExecute', async () => planManager.batchExecute());
-ipcMain.handle('shell:showItemInFolder', async (_event, fullPath: string) => {
+handle('plan:list', async () => { const records = await planManager.listPlans(); rememberPlanOutputs(records); return records; });
+handle('plan:details', async () => { const result = await planManager.details(); rememberPlanOutputs(result.records); return result; });
+handle('plan:refresh', async () => { const result = await planManager.refreshPlans(); rememberPlanOutputs(result.records); return result; });
+handle('plan:load', async (_event, id: string) => { requestId(id); const record = await planManager.getPlan(id); if (!record) throw new Error('方案不存在'); await files.authorize(record.sourcePath); return record; });
+handle('engine:state', async () => cuttingEngine.getState());
+handle('engine:retryPendingWrites', async () => cuttingEngine.retryPendingWrites());
+handle('plan:save', async (_event, record: PlanRecord) => { validateRecord(record); await files.check(record.sourcePath); return planManager.savePlan(record); });
+handle('plan:delete', async (_event, id: string) => { requestId(id); return planManager.deletePlan(id); });
+handle('plan:execute', async (_event, id: string) => { requestId(id); return planManager.executePlan(id); });
+handle('plan:batchExecute', async () => planManager.batchExecute());
+handle('shell:showItemInFolder', async (_event, fullPath: string) => {
   if (!fullPath) return;
+  files.checkReveal(fullPath);
   try {
     if (fs.existsSync(fullPath)) {
       shell.showItemInFolder(fullPath);
     } else {
       const dir = path.extname(fullPath) ? path.dirname(fullPath) : fullPath;
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      shell.openPath(dir);
+      if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) await shell.openPath(dir);
     }
   } catch (err) {
     console.error('打开目录失败:', err);
   }
 });
 
-ipcMain.handle('dialog:openVideo', async () => {
+handle('dialog:openVideo', async () => {
   try {
     const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
     const dialogOptions = {
@@ -250,14 +317,15 @@ ipcMain.handle('dialog:openVideo', async () => {
     if (result.canceled || result.filePaths.length === 0) {
       return null;
     }
-    return result.filePaths[0];
+    return await files.authorize(result.filePaths[0]);
   } catch (err) {
     console.error('打开文件对话框失败:', err);
     throw err;
   }
 });
 
-ipcMain.handle('dialog:selectDirectory', async (_event, defaultPath?: string) => {
+handle('dialog:selectDirectory', async (_event, defaultPath?: string) => {
+  if (defaultPath) localPath(defaultPath);
   try {
     const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
     const dialogOptions = {
@@ -312,11 +380,13 @@ app.whenReady().then(async () => {
   const tempPreviewDir = path.resolve(getExternalTmpDir(exeDir), 'preview_cache');
   prober = new KeyframeProber(currentConfig.ffprobePath, exeDir);
   cuttingEngine = new MediaCuttingEngine(currentConfig.ffmpegPath, tempSlicesDir);
+  cuttingEngine.updateTools(currentConfig.ffmpegPath, currentConfig.ffprobePath);
   planManager = new PlanManager(configService.getDataDirectory(), cuttingEngine, prober);
   const previewLimiter = new MediaLimiter(() => cuttingEngine.getActivePlanId() ? 1 : 2);
   previewService = new CompressionPreviewService(currentConfig.ffmpegPath, tempPreviewDir, (config, signal) => cuttingEngine.probeEncoderSupport(config, signal), previewLimiter);
+  previewService.updateTools(currentConfig.ffmpegPath, currentConfig.ffprobePath);
   playbackService = new PlaybackPreviewService(path.resolve(getExternalTmpDir(exeDir), 'playback_cache'), currentConfig.ffmpegPath, currentConfig.ffprobePath, previewLimiter);
-  planManager.setChangeListener(change => mainWindow?.webContents.send('plan:changed', change));
+  planManager.setChangeListener(change => { if (change.record) rememberPlanOutputs([change.record]); mainWindow?.webContents.send('plan:changed', change); });
   cuttingEngine.setStateListener(state => mainWindow?.webContents.send('engine:stateChanged', state));
   await planManager.ready;
 
@@ -331,7 +401,7 @@ app.whenReady().then(async () => {
   });
 
   // 注册本地流媒体协议: media://video?path=...
-  protocol.handle('media', (request) => {
+  protocol.handle('media', async (request) => {
     try {
       const parsed = new URL(request.url);
       let filePath = parsed.searchParams.get('path');
@@ -341,12 +411,13 @@ app.whenReady().then(async () => {
         filePath = raw.replace(/^\/([a-zA-Z]:)/, '$1').replace(/^([a-zA-Z])\//, '$1:/');
       }
 
-      if (!filePath || !fs.existsSync(filePath)) {
+      if (!filePath) {
         console.error('未找到流媒体物理文件:', filePath);
         return new Response('File Not Found', { status: 404 });
       }
 
-      const stat = fs.statSync(filePath);
+      filePath = await files.check(filePath);
+      const stat = await fs.promises.stat(filePath);
       const totalSize = stat.size;
       const mimeType = getMimeType(filePath);
       const rangeHeader = request.headers.get('range');
@@ -422,7 +493,8 @@ app.on('before-quit', event => {
   if (quitting) return;
   event.preventDefault(); quitting = true;
   void (async () => {
-    await Promise.allSettled([previewService?.shutdown(), playbackService?.shutdown(), cuttingEngine?.shutdown(), stopMediaProcesses()]);
+    scanRequests.forEach(request => request.controller.abort());
+    await Promise.allSettled([previewService?.shutdown(), playbackService?.shutdown(), prober?.shutdown(), cuttingEngine?.shutdown(), stopMediaProcesses()]);
     await stopMediaProcesses();
     app.quit();
   })();
