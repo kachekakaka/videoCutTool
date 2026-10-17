@@ -98,4 +98,15 @@ export class PlanManager {
     for (const plan of plans) { const result = await this.executePlan(plan.id); if (result.success) queued++; else errors.push(`${plan.title}：${result.message}`); }
     return { total: plans.length, queued, errors };
   }
+  async executeSelected(ids: string[]) {
+    const unique = [...new Set(ids)];
+    let queued = 0; const errors: string[] = [];
+    for (const id of unique) {
+      const record = await this.getPlan(id);
+      if (!record || !['ready', 'failed'].includes(record.status)) { errors.push(`${record?.title || id}：当前不可提交`); continue; }
+      const result = await this.executePlan(id);
+      if (result.success) queued++; else errors.push(`${record.title}：${result.message}`);
+    }
+    return { total: unique.length, queued, errors };
+  }
 }

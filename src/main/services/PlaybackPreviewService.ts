@@ -11,7 +11,8 @@ export class PlaybackPreviewService {
   private requests = new Map<string, { controller: AbortController; promise: Promise<PlaybackPreview> }>();
   private closing = false;
   private ffmpeg: string; private ffprobe: string;
-  constructor(directory: string, ffmpeg?: string, ffprobe?: string, private limiter = new MediaLimiter(() => 2)) { this.cache = new PreviewCache(directory, 3, 2 * 1024 ** 3); this.ffmpeg = resolveTool('ffmpeg', ffmpeg); this.ffprobe = resolveTool('ffprobe', ffprobe); }
+  // 整片播放预览按数量和时间清理，不限制文件字节数，允许长视频无损改封装。
+  constructor(directory: string, ffmpeg?: string, ffprobe?: string, private limiter = new MediaLimiter(() => 2)) { this.cache = new PreviewCache(directory, 3, Infinity); this.ffmpeg = resolveTool('ffmpeg', ffmpeg); this.ffprobe = resolveTool('ffprobe', ffprobe); }
   updateTools(ffmpeg?: string, ffprobe?: string) { this.ffmpeg = resolveTool('ffmpeg', ffmpeg); this.ffprobe = resolveTool('ffprobe', ffprobe); this.closing = false; }
   async cancel(id: string) { const request = this.requests.get(id); if (request) { request.controller.abort(); await request.promise.catch(() => {}); } }
   async shutdown() { this.closing = true; await Promise.all([...this.requests.keys()].map(id => this.cancel(id))); }
@@ -36,7 +37,6 @@ export class PlaybackPreviewService {
           await runMediaTool(this.ffmpeg, ['-n', '-copyts', '-start_at_zero', '-i', video, '-map', `0:${info.videoIndex}`, ...(audio ? ['-map', `0:${audio.index}`] : []), ...(convert ? ['-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-vf', "scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)'", '-pix_fmt', 'yuv420p', '-c:a', 'aac'] : ['-c', 'copy']), '-movflags', '+faststart', '-progress', 'pipe:1', '-nostats', temporary], { signal, captureOutput: false, onOutput: chunk => {
             const matches = [...chunk.matchAll(/out_time_us=(\d+)/g)]; const last = matches.at(-1); if (last) progress({ requestId: id, percent: Math.min(99, Number(last[1]) / (info.durationMs * 10)), message: convert ? '正在生成兼容预览' : '正在改封装预览' });
           } });
-          if ((await fs.promises.stat(temporary)).size > 2 * 1024 ** 3) throw new Error('兼容预览超过 2 GB 缓存上限，请使用较短素材');
           await fs.promises.link(temporary, output).catch((error: any) => { if (error.code !== 'EEXIST') throw error; });
         }
         const preview = await probeFile(output, this.ffprobe, signal);

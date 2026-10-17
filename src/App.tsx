@@ -4,6 +4,7 @@ import { Header } from './renderer/components/Header';
 import { CutterPage } from './renderer/components/CutterPage';
 import { PlansPage } from './renderer/components/PlansPage';
 import { SettingsPage } from './renderer/components/SettingsPage';
+import { BatchCompressionPage } from './renderer/components/BatchCompressionPage';
 import { PlanRecord } from './shared/types';
 import { CheckCircle2, FolderOpen, X } from 'lucide-react';
 import { AppDataProvider, useAppData } from './renderer/AppDataContext';
@@ -13,6 +14,7 @@ const AppContent: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>('cutter');
   const [currentVideoPath, setCurrentVideoPath] = useState<string | null>(null);
   const [loadedPlan, setLoadedPlan] = useState<PlanRecord | null>(null);
+  const [compressionEdit, setCompressionEdit] = useState<{ record: PlanRecord; generation: number } | null>(null);
   const [requestedVideo, setRequestedVideo] = useState<{ path: string; generation: number } | null>(null);
   const [globalToast, setGlobalToast] = useState<{ message: string; outputPath?: string } | null>(null);
 
@@ -75,6 +77,10 @@ const AppContent: React.FC = () => {
     try {
       const saved = await window.electronAPI?.loadPlan(plan.id);
       if (!saved) return;
+      if (saved.compressionOnly) {
+        setCompressionEdit(previous => ({ record: saved, generation: (previous?.generation || 0) + 1 }));
+        setActiveTab('compression'); return;
+      }
       setLoadedPlan(saved);
       setRequestedVideo(previous => ({ path: saved.sourcePath, generation: (previous?.generation || 0) + 1 }));
       setActiveTab('cutter');
@@ -98,6 +104,8 @@ const AppContent: React.FC = () => {
         return '视频裁剪工作台';
       case 'plans':
         return '方案管理中心';
+      case 'compression':
+        return '批量压缩';
       case 'settings':
         return '系统偏好与配置';
       default:
@@ -133,9 +141,9 @@ const AppContent: React.FC = () => {
         {/* 1360px 统一中轴顶栏 */}
         <Header
           activeTabTitle={getTabTitle()}
-          onOpenVideo={handleOpenVideo}
-          onOpenOutputFolder={currentVideoPath ? handleOpenOutputFolder : undefined}
-          currentVideoName={currentVideoName}
+          onOpenVideo={activeTab === 'compression' ? undefined : handleOpenVideo}
+          onOpenOutputFolder={activeTab === 'cutter' && currentVideoPath ? handleOpenOutputFolder : undefined}
+          currentVideoName={activeTab === 'cutter' ? currentVideoName : undefined}
         />
 
         <main className="flex-1 overflow-hidden relative flex flex-col">
@@ -150,6 +158,10 @@ const AppContent: React.FC = () => {
               onVideoLoaded={setCurrentVideoPath}
               loadedPlanRecord={loadedPlan}
             />
+          </div>
+
+          <div className={activeTab === 'compression' ? 'flex flex-1 flex-col h-full overflow-hidden min-h-0' : 'hidden'}>
+            <BatchCompressionPage editRequest={compressionEdit} onPlans={() => setActiveTab('plans')} />
           </div>
 
           <div className={activeTab === 'plans' ? 'flex flex-1 flex-col h-full overflow-hidden min-h-0' : 'hidden'}>

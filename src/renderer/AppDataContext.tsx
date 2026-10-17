@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { AppConfig, DEFAULT_APP_CONFIG, EngineState, PlanChange, PlanRecord } from '../shared/types';
 
-const initialEngine: EngineState = { activePlanId: null, queuedIds: [], storageError: null };
+const initialEngine: EngineState = { activePlanId: null, queuedIds: [], storageError: null, progress: null };
 interface AppData { config: AppConfig; plans: PlanRecord[]; issues: string[]; engine: EngineState; loading: boolean; error: string; refresh: () => Promise<void>; saveConfig: (patch: Partial<AppConfig>) => Promise<AppConfig> }
 const Context = createContext<AppData | null>(null);
 const applyChange = (records: PlanRecord[], change: PlanChange) => {

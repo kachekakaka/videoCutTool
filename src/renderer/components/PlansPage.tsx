@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { PlanRecord } from '../../shared/types';
+import { PlanRecord, EXECUTION_STAGE_LABELS } from '../../shared/types';
 import { COMPRESS_PRESETS } from '../../shared/compressPresets';
 import {
   FolderKanban,
@@ -32,10 +32,13 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
   const [filter, setFilter] = useState<'all' | 'ready' | 'queued' | 'processing' | 'completed' | 'failed'>('all');
   const [executingId, setExecutingId] = useState<string | null>(null);
   const [batchRunning, setBatchRunning] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const batchLock = React.useRef(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [planToDelete, setPlanToDelete] = useState<PlanRecord | null>(null);
 
   useEffect(() => setPage(1), [filter]);
+  useEffect(() => setSelectedIds([]), [filter, page]);
 
   // Esc 键关闭删除确认模态框
   useEffect(() => {
@@ -63,6 +66,8 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
   };
 
   const handleBatchExecute = async () => {
+    if (batchLock.current) return;
+    batchLock.current = true;
     setBatchRunning(true);
     try {
       if (window.electronAPI) {
@@ -72,8 +77,19 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
     } catch (err) {
       setNotice(`批量执行失败：${String(err)}`);
     } finally {
+      batchLock.current = false;
       setBatchRunning(false);
     }
+  };
+
+  const handleSelectedExecute = async () => {
+    if (batchLock.current || !selectedIds.length) return;
+    batchLock.current = true; setBatchRunning(true);
+    try {
+      const result = await window.electronAPI?.executeSelectedPlans(selectedIds);
+      if (result) { setNotice(`已接受 ${result.queued} / ${result.total} 个选中方案${result.errors.length ? '；' + result.errors.join('；') : ''}`); setSelectedIds([]); }
+    } catch (error) { setNotice(`执行选中项失败：${String(error)}`); }
+    finally { batchLock.current = false; setBatchRunning(false); }
   };
 
   const handleDeleteClick = (plan: PlanRecord) => {
@@ -121,6 +137,11 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
   const failedCount = plans.filter((p) => p.status === 'failed').length;
   const queuedCount = plans.filter(p => p.status === 'queued').length;
   const pages = Math.max(1, Math.ceil(filteredPlans.length / 50)), visiblePage = Math.min(page, pages);
+  const visiblePlans = filteredPlans.slice((visiblePage - 1) * 50, visiblePage * 50);
+  useEffect(() => {
+    const eligible = new Set(visiblePlans.filter(plan => ['ready', 'failed'].includes(plan.status)).map(plan => plan.id));
+    setSelectedIds(ids => ids.filter(id => eligible.has(id)));
+  }, [plans, filter, page, visiblePage]);
 
   return (
     <div className="flex-1 h-full overflow-y-auto px-8 py-6">
@@ -138,7 +159,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
               </span>
             </h1>
             <p className="text-xs text-zinc-400 mt-1">
-              集中管理所有持久化保存的剪辑方案，后台异步队列无缝调度，已完成方案支持一键定位产物
+              集中管理裁剪与整片压缩方案，勾选后提交后台队列，已完成方案支持定位产物
             </p>
           </div>
 
@@ -237,23 +258,33 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
           </div>
         </div>
 
+        <div className="flex gap-4 items-center text-xs text-zinc-300">
+          <label className="flex items-center gap-2"><input type="checkbox" disabled={batchRunning}
+            checked={visiblePlans.some(plan => ['ready', 'failed'].includes(plan.status)) && visiblePlans.filter(plan => ['ready', 'failed'].includes(plan.status)).every(plan => selectedIds.includes(plan.id))}
+            onChange={e => setSelectedIds(e.target.checked ? visiblePlans.filter(plan => ['ready', 'failed'].includes(plan.status)).map(plan => plan.id) : [])} />选择本页可执行项</label>
+          <button disabled={batchRunning || !selectedIds.length} onClick={handleSelectedExecute} className="px-3 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white">执行选中项（{selectedIds.length}）</button>
+        </div>
         {/* 方案卡片列表 */}
         {filteredPlans.length === 0 ? (
           <div className="border border-white/10 rounded-3xl p-16 flex flex-col items-center justify-center bg-[#161b22]/40 backdrop-blur-md">
             <FolderKanban className="w-12 h-12 text-zinc-600 mb-3" />
             <h3 className="text-sm font-semibold text-zinc-300">当前分类暂无方案记录</h3>
             <p className="text-xs text-zinc-400 mt-1 max-w-[360px] text-center">
-              在工作台载入视频并打标后，点击【存为方案】或【立即执行剪辑】，方案将自动保存至本中心并在后台队列异步调度。
+              在裁剪工作台保存剪辑方案，或在批量压缩页选择视频并保存。随后可在这里勾选执行。
             </p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {filteredPlans.slice((visiblePage - 1) * 50, visiblePage * 50).map((plan) => {
+            {visiblePlans.map((plan) => {
               const isCompleted = plan.status === 'completed';
               const isProcessing = plan.status === 'processing';
               const isQueued = plan.status === 'queued';
               const isFailed = plan.status === 'failed';
               const isRunning = executingId === plan.id;
+              const progress = !isCompleted && engine.progress?.planId === plan.id ? engine.progress : null;
+              const progressText = progress
+                ? `${EXECUTION_STAGE_LABELS[progress.stage]}${progress.cpuRetry ? '（CPU 重试）' : ''}${progress.total && progress.total > 1 ? `（${progress.current}/${progress.total}）` : ''}`
+                : '准备中';
 
               return (
                 <div
@@ -270,8 +301,10 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                 >
                   {/* 头部标题与状态徽章 */}
                   <div>
-                    <div className="flex items-start justify-between gap-3 mb-2">
+                    <div className="flex flex-wrap items-start justify-between gap-3 mb-2">
                       <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <input type="checkbox" aria-label={`选择方案 ${plan.title}`} disabled={batchRunning || !['ready', 'failed'].includes(plan.status)} checked={selectedIds.includes(plan.id)}
+                          onChange={e => setSelectedIds(ids => e.target.checked ? [...new Set([...ids, plan.id])] : ids.filter(id => id !== plan.id))} />
                         <FileVideo className="w-4 h-4 text-blue-400 shrink-0" />
                         <h3 className="text-sm font-bold text-white truncate" title={plan.title}>
                           {plan.title}
@@ -279,6 +312,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                       </div>
 
                       <div className="flex items-center gap-1.5 shrink-0">
+                        {plan.compressionOnly && <span className="text-[10px] text-purple-300">整片压缩</span>}
                         {/* 导出模式属性徽章 */}
                         {plan.compress?.enabled ? (
                           <span className="text-[11px] bg-purple-500/15 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full flex items-center gap-1 font-mono font-medium" title={plan.compress.preset === 'custom' ? '自定义 CRF 压缩' : COMPRESS_PRESETS[plan.compress.preset]?.summary}>
@@ -318,14 +352,14 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                         {isCompleted ? (
                           <span className="text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-bold">
                             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                            <span>已完成</span>
+                            <span>已完成 · 100%</span>
                           </span>
                         ) : isProcessing ? (
                           <span className="text-xs bg-blue-500/20 text-blue-300 border border-blue-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-bold animate-pulse">
                             <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
-                            <span>处理中...</span>
+                            <span>{progress?.stage === 'saving' ? '等待保存' : progress?.stage === 'failed' ? '处理失败' : '处理中'}</span>
                           </span>
-                        ) : isQueued ? <span className="text-xs text-blue-300">排队中</span> : isFailed ? (
+                        ) : isQueued ? <span className="text-xs text-blue-300">等待处理</span> : isFailed ? (
                           <span className="text-xs bg-rose-500/20 text-rose-300 border border-rose-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-medium">
                             <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
                             <span>失败</span>
@@ -339,6 +373,20 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                       </div>
                     </div>
 
+                    {(isProcessing || progress) && (
+                      <div className="my-3 space-y-1.5" data-execution-progress={plan.id}>
+                        <div className="flex justify-between gap-2 text-xs text-blue-200">
+                          <span>{progressText}</span>
+                          {progress?.percent != null && <span className="font-mono tabular-nums">{progress.percent}%</span>}
+                        </div>
+                        <div role="progressbar" aria-label={`${plan.title}导出进度`} aria-valuemin={0} aria-valuemax={100}
+                          aria-valuenow={progress?.percent ?? undefined} aria-valuetext={progressText}
+                          className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                          <div className={`h-full rounded-full ${progress?.stage === 'failed' ? 'bg-rose-400' : 'bg-blue-400'} ${progress?.percent == null ? 'w-1/3 animate-pulse' : 'transition-[width] duration-150'}`}
+                            style={progress?.percent != null ? { width: `${progress.percent}%` } : undefined} />
+                        </div>
+                      </div>
+                    )}
                     {/* 失败原因提示 */}
                     {isFailed && plan.error && (
                       <div className="mb-3 p-2 rounded-xl bg-rose-950/30 border border-rose-500/20 text-[11px] font-sans text-rose-300 flex items-center gap-1.5">
@@ -407,7 +455,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                       <button
                         onClick={() => onLoadPlanIntoCutter(plan)}
                         className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white flex items-center gap-1 transition-all border border-white/10 focus-visible:ring-2 focus-visible:ring-blue-500 active:scale-95"
-                        title="将方案回载至工作台进行二次编辑"
+                        title={plan.compressionOnly ? '编辑整片压缩参数' : '将方案回载至工作台进行二次编辑'}
                       >
                         <Edit3 className="w-3.5 h-3.5" />
                         <span>编辑</span>

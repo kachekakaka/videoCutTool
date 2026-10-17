@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import { AppConfig, MediaMetadata, PlanRecord, CompressConfig, PreviewSample, PlanChange, PlanListResult, EngineState, ExecutionStatus, PreviewProgress } from './shared/types';
+import { AppConfig, MediaMetadata, PlanRecord, CompressConfig, PreviewSample, PlanChange, PlanListResult, EngineState, ExecutionStatus, PreviewProgress, CompressionFile, CompressionSaveRequest, SelectedVideo } from './shared/types';
 
 export interface ElectronAPI {
   getPathForFile: (file: File) => Promise<string>;
@@ -13,6 +13,9 @@ export interface ElectronAPI {
 
   // 媒体探测与对话框
   openVideoDialog: () => Promise<string | null>;
+  openVideosDialog: () => Promise<SelectedVideo[]>;
+  inspectCompressionFile: (file: string) => Promise<CompressionFile>;
+  saveCompressionPlan: (request: CompressionSaveRequest) => Promise<PlanRecord>;
   selectDirectory: (defaultPath?: string) => Promise<string | null>;
   probeMedia: (filePath: string) => Promise<MediaMetadata>;
   probeBasic: (filePath: string) => Promise<MediaMetadata>;
@@ -51,6 +54,7 @@ export interface ElectronAPI {
   deletePlan: (id: string) => Promise<boolean>;
   executePlan: (id: string) => Promise<{ success: boolean; message: string; queued?: boolean; active?: boolean }>;
   batchExecutePlans: () => Promise<{ total: number; queued: number; errors?: string[] }>;
+  executeSelectedPlans: (ids: string[]) => Promise<{ total: number; queued: number; errors: string[] }>;
   showItemInFolder: (fullPath: string) => Promise<void>;
 }
 

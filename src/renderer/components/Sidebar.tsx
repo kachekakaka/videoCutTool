@@ -1,7 +1,7 @@
 import React from 'react';
-import { Scissors, FolderKanban, Settings as SettingsIcon } from 'lucide-react';
+import { Scissors, FolderKanban, Package, Settings as SettingsIcon } from 'lucide-react';
 
-export type TabId = 'cutter' | 'plans' | 'settings';
+export type TabId = 'cutter' | 'compression' | 'plans' | 'settings';
 
 interface SidebarProps {
   activeTab: TabId;
@@ -33,6 +33,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, plansC
             <span className="absolute -left-[13px] top-2.5 bottom-2.5 w-[3px] rounded-r bg-[#58a6ff] shadow-[0_0_8px_#58a6ff]" />
           )}
           <Scissors className="w-5 h-5" />
+        </button>
+
+        <button onClick={() => onTabChange('compression')} title="批量压缩"
+          className={`w-11 h-11 rounded-xl flex items-center justify-center border transition-all ${activeTab === 'compression' ? 'text-purple-200 bg-purple-500/20 border-purple-500/30' : 'text-zinc-400 border-transparent hover:bg-white/5'}`}>
+          <Package className="w-5 h-5" />
         </button>
 
         <button

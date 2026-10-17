@@ -299,10 +299,23 @@
       gap: 12px;
     }
 
+    .playback-speed-control {
+      display: flex; align-items: center; flex-shrink: 0; padding: 2px;
+      background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px;
+    }
+    .playback-speed-control button {
+      display: flex; align-items: center; justify-content: center; width: 20px; height: 20px;
+      padding: 4px; border: 0; border-radius: 4px; background: transparent; color: #d4d4d8; cursor: pointer;
+    }
+    .playback-speed-control button:hover { background: rgba(255, 255, 255, 0.1); }
+    .playback-speed-control button:disabled { opacity: 0.2; cursor: not-allowed; }
+    .playback-speed-control output { width: 32px; text-align: center; font: bold 10px monospace; color: white; }
+    .playback-speed-control button:last-child { margin-left: 2px; border-left: 1px solid rgba(255, 255, 255, 0.1); }
+
     .timeline-container {
       position: relative;
       width: 100%;
-      height: 72px;
+      height: 60px;
       background: rgba(15, 18, 24, 0.95);
       border-radius: 10px;
       border: 1px solid rgba(255, 255, 255, 0.08);
@@ -319,6 +332,8 @@
     /* 播放控制栏：3 段式弹性布局，保证中间播放器绝对居中！ */
     .player-controls {
       display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
       align-items: center;
       padding: 0 4px;
       width: 100%;
@@ -1321,6 +1336,7 @@
           <path d="M18 22V8a2 2 0 0 0-2-2H2"></path>
         </svg>
       </div>
+      <div class="nav-item" id="tab-btn-batch" onclick="switchTab('batch')" title="批量压缩">📦</div>
     </div>
 
     <div class="sidebar-footer">
@@ -1513,6 +1529,12 @@
               <span id="play-btn-text">播放</span>
             </button>
             <button class="btn" onclick="stepFrame(1)" title="定位下一展示帧 (快捷键: →)">逐帧 ▶</button>
+            <div class="playback-speed-control" role="group" aria-label="播放速度">
+              <button id="playback-speed-down" aria-label="降低播放速度" title="降低播放速度（每次 0.25×，最低 0.5×）" onclick="setPlaybackRate(state.playbackRate - 0.25)">−</button>
+              <output id="playback-speed-value" aria-label="当前播放倍速">1×</output>
+              <button id="playback-speed-up" aria-label="提高播放速度" title="提高播放速度（每次 0.25×，最高 6×）" onclick="setPlaybackRate(state.playbackRate + 0.25)">+</button>
+              <button id="playback-speed-reset" aria-label="重置播放速度" title="重置播放速度为 1×" onclick="setPlaybackRate(1)" disabled>↶</button>
+            </div>
           </div>
 
           <div class="player-controls-right">
@@ -1541,6 +1563,25 @@
       </section>
     </div>
 
+    <div class="tab-page" id="tab-page-batch">
+      <div style="display:flex;justify-content:space-between;align-items:center"><div><h2 id="batch-heading">批量压缩</h2><p style="color:var(--text-dim);font-size:12px">多个视频共用参数，每个视频保存为独立方案。此原型仅演示交互。</p></div><button class="btn" onclick="switchTab('plans')">前往方案中心</button></div>
+      <p id="batch-notice" role="status" style="color:#bc8cff"></p>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:24px">
+        <section style="padding:20px;border:1px solid var(--border);border-radius:16px" ondragover="event.preventDefault()" ondrop="event.preventDefault(); if(!batchEdit) addBatchFiles(event.dataTransfer.files)">
+          <div id="batch-add-actions" style="display:flex;gap:10px;margin-bottom:16px"><button class="btn" onclick="document.getElementById('batch-input').click()">添加视频</button><button class="btn" onclick="batchRows=[];renderBatch()">清空</button><input id="batch-input" type="file" accept="video/*,.mkv,.ts" multiple hidden onchange="addBatchFiles(this.files);this.value=''" /></div>
+          <div id="batch-file-list"></div><button id="batch-return" class="btn" style="display:none" onclick="batchEdit=null;renderBatch()">返回批量创建</button>
+        </section>
+        <section style="padding:20px;background:#161b22;border:1px solid var(--border);border-radius:16px;display:flex;flex-direction:column;gap:16px">
+          <strong>压缩参数</strong><select id="batch-preset" class="form-input" onchange="batchSettings().preset=this.value;batchSettings().crf=({high_quality:18,balanced:22,high_compression:24,scale_1080p:18})[this.value];batchSettings().height=this.value==='scale_1080p'?1080:0;renderBatch()"><option value="high_quality">高画质</option><option value="balanced">均衡</option><option value="high_compression">高压缩</option><option value="scale_1080p">降至 1080p</option><option value="custom">自定义</option></select>
+          <label>画质参数 <input id="batch-crf" type="range" min="18" max="35" oninput="batchSettings().crf=Number(this.value);batchSettings().preset='custom';document.getElementById('batch-preset').value='custom'" /></label>
+          <select id="batch-height" class="form-input" onchange="batchSettings().height=Number(this.value)"><option value="0">原分辨率</option><option value="1080">限高 1080p</option><option value="720">限高 720p</option></select>
+          <label><input id="batch-gpu" type="checkbox" onchange="batchSettings().gpu=this.checked" /> 优先启用 GPU 硬件加速</label>
+          <label>输出目录<input id="batch-directory" class="form-input" placeholder="留空使用系统规则" oninput="batchSettings().directory=this.value" /></label>
+          <button class="btn btn-primary" onclick="saveBatchPlans()">保存方案</button><p style="color:var(--text-dim);font-size:12px">保留原始音轨。保存后到方案中心执行，不立即压缩。</p>
+        </section>
+      </div>
+    </div>
+
     <!-- Tab 2: 方案管理 (Plan Manager) -->
     <div class="tab-page" id="tab-page-plans">
       <div class="plans-container">
@@ -1552,6 +1593,7 @@
             <button class="filter-btn" onclick="filterPlans('completed', this)">✔ 已完成剪辑 (<span id="count-completed">1</span>)</button>
           </div>
           <div style="display: flex; gap: 10px;">
+            <button class="btn" onclick="executeSelectedPrototype()">执行选中项</button>
             <button class="btn" onclick="switchTab('cutter')">+ 新建打标方案</button>
             <button class="btn btn-primary" onclick="batchExecutePlans()">🚀 批量执行待办方案</button>
           </div>
@@ -1944,6 +1986,7 @@
       durationMs: 150000,
       currentMs: 0,
       isPlaying: false,
+      playbackRate: 1,
       isRealVideo: false,
       currentVideoPath: 'D:/Movies/sample_movie.mp4',
       currentFilter: 'all',
@@ -2018,7 +2061,8 @@
         plans: '方案管理中心 (Plan Manager)',
         settings: '系统配置与输出偏好',
         compress: '智能降码预设与画质双模对比实验室',
-        spatial: '画面空间编辑与去水印演进实验室'
+        spatial: '画面空间编辑与去水印演进实验室',
+        batch: '批量压缩'
       };
       document.getElementById('page-heading').innerText = headings[tabId] || '视频裁剪工作台';
 
@@ -2027,6 +2071,7 @@
       document.getElementById('dock-footer').style.display = isCutter ? 'flex' : 'none';
 
       if (tabId === 'plans') renderPlansList();
+      if (tabId === 'batch') renderBatch();
       if (tabId === 'compress') initCompressLab();
       if (tabId === 'spatial') initSpatialLab();
     }
@@ -2187,6 +2232,59 @@
     // ==========================================
     // 方案管理中心
     // ==========================================
+    let batchRows = [], batchEdit = null;
+    const batchConfig = { preset: 'balanced', crf: 22, height: 0, gpu: true, directory: '' };
+    const selectedPrototypePlans = new Set();
+    const safeText = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    function batchSettings() { return batchEdit ? batchEdit.compress : batchConfig; }
+    function addBatchFiles(files) {
+      for (const file of files) {
+        const source = file.path || file.name;
+        if (batchRows.some(row => row.sourcePath === source)) continue;
+        batchRows.push({ id: `plan_${crypto.randomUUID()}`, title: file.name.replace(/\.[^/.]+$/, ''), sourcePath: source, error: /\.(mp4|mkv|mov|avi|flv|ts|webm)$/i.test(file.name) ? '' : '无法识别的视频文件' });
+      }
+      renderBatch();
+    }
+    function renderBatch() {
+      const settings = batchSettings();
+      document.getElementById('batch-heading').textContent = batchEdit ? '编辑整片压缩方案' : '批量压缩';
+      document.getElementById('batch-add-actions').style.display = batchEdit ? 'none' : 'flex';
+      document.getElementById('batch-return').style.display = batchEdit ? 'block' : 'none';
+      document.getElementById('batch-preset').value = settings.preset;
+      document.getElementById('batch-crf').value = settings.crf;
+      document.getElementById('batch-height').value = settings.height;
+      document.getElementById('batch-gpu').checked = settings.gpu;
+      document.getElementById('batch-directory').value = settings.directory;
+      const list = document.getElementById('batch-file-list'); list.innerHTML = '';
+      (batchEdit ? [batchEdit] : batchRows).forEach(row => {
+        const item = document.createElement('div'); item.style.cssText = 'padding:12px;border-bottom:1px solid #ffffff18;display:flex;gap:12px;align-items:center';
+        const content = document.createElement('div'); content.style.cssText = 'flex:1;min-width:0';
+        const input = document.createElement('input'); input.className = 'form-input'; input.value = row.title; input.oninput = () => row.title = input.value;
+        const detail = document.createElement('p'); detail.style.cssText = 'font-size:12px;overflow-wrap:anywhere;color:#8b949e'; detail.textContent = row.sourcePath + (row.error ? ' · ' + row.error : ' · 可保存');
+        content.append(input, detail); item.append(content);
+        if (!batchEdit) { const remove = document.createElement('button'); remove.className = 'btn'; remove.textContent = '移除'; remove.onclick = () => { batchRows = batchRows.filter(entry => entry !== row); renderBatch(); }; item.append(remove); }
+        list.append(item);
+      });
+      if (!batchEdit && !batchRows.length) list.textContent = '拖入多个视频，或点击“添加视频”';
+    }
+    function saveBatchPlans() {
+      let saved = 0;
+      for (const row of batchEdit ? [batchEdit] : [...batchRows]) {
+        if (row.error || !row.title.trim()) continue;
+        const existing = state.savedPlans.find(plan => plan.id === row.id);
+        if (existing && ['queued','processing'].includes(existing.status)) continue;
+        const plan = { ...row, title: row.title.trim(), compressionOnly: true, compress: {...batchSettings()}, status: 'ready', outputPath: (batchSettings().directory || '系统输出目录') + '/' + row.title + '.mp4', cuts: [], decisions: {seg_0:'keep'}, cutsCount:0, totalDurationMs:60000, keptDurationMs:60000, updatedAt:'刚刚', completedAt:null };
+        if (existing) Object.assign(existing, plan); else state.savedPlans.unshift(plan);
+        if (!batchEdit) batchRows = batchRows.filter(item => item !== row);
+        saved++;
+      }
+      document.getElementById('batch-notice').textContent = `已保存 ${saved} 条，尚未执行；无效项保留。`;
+      renderBatch(); renderPlansList();
+    }
+    function executeSelectedPrototype() {
+      for (const id of selectedPrototypePlans) { const plan = state.savedPlans.find(item => item.id === id); if (plan && ['ready','failed'].includes(plan.status)) executePlan(id); }
+      selectedPrototypePlans.clear(); renderPlansList();
+    }
     function renderPlansList() {
       const container = document.getElementById('plans-list');
       container.innerHTML = '';
@@ -2219,16 +2317,17 @@
         card.innerHTML = `
           <div class="plan-info">
             <div class="plan-title">
-              <span>${plan.title}</span>
+              <input type="checkbox" aria-label="选择方案" ${selectedPrototypePlans.has(plan.id) ? 'checked' : ''} ${busy || isCompleted ? 'disabled' : ''} onchange="this.checked ? selectedPrototypePlans.add('${plan.id}') : selectedPrototypePlans.delete('${plan.id}')" />
+              <span>${safeText(plan.title)}</span>${plan.compressionOnly ? '<span style="color:#bc8cff;font-size:11px">整片压缩</span>' : ''}
               <span class="status-tag ${isCompleted ? 'completed' : 'ready'}">
-                ${isCompleted ? '✔ 已完成剪辑' : plan.status === 'queued' ? '排队中' : plan.status === 'processing' ? '处理中' : '⏳ 待执行'}
+                ${isCompleted ? '✔ 已完成 · 100%' : plan.status === 'queued' ? '等待处理' : plan.status === 'processing' ? '处理中' : '⏳ 待执行'}
               </span>
               ${plan.spatialCrop ? `<span class="spatial-badge" title="包含画幅裁切配置">📐 ${plan.spatialCrop}</span>` : ''}
               ${plan.masksCount ? `<span class="spatial-badge" title="包含去水印遮罩">💧 ${plan.masksCount}处去水印</span>` : ''}
             </div>
-            <div class="plan-path-sub">来源: ${plan.sourcePath}</div>
+            <div class="plan-path-sub">来源: ${safeText(plan.sourcePath)}</div>
             <div class="plan-path-sub" style="color: ${isCompleted ? '#3fb950' : '#58a6ff'};">
-              产物: ${plan.outputPath} ${isCompleted ? '(已生成)' : ''}
+              产物: ${safeText(plan.outputPath)} ${isCompleted ? '(已生成)' : ''}
             </div>
             <div class="plan-meta-row">
               <span>切点: ${plan.cutsCount} 个</span>
@@ -2239,6 +2338,10 @@
             </div>
           </div>
 
+          ${plan.status === 'processing' ? `<div style="margin:12px 0;color:#58a6ff;font-size:12px;min-width:180px;">
+            <div>${plan.progressStage || '准备中'}${plan.progressPercent == null ? '' : ` · ${plan.progressPercent}%`}（示意）</div>
+            <progress aria-label="导出进度" max="100" ${plan.progressPercent == null ? '' : `value="${plan.progressPercent}"`} style="width:100%;accent-color:#58a6ff;"></progress>
+          </div>` : ''}
           <div class="plan-actions">
             ${isCompleted ? `
               <button class="btn" style="color: #3fb950; border-color: rgba(35, 134, 54, 0.35);" onclick="executePlan('${plan.id}')" title="再次执行重新导出">
@@ -2263,6 +2366,7 @@
 
     function filterPlans(type, btn) {
       state.currentFilter = type;
+      selectedPrototypePlans.clear();
       document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       renderPlansList();
@@ -2297,6 +2401,7 @@
     function loadPlanToCutter(planId) {
       const plan = state.savedPlans.find(p => p.id === planId);
       if (!plan) return;
+      if (plan.compressionOnly) { batchEdit = structuredClone(plan); switchTab('batch'); return; }
 
       state.cuts = [...plan.cuts];
       state.decisions = { ...plan.decisions };
@@ -2319,15 +2424,32 @@
       }
     }
 
+    const prototypeQueue = [];
+    let prototypeRunning = false;
     function executePlan(planId) {
       const plan = state.savedPlans.find(p => p.id === planId);
       if (!plan || ['queued', 'processing'].includes(plan.status)) return;
       plan.status = 'queued';
+      selectedPrototypePlans.delete(planId);
+      prototypeQueue.push(planId);
       renderPlansList();
+      drainPrototypeQueue();
+    }
+    function drainPrototypeQueue() {
+      if (prototypeRunning) return;
+      let plan;
+      while (prototypeQueue.length && !plan) { const id = prototypeQueue.shift(); plan = state.savedPlans.find(item => item.id === id); }
+      if (!plan) return;
+      prototypeRunning = true;
       setTimeout(() => {
-        if (!state.savedPlans.includes(plan)) return;
-        plan.status = 'processing'; renderPlansList();
-        setTimeout(() => { plan.status = 'completed'; plan.completedAt = new Date().toLocaleTimeString(); renderPlansList(); }, 1500);
+        if (!state.savedPlans.includes(plan)) { prototypeRunning = false; drainPrototypeQueue(); return; }
+        plan.status = 'processing'; plan.progressPercent = null; plan.progressStage = '准备中'; renderPlansList();
+        // 原型仅演示阶段变化，正式应用读取实际 FFmpeg 进度。
+        const stages = plan.compressionOnly ? [['转码中', 30], ['转码中', 60], ['转码中', 85], ['转码中', 94], ['校验产物', 95], ['发布中', 97], ['等待保存结果', 99]] : [['裁剪中（1/2）', 20], ['裁剪中（2/2）', 35], ['合并中', 45], ['转码中', 65], ['校验产物', 95], ['发布中', 97], ['等待保存结果', 99]];
+        stages.forEach(([stage, percent], index) => setTimeout(() => {
+          plan.progressStage = stage; plan.progressPercent = percent; renderPlansList();
+        }, (index + 1) * 600));
+        setTimeout(() => { plan.status = 'completed'; plan.completedAt = new Date().toLocaleTimeString(); renderPlansList(); prototypeRunning = false; drainPrototypeQueue(); }, 5200);
       }, 1500);
     }
 
@@ -2374,7 +2496,7 @@
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
       ctx.lineWidth = 1;
       for (let x = 0; x < canvas.width; x += 40) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(canvas.width, y); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
       }
       for (let y = 0; y < canvas.height; y += 40) {
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
@@ -2476,6 +2598,18 @@
       renderVirtualVideo();
     }
 
+    function setPlaybackRate(rate) {
+      rate = Math.max(0.5, Math.min(6, rate));
+      state.playbackRate = rate;
+      document.getElementById('playback-speed-value').textContent = `${rate}×`;
+      document.getElementById('playback-speed-down').disabled = rate <= 0.5;
+      document.getElementById('playback-speed-up').disabled = rate >= 6;
+      document.getElementById('playback-speed-reset').disabled = rate === 1;
+      const video = document.getElementById('real-video');
+      video.defaultPlaybackRate = rate; video.playbackRate = rate; video.preservesPitch = true;
+    }
+    document.getElementById('real-video').addEventListener('loadedmetadata', () => setPlaybackRate(state.playbackRate));
+
     function togglePlay() {
       state.isPlaying = !state.isPlaying;
       document.getElementById('play-btn-text').innerText = state.isPlaying ? '暂停' : '播放';
@@ -2494,7 +2628,7 @@
       const dt = now - lastAnimTime;
       lastAnimTime = now;
       if (state.isPlaying && !state.isRealVideo) {
-        state.currentMs += dt;
+        state.currentMs += dt * state.playbackRate;
         if (state.currentMs >= state.durationMs) {
           state.currentMs = 0;
           togglePlay();

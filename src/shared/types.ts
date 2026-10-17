@@ -146,6 +146,7 @@ export interface MediaRetentionPlan {
 export type ExecutionStatus = 'ready' | 'queued' | 'processing' | 'completed' | 'failed';
 
 export interface PlanRecord {
+  compressionOnly?: true;
   id: string;
   title: string;
   sourcePath: string;
@@ -168,6 +169,26 @@ export interface PlanRecord {
   resolvedEncoder?: 'cpu' | 'nvenc' | 'qsv';
 }
 
+export type CompressionOutputPolicy = Pick<AppConfig, 'outputDirectoryRule' | 'subFolderName' | 'customOutputDirectory'>;
+export interface CompressionFile {
+  sourcePath: string;
+  pathKey: string;
+  fileName: string;
+  durationMs: number;
+  width: number;
+  height: number;
+}
+export interface CompressionSaveRequest {
+  id: string;
+  sourcePath: string;
+  title: string;
+  compress: CompressConfig;
+  outputPolicy: CompressionOutputPolicy;
+  stripOriginalCover: boolean;
+  expectedUpdatedAt?: string;
+}
+export interface SelectedVideo { path: string; error?: string }
+
 export interface CutResult {
   success: boolean;
   outputPath: string;
@@ -178,7 +199,20 @@ export interface CutResult {
 }
 
 export interface PlanChange { record?: PlanRecord; deletedId?: string }
-export interface EngineState { activePlanId: string | null; queuedIds: string[]; storageError: string | null }
+export type ExecutionStage = 'preparing' | 'normalizing' | 'cutting' | 'merging' | 'encoding' | 'verifying' | 'publishing' | 'saving' | 'failed';
+export interface ExecutionProgress {
+  planId: string;
+  stage: ExecutionStage;
+  percent: number | null;
+  current?: number;
+  total?: number;
+  cpuRetry?: boolean;
+}
+export const EXECUTION_STAGE_LABELS: Record<ExecutionStage, string> = {
+  preparing: '准备中', normalizing: '整理时间戳', cutting: '裁剪中', merging: '合并中', encoding: '转码中',
+  verifying: '校验产物', publishing: '发布中', saving: '等待保存结果', failed: '处理失败，等待保存结果',
+};
+export interface EngineState { activePlanId: string | null; queuedIds: string[]; storageError: string | null; progress: ExecutionProgress | null }
 export interface PlanListResult { records: PlanRecord[]; issues: string[] }
 export interface PreviewProgress { requestId: string; percent: number; message: string }
 

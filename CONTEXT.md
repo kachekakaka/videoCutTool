@@ -88,7 +88,7 @@ The central repository and UI module for creating, viewing, updating, deleting (
 _Avoid_: Task queue, history list, plan store
 
 **Plan Record**:
-A persisted retention plan document recording the source media path, output destination, segment decisions, and last execution state.
+针对单个源视频持久化保存的方案记录，包含输出位置、保留决策、处理参数与最近执行状态。批量压缩创建的记录限定为整片压缩，独立编辑和执行，不与同次创建的其他记录保持参数联动。
 _Avoid_: Task, job record, cut file
 
 **Data Directory**:
@@ -111,6 +111,10 @@ _Avoid_: Green package, zip distribution, installer package, single-file SFX
 The persistent lifecycle state of a plan record: `ready`（未提交）、`queued`（已接受并等待执行）、`processing`（后台处理中）、`completed`（导出完成并记录产物路径）与 `failed`（执行失败或上次执行中断，可重试）。状态保存成功后才确认接受任务和广播变更；同一 ID 在排队、执行及结果保存期间只接受一次。处理中不能删除或覆盖保存；排队记录删除时同步移出队列。恢复快照和删除标记属于 Data Directory 中的长期用户恢复数据。
 _Avoid_: Run state, task progress, finish flag
 
+**Execution Progress**:
+方案单次执行期间的当前处理阶段与整项任务完成比例，涵盖裁剪、合并、转码及交付收尾；它是临时运行信息，与持久化的 Execution Status、兼容播放预览进度及剩余时间估算不同。只有产物发布和完成状态保存均成功时才达到 100%，失败或重试不能被解释为任务完成。
+_Avoid_: Preview progress, segment progress, elapsed-time ratio
+
 **Output Directory Policy**:
 The automated rule determining where exported videos and plan records are written (e.g., source directory, source subfolder, or fixed dedicated directory).
 _Avoid_: Export path rule, save target
@@ -126,6 +130,10 @@ _Avoid_: Overwrite prevention, deduplication, auto-rename
 **Compression Preset**:
 The curated encoding profile (`high_quality`, `balanced`, `high_compression`, `scale_1080p`) governing rate control (CRF), resolution limits, and encoder selection while strictly preserving original audio via stream copy.
 _Avoid_: Transcode profile, export preset, quality mode
+
+**Batch Compression（批量压缩）**:
+对多个源视频整片应用同一套压缩参数，一次保存为每个源视频各自独立的 Plan Record，再由 Plan Manager 执行；创建及单条编辑不包含播放预览、画质对比、分段裁剪或画面处理。批量只描述方案的创建方式，不代表将多个视频合并为一个产物，也不新增包含多个视频的方案记录。
+_Avoid_: 批量剪辑, 合并压缩, 多文件方案
 
 **Visual Compression Preview**:
 The rapid on-demand A/B verification interface extracting representative keyframe samples from kept media intervals, presenting interactive split-slider and side-by-side comparisons between original and encoded frames prior to final rendering.

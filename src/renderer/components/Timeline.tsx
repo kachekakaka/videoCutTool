@@ -13,6 +13,8 @@ import {
   Rewind,
   FastForward,
   Scissors,
+  Minus,
+  Plus,
 } from 'lucide-react';
 
 interface CutDragState {
@@ -55,6 +57,8 @@ interface TimelineProps {
   shortcutsEnabled?: boolean;
   isActive?: boolean;
   playbackEnabled?: boolean;
+  playbackRate?: number;
+  onPlaybackRateChange?: (rate: number) => void;
 }
 
 export const Timeline: React.FC<TimelineProps> = ({
@@ -78,6 +82,8 @@ export const Timeline: React.FC<TimelineProps> = ({
   shortcutsEnabled = true,
   isActive = true,
   playbackEnabled = true,
+  playbackRate = 1,
+  onPlaybackRateChange,
 }) => {
   const timelineRootRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -772,7 +778,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   return (
     <div ref={timelineRootRef} className="w-full flex flex-col gap-1 px-3 py-1.5 rounded-xl bg-[#161b22]/90 border border-white/10 shadow-xl backdrop-blur-md">
       {/* ── 顶部三段式控制条 (左侧时间与图例 + 中间绝对居中播放 + 右侧缩放与切点) ── */}
-      <div className="relative flex items-center justify-between gap-2 px-1 min-h-[28px]">
+      <div className="relative flex flex-wrap items-center justify-between gap-2 px-1 min-h-[28px]">
         {/* 左侧：时间码与比例切换 + 紧凑内联图例 */}
         <div className="flex items-center gap-2 shrink-0 z-0">
           <div className="flex items-center gap-1.5 font-mono text-xs text-zinc-300">
@@ -828,8 +834,8 @@ export const Timeline: React.FC<TimelineProps> = ({
           </div>
         </div>
 
-        {/* 中间：播放核心操作群 (数学绝对居中聚焦视线) */}
-        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-1.5 z-10 pointer-events-auto">
+        {/* 播放控制参与排版，窄窗口换行，避免新增倍速控件覆盖两侧按钮。 */}
+        <div className="flex items-center justify-center gap-1.5 flex-1 shrink-0 z-10 pointer-events-auto">
           {playbackEnabled && onStepSeconds && (
             <button
               onClick={() => onStepSeconds(-1)}
@@ -878,6 +884,34 @@ export const Timeline: React.FC<TimelineProps> = ({
             >
               <FastForward className="w-3.5 h-3.5" />
             </button>
+          )}
+          {playbackEnabled && onPlaybackRateChange && (
+            <div role="group" aria-label="播放速度" className="ml-1 flex shrink-0 items-center bg-black/50 border border-white/10 rounded-lg p-0.5 text-[10px]">
+              <button
+                onClick={() => onPlaybackRateChange(Math.max(0.5, playbackRate - 0.25))}
+                disabled={playbackRate <= 0.5}
+                className="p-1 rounded text-zinc-300 hover:bg-white/10 hover:text-white transition-all active:scale-95 disabled:opacity-20 disabled:cursor-not-allowed"
+                aria-label="降低播放速度" title="降低播放速度（每次 0.25×，最低 0.5×）"
+              >
+                <Minus className="w-3 h-3" />
+              </button>
+              <span aria-label="当前播放倍速" className="w-8 text-center font-mono text-white font-bold select-none">{playbackRate}×</span>
+              <button
+                onClick={() => onPlaybackRateChange(Math.min(6, playbackRate + 0.25))}
+                disabled={playbackRate >= 6}
+                className="p-1 rounded text-zinc-300 hover:bg-white/10 hover:text-white transition-all active:scale-95 disabled:opacity-20 disabled:cursor-not-allowed"
+                aria-label="提高播放速度" title="提高播放速度（每次 0.25×，最高 6×）"
+              >
+                <Plus className="w-3 h-3" />
+              </button>
+              <button
+                onClick={() => onPlaybackRateChange(1)} disabled={playbackRate === 1}
+                className="p-1 rounded transition-all ml-0.5 border-l border-white/10 text-zinc-300 hover:bg-white/10 hover:text-white active:scale-95 disabled:opacity-20 disabled:cursor-not-allowed"
+                aria-label="重置播放速度" title="重置播放速度为 1×"
+              >
+                <RotateCcw className="w-3 h-3" />
+              </button>
+            </div>
           )}
         </div>
 
@@ -943,7 +977,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       {/* ── Canvas 时间轴主轨道与悬浮小窗外层包装 ── */}
       <div ref={trackWrapperRef} className="relative w-full">
         <div
-          className={`relative w-full h-[46px] rounded-xl overflow-hidden border border-white/10 select-none transition-colors ${
+          className={`relative w-full h-[60px] rounded-xl overflow-hidden border border-white/10 select-none transition-colors ${
             cutDragState.isDragging ? 'cursor-grabbing' : 'cursor-crosshair'
           }`}
         >

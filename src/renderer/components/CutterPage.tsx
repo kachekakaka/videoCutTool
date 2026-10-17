@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { MediaMetadata, RetentionDecision, PlanRecord, CompressConfig, SpatialCropBox, SpatialMaskItem } from '../../shared/types';
 import { COMPRESS_PRESETS } from '../../shared/compressPresets';
+import { CompressionSettings } from './CompressionSettings';
 import { VideoCompareView, PreviewSample } from './VideoCompareView';
 import { VideoPlayer, VideoPlayerRef, formatTimecode } from './VideoPlayer';
 import { Timeline } from './Timeline';
@@ -26,10 +27,7 @@ import {
   Zap,
   Settings,
   Sparkles,
-  Sliders,
   Eye,
-  ChevronDown,
-  ChevronUp,
 } from 'lucide-react';
 
 interface CutterPageProps {
@@ -93,6 +91,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
   // 播放状态与画面比例
   const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackRate, setPlaybackRate] = useState(1);
   const [aspectRatioMode, setAspectRatioMode] = useState<'auto' | '16:9' | '1:1'>('auto');
 
   // 安全产物预定路径 (防重名递增预显)
@@ -116,7 +115,6 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   // 降码设置面板与就地画质对比视窗状态
   const [showCompressSettings, setShowCompressSettings] = useState(false);
   const [mainViewportMode, setMainViewportMode] = useState<'player' | 'compare'>('player');
-  const [showAdvancedCompress, setShowAdvancedCompress] = useState(false);
 
   // 工作台双模式解耦状态 (时间分段剪辑 ↔ 画面空间修饰)
   const [workbenchMode, setWorkbenchMode] = useState<WorkbenchMode>('temporal');
@@ -1115,6 +1113,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           <div className={mainViewportMode === 'player' ? 'relative flex-1 min-h-0 flex flex-col' : 'hidden'}>
             <VideoPlayer
               ref={playerRef}
+              playbackRate={playbackRate}
               videoPath={metadata.filePath}
               durationMs={metadata.durationMs}
               fps={metadata.fps}
@@ -1203,6 +1202,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             segments={segments}
             videoPath={metadata.filePath}
             isPlaying={isPlaying}
+            playbackRate={playbackRate}
+            onPlaybackRateChange={setPlaybackRate}
             isActive={isActive}
             playbackEnabled={mainViewportMode === 'player' && !isLoading}
             aspectRatioMode={aspectRatioMode}
@@ -1508,141 +1509,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                     </button>
                   </div>
 
-                  {/* 四档经典预设选择卡片 */}
-                  <div className="grid grid-cols-2 gap-2">
-                    {(['high_quality', 'balanced', 'high_compression', 'scale_1080p'] as const).map((pid) => {
-                      const meta = COMPRESS_PRESETS[pid];
-                      const isSelected = currentCompressConfig.preset === pid;
-                      return (
-                        <button
-                          key={pid}
-                          onClick={() => {
-                            handleUpdateCompressConfig((cfg) => {
-                              cfg.preset = pid;
-                              cfg.crf = meta.defaultCrf;
-                              if (pid === 'scale_1080p') {
-                                cfg.maxHeight = 1080;
-                              } else {
-                                delete cfg.maxHeight;
-                              }
-                            });
-                          }}
-                          className={`p-2.5 rounded-xl border text-left transition-all flex flex-col justify-between ${
-                            isSelected
-                              ? 'bg-purple-600/20 border-purple-500/50 shadow-md shadow-purple-500/10 ring-1 ring-purple-500'
-                              : 'bg-black/30 border-white/10 hover:border-white/20 hover:bg-white/5'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className={`text-xs font-bold ${isSelected ? 'text-purple-300' : 'text-zinc-200'}`}>
-                              {meta.title}
-                            </span>
-                            {isSelected && <CheckCircle2 className="w-3.5 h-3.5 text-purple-400" />}
-                          </div>
-                          <span className="text-[10px] text-zinc-400 mt-1 line-clamp-1">{meta.summary}</span>
-                          <div className="mt-1.5 flex items-center justify-between text-[10px] font-mono">
-                            <span className="text-zinc-400">实际效果随素材变化</span>
-                            <span className="text-purple-300">CRF {meta.defaultCrf}</span>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {/* 高级参数折叠切换 */}
-                  <div className="pt-1 border-t border-white/5 flex flex-col gap-2">
-                    <button
-                      onClick={() => setShowAdvancedCompress(!showAdvancedCompress)}
-                      className="flex items-center justify-between text-[11px] text-zinc-400 hover:text-white transition-colors py-1"
-                    >
-                      <span className="flex items-center gap-1">
-                        <Sliders className="w-3.5 h-3.5" />
-                        <span>高级参数微调 (CRF / 分辨率 / 硬件加速)</span>
-                      </span>
-                      {showAdvancedCompress ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                    </button>
-
-                    {showAdvancedCompress && (
-                      <div className="p-2.5 rounded-xl bg-black/40 border border-white/10 space-y-3 animate-in fade-in">
-                        {/* CRF 调节滑块 */}
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between text-[11px]">
-                            <span className="text-zinc-400">量化参数 CRF:</span>
-                            <span className="font-mono text-purple-300 font-bold">
-                              {currentCompressConfig.crf ?? 22} (越小画质越好)
-                            </span>
-                          </div>
-                          <input
-                            type="range"
-                            min="18"
-                            max="35"
-                            value={currentCompressConfig.crf ?? 22}
-                            onChange={(e) => {
-                              const val = parseInt(e.target.value, 10);
-                              handleUpdateCompressConfig((cfg) => {
-                                cfg.crf = val;
-                                cfg.preset = 'custom';
-                              });
-                            }}
-                            className="w-full accent-purple-500 cursor-pointer"
-                          />
-                          <div className="flex justify-between text-[9px] text-zinc-500 font-mono">
-                            <span>18 极佳</span>
-                            <span>22 均衡推荐</span>
-                            <span>28 适中</span>
-                            <span>35 极简</span>
-                          </div>
-                        </div>
-
-                        {/* 分辨率限高选择 */}
-                        <div className="space-y-1">
-                          <span className="text-[11px] text-zinc-400 block">分辨率限制:</span>
-                          <div className="grid grid-cols-3 gap-1.5 text-xs font-mono">
-                            {[
-                              { label: '原分辨率', val: undefined },
-                              { label: '限高 1080p', val: 1080 },
-                              { label: '限高 720p', val: 720 },
-                            ].map((opt) => {
-                              const isCur = currentCompressConfig.maxHeight === opt.val;
-                              return (
-                                <button
-                                  key={opt.label}
-                                  onClick={() => {
-                                    handleUpdateCompressConfig((cfg) => {
-                                      if (opt.val) cfg.maxHeight = opt.val;
-                                      else delete cfg.maxHeight;
-                                    });
-                                  }}
-                                  className={`py-1 rounded-lg border text-[10px] transition-all ${
-                                    isCur
-                                      ? 'bg-purple-600 text-white font-bold border-purple-400'
-                                      : 'bg-black/30 border-white/10 text-zinc-400 hover:text-white'
-                                  }`}
-                                >
-                                  {opt.label}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-
-                        {/* 硬件加速开关 */}
-                        <label className="flex items-center gap-2 cursor-pointer text-[11px] text-zinc-300 pt-1">
-                          <input
-                            type="checkbox"
-                            checked={currentCompressConfig.hardwareAcceleration !== false}
-                            onChange={(e) => {
-                              handleUpdateCompressConfig((cfg) => {
-                                cfg.hardwareAcceleration = e.target.checked;
-                              });
-                            }}
-                            className="w-3.5 h-3.5 accent-purple-500 cursor-pointer"
-                          />
-                          <span>优先启用 GPU 硬件加速 (NVENC / QSV)</span>
-                        </label>
-                      </div>
-                    )}
-                  </div>
+                  <CompressionSettings value={currentCompressConfig} onChange={value => handleUpdateCompressConfig(cfg => Object.assign(cfg, value))} />
 
                   {/* 【🔍 预览画质与细节对比】核心入口 */}
                   <button

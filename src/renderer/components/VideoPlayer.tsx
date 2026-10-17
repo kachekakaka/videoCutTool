@@ -6,6 +6,7 @@ export interface VideoPlayerRef {
   getCurrentTimeMs: () => number; getIsPlaying: () => boolean;
 }
 interface VideoPlayerProps {
+  playbackRate?: number;
   videoPath: string; durationMs: number; fps?: number; isActive?: boolean; shortcutsEnabled?: boolean;
   videoWidth?: number; videoHeight?: number; displayAspectRatio?: number; children?: React.ReactNode;
   onTimeUpdate: (timeMs: number) => void; onPlayStateChange?: (playing: boolean) => void; onInsertCut?: () => void;
@@ -14,7 +15,7 @@ interface VideoPlayerProps {
 export { formatTimecode, parseTimecodeToMs } from '../../shared/timeUtils';
 
 export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
-  videoPath, durationMs, fps = 30, isActive = true, shortcutsEnabled = true, videoWidth, videoHeight, displayAspectRatio, children, onTimeUpdate, onPlayStateChange, onInsertCut, aspectRatioMode = 'auto', auditionRange, onAuditionEnd,
+  videoPath, durationMs, fps = 30, playbackRate = 1, isActive = true, shortcutsEnabled = true, videoWidth, videoHeight, displayAspectRatio, children, onTimeUpdate, onPlayStateChange, onInsertCut, aspectRatioMode = 'auto', auditionRange, onAuditionEnd,
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement | null>(null), position = useRef(0), navigationEpoch = useRef(0), navigation = useRef(Promise.resolve());
   const viewport = useRef<HTMLDivElement | null>(null);
@@ -33,6 +34,11 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
   const request = useRef<string | null>(null), sourceEpoch = useRef(0), attemptedRemux = useRef(false);
   const currentPreview = preview?.source === videoPath ? preview : null;
   const playbackPath = currentPreview?.path || videoPath, offset = currentPreview?.offset || 0;
+  const applyPlaybackRate = () => {
+    const video = videoRef.current;
+    if (video) { video.defaultPlaybackRate = playbackRate; video.playbackRate = playbackRate; video.preservesPitch = true; }
+  };
+  useEffect(applyPlaybackRate, [playbackRate, playbackPath]);
   const current = () => videoRef.current?.readyState ? Math.max(0, videoRef.current.currentTime * 1000 - offset) : position.current;
   const seek = (ms: number, invalidate = true) => {
     if (invalidate) navigationEpoch.current++;
@@ -99,7 +105,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
         style={{ width: contentWidth, height: contentWidth / ratio }}
         className="relative flex-none flex items-center justify-center max-h-full max-w-full"
       >
-        <video ref={videoRef} src={source} onLoadedMetadata={() => seek(position.current)} onTimeUpdate={() => {
+        <video ref={videoRef} src={source} onLoadedMetadata={() => { applyPlaybackRate(); seek(position.current); }} onTimeUpdate={() => {
           position.current = current(); onTimeUpdate(position.current);
           if (auditionRange && position.current >= auditionRange.endMs) { pause(); onAuditionEnd?.(); }
         }} onPlay={() => onPlayStateChange?.(true)} onPause={() => onPlayStateChange?.(false)} onClick={togglePlay} onError={() => {

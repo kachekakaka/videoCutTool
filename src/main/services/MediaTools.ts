@@ -92,7 +92,33 @@ async function probeUncached(file: string, ffprobe: string, signal?: AbortSignal
   const rawStreams = data.streams || [];
   const video = rawStreams.find((stream: any) => stream.codec_type === 'video' && !stream.disposition?.attached_pic);
   if (!video) throw new Error('素材不包含可剪辑的视频流');
-  const duration = Number(data.format?.duration || video.duration);
+  const startTime = Number(data.format?.start_time || 0);
+  let duration = Number(data.format?.duration || video.duration);
+  // FLV 的 duration 可能是末尾绝对时间戳，也可能来自元数据，不能直接减去起点。
+  // 非零起点时以实际音视频包的结束时间为准，与关键帧及播放预览统一到同一时间轴。
+  if (startTime !== 0 && ['flv', 'live_flv'].includes(data.format?.format_name)) {
+    const streams = new Set<number>(rawStreams
+      .filter((stream: any) => (stream.codec_type === 'video' && !stream.disposition?.attached_pic) || stream.codec_type === 'audio')
+      .map((stream: any) => stream.index));
+    let tail = '', end = -Infinity;
+    const consume = (line: string) => {
+      const packet = Object.fromEntries(line.split('|').map(field => field.split('=')));
+      if (!streams.has(Number(packet.stream_index))) return;
+      const pts = Number(packet.pts_time);
+      if (!Number.isFinite(pts)) return;
+      const packetDuration = Number(packet.duration_time);
+      end = Math.max(end, pts + (Number.isFinite(packetDuration) && packetDuration > 0 ? packetDuration : 0));
+    };
+    await runMediaTool(ffprobe, ['-v', 'error', '-show_packets', '-show_entries', 'packet=stream_index,pts_time,duration_time', '-of', 'compact=p=0', file], {
+      signal, captureOutput: false, onOutput: chunk => {
+        const lines = (tail + chunk).split(/\r?\n/); tail = lines.pop() || '';
+        if (tail.length > 16384) throw new Error('媒体时间戳输出格式异常');
+        lines.forEach(consume);
+      },
+    });
+    if (tail) consume(tail);
+    duration = end - startTime;
+  }
   if (!Number.isFinite(duration) || duration <= 0) throw new Error('无法确定视频时长，不能安全生成剪辑方案');
   const rate = String(video.avg_frame_rate || video.r_frame_rate || '0/1').split('/').map(Number);
   const fallback = String(video.r_frame_rate || '0/1').split('/').map(Number);

@@ -22,6 +22,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 媒体探测与对话框
   openVideoDialog: (): Promise<string | null> => ipcRenderer.invoke('dialog:openVideo'),
+  openVideosDialog: () => ipcRenderer.invoke('dialog:openVideos'),
+  inspectCompressionFile: file => ipcRenderer.invoke('compress:inspectFile', file),
+  saveCompressionPlan: request => ipcRenderer.invoke('compress:savePlan', request),
   selectDirectory: (defaultPath?: string): Promise<string | null> => ipcRenderer.invoke('dialog:selectDirectory', defaultPath),
   probeMedia: (filePath: string): Promise<MediaMetadata> => ipcRenderer.invoke('media:probe', filePath),
   probeBasic: (filePath: string): Promise<MediaMetadata> => ipcRenderer.invoke('media:probeBasic', filePath),
@@ -68,5 +71,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deletePlan: (id: string): Promise<boolean> => ipcRenderer.invoke('plan:delete', id),
   executePlan: (id: string): Promise<{ success: boolean; message: string; queued?: boolean; active?: boolean }> => ipcRenderer.invoke('plan:execute', id),
   batchExecutePlans: (): Promise<{ total: number; queued: number }> => ipcRenderer.invoke('plan:batchExecute'),
+  executeSelectedPlans: ids => ipcRenderer.invoke('plan:executeSelected', ids),
   showItemInFolder: (fullPath: string): Promise<void> => ipcRenderer.invoke('shell:showItemInFolder', fullPath),
 } satisfies ElectronAPI);

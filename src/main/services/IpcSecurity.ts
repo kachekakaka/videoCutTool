@@ -38,6 +38,9 @@ export function validateRecord(record: PlanRecord) {
   if (Object.keys(record.decisions).length > record.cuts.length + 1 || Object.entries(record.decisions).some(([id, value]) => !validId(id) || !['keep', 'discard'].includes(value))) throw new Error('方案保留决策无效');
   for (const value of [record.concatSingleFile, record.stripOriginalCover]) if (value !== undefined && typeof value !== 'boolean') throw new Error('方案选项无效');
   validateCompress(record.compress); validateSpatial(record.spatialConfig);
+  if (record.compressionOnly !== undefined) {
+    if (record.compressionOnly !== true || !record.compress?.enabled || record.cuts.length || record.cutsCount !== 0 || record.keptDurationMs !== record.totalDurationMs || record.concatSingleFile !== true || Object.keys(record.decisions).length !== 1 || record.decisions.seg_0 !== 'keep' || record.spatialConfig || record.segmentSpatialOverrides) throw new Error('整片压缩方案不能包含裁剪或画面处理');
+  }
   if (record.segmentSpatialOverrides) {
     if (typeof record.segmentSpatialOverrides !== 'object' || Array.isArray(record.segmentSpatialOverrides) || Object.keys(record.segmentSpatialOverrides).length > record.cuts.length + 1) throw new Error('分段画面配置无效');
     for (const [id, config] of Object.entries(record.segmentSpatialOverrides)) { if (!validId(id) || !config) throw new Error('独立画面配置对应分段不存在'); validateSpatial(config); }
@@ -55,7 +58,6 @@ export class FileAccessRegistry {
     const resolved = await fs.promises.realpath(file);
     if (!(await fs.promises.stat(resolved)).isFile()) throw new Error('素材不是普通文件');
     this.media.set(this.key(file), this.key(resolved)); this.media.set(this.key(resolved), this.key(resolved));
-    while (this.media.size > 1024) this.media.delete(this.media.keys().next().value!);
     this.allowReveal(file); return file;
   }
   async check(file: string): Promise<string> {

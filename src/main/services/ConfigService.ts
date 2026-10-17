@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { AppConfig, DEFAULT_APP_CONFIG } from '../../shared/types';
+import { AppConfig, DEFAULT_APP_CONFIG, CompressionOutputPolicy } from '../../shared/types';
 import { CompressConfig } from '../../shared/types';
 import { resolveOutputBatch } from './OutputPathResolver';
 import { resolveFormats } from './MediaFormatResolver';
@@ -162,16 +162,16 @@ export class ConfigService {
   /**
    * 根据当前输出目录策略推导视频切片的目标目录
    */
-  public resolveTargetDirectory(videoSourcePath: string): string {
+  public resolveTargetDirectory(videoSourcePath: string, policy: CompressionOutputPolicy = this.currentConfig): string {
     const sourceDir = path.dirname(videoSourcePath);
-    switch (this.currentConfig.outputDirectoryRule) {
+    switch (policy.outputDirectoryRule) {
       case 'sub_folder': {
-        const subFolder = this.currentConfig.subFolderName || '_cut';
+        const subFolder = policy.subFolderName || '_cut';
         return path.join(sourceDir, subFolder);
       }
       case 'custom_fixed': {
-        if (this.currentConfig.customOutputDirectory) {
-          return this.currentConfig.customOutputDirectory;
+        if (policy.customOutputDirectory) {
+          return policy.customOutputDirectory;
         }
         // 若未设置固定目录，安全回退到同级子目录
         return path.join(sourceDir, '_cut');
@@ -203,11 +203,12 @@ export class ConfigService {
     isConcat: boolean = true,
     planTitle?: string,
     compress?: CompressConfig,
-    stripCover = true
+    stripCover = true,
+    policy: CompressionOutputPolicy = this.currentConfig
   ): Promise<string> {
     const tool = resolveTool('ffprobe', this.currentConfig.ffprobePath);
     const extension = resolveFormats(videoSourcePath, (await probeFile(videoSourcePath, tool)).streams, compress, stripCover).outputExtension;
-    return resolveOutputBatch({ directory: this.resolveTargetDirectory(videoSourcePath), source: videoSourcePath, extension, title: planTitle, segmented: !isConcat })[0];
+    return resolveOutputBatch({ directory: this.resolveTargetDirectory(videoSourcePath, policy), source: videoSourcePath, extension, title: planTitle, segmented: !isConcat })[0];
   }
 
   public getConfigPath(): string {

@@ -7,11 +7,12 @@ import { ConfigService } from '../src/main/services/ConfigService';
 import { KeyframeProber } from '../src/main/services/KeyframeProber';
 import { MediaCuttingEngine } from '../src/main/services/MediaCuttingEngine';
 import { PlanManager } from '../src/main/services/PlanManager';
+import { BatchCompressionService } from '../src/main/services/BatchCompressionService';
 import { CompressionPreviewService } from '../src/main/services/CompressionPreviewService';
 import { PlaybackPreviewService } from '../src/main/services/PlaybackPreviewService';
 import { MediaLimiter, stopMediaProcesses, clearProbeCache } from '../src/main/services/MediaTools';
 import { FileAccessRegistry, localPath, requestId, textValue, validateCompress, validateConfigPatch, validateRecord } from '../src/main/services/IpcSecurity';
-import { AppConfig, PlanRecord, CompressConfig } from '../src/shared/types';
+import { AppConfig, PlanRecord, CompressConfig, CompressionSaveRequest, SelectedVideo } from '../src/shared/types';
 
 // 全局彻底移除应用菜单，防止 Windows 下用户按 Alt 键唤出原生菜单栏
 Menu.setApplicationMenu(null);
@@ -78,6 +79,7 @@ let configService: ConfigService;
 let prober: KeyframeProber;
 let cuttingEngine: MediaCuttingEngine;
 let planManager: PlanManager;
+let batchCompression: BatchCompressionService;
 let previewService: CompressionPreviewService;
 let playbackService: PlaybackPreviewService;
 
@@ -286,6 +288,12 @@ handle('engine:retryPendingWrites', async () => cuttingEngine.retryPendingWrites
 handle('plan:save', async (_event, record: PlanRecord) => { validateRecord(record); await files.check(record.sourcePath); return planManager.savePlan(record); });
 handle('plan:delete', async (_event, id: string) => { requestId(id); return planManager.deletePlan(id); });
 handle('plan:execute', async (_event, id: string) => { requestId(id); return planManager.executePlan(id); });
+handle('plan:executeSelected', async (_event, ids: string[]) => {
+  if (!Array.isArray(ids) || ids.length > 10000) throw new Error('方案选择无效');
+  ids.forEach(id => requestId(id)); return planManager.executeSelected(ids);
+});
+handle('compress:inspectFile', async (_event, file: string) => batchCompression.inspect(file));
+handle('compress:savePlan', async (_event, request: CompressionSaveRequest) => batchCompression.save(request));
 handle('plan:batchExecute', async () => planManager.batchExecute());
 handle('shell:showItemInFolder', async (_event, fullPath: string) => {
   if (!fullPath) return;
@@ -300,6 +308,17 @@ handle('shell:showItemInFolder', async (_event, fullPath: string) => {
   } catch (err) {
     console.error('打开目录失败:', err);
   }
+});
+
+handle('dialog:openVideos', async () => {
+  const options: Electron.OpenDialogOptions = { title: '选择待压缩视频', properties: ['openFile', 'multiSelections', 'dontAddToRecent'], filters: [{ name: '视频文件', extensions: ['mp4', 'mkv', 'mov', 'avi', 'flv', 'ts', 'webm'] }, { name: '所有文件', extensions: ['*'] }] };
+  const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+  const selected: SelectedVideo[] = [];
+  for (const file of result.canceled ? [] : result.filePaths) {
+    try { selected.push({ path: await files.authorize(file) }); }
+    catch (error) { selected.push({ path: file, error: String(error) }); }
+  }
+  return selected;
 });
 
 handle('dialog:openVideo', async () => {
@@ -382,6 +401,7 @@ app.whenReady().then(async () => {
   cuttingEngine = new MediaCuttingEngine(currentConfig.ffmpegPath, tempSlicesDir);
   cuttingEngine.updateTools(currentConfig.ffmpegPath, currentConfig.ffprobePath);
   planManager = new PlanManager(configService.getDataDirectory(), cuttingEngine, prober);
+  batchCompression = new BatchCompressionService(configService, planManager, files);
   const previewLimiter = new MediaLimiter(() => cuttingEngine.getActivePlanId() ? 1 : 2);
   previewService = new CompressionPreviewService(currentConfig.ffmpegPath, tempPreviewDir, (config, signal) => cuttingEngine.probeEncoderSupport(config, signal), previewLimiter);
   previewService.updateTools(currentConfig.ffmpegPath, currentConfig.ffprobePath);
