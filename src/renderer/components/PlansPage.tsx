@@ -405,7 +405,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                           </span>
                         </div>
                         <button
-                          onClick={() => handleRevealInExplorer(plan.outputPath)}
+                          onClick={() => plan.outputPath && handleRevealInExplorer(plan.outputPath)}
                           className="shrink-0 px-2 py-0.5 rounded bg-emerald-600/30 hover:bg-emerald-600 text-emerald-200 hover:text-white font-sans text-[10px] transition-all"
                         >
                           打开目录
@@ -423,13 +423,13 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                       <div>
                         <span className="text-zinc-400 text-[10px] block">保留时长</span>
                         <span className="text-emerald-400 font-bold">
-                          {formatTimecode(plan.keptDurationMs, false)}
+                          {plan.keptDurationMs === null ? '时长待确认' : formatTimecode(plan.keptDurationMs, false)}
                         </span>
                       </div>
                       <div>
                         <span className="text-zinc-400 text-[10px] block">原片总长</span>
                         <span className="text-zinc-300">
-                          {formatTimecode(plan.totalDurationMs, false)}
+                          {plan.totalDurationMs === null ? '时长待确认' : formatTimecode(plan.totalDurationMs, false)}
                         </span>
                       </div>
                     </div>

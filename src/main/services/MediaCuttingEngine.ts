@@ -8,13 +8,13 @@ import { formatTaskTimestamp } from '../../shared/timeUtils';
 import { buildCompressArgs, buildScaleFilterArgs } from '../../shared/compressPresets';
 import { addTime, subtractTime, ceilMicroseconds, formatMicroseconds, millisecondsTime } from '../../shared/mediaTime';
 import { KeyframeProber } from './KeyframeProber';
-import { abortError, needsTimestampRepair, presentationStart, presentationStartTime, probeFile, removeOwnedDirectory, resolveTool, runMediaTool } from './MediaTools';
+import { abortError, fileIdentityAsync, needsTimestampRepair, presentationStart, presentationStartTime, probeFile, ProbedFile, removeOwnedDirectory, resolveTool, runMediaTool } from './MediaTools';
 import { resolveFormats, resolveNormalizationExtension, retainedStreams } from './MediaFormatResolver';
 import { resolveOutputBatch } from './OutputPathResolver';
 import { buildSpatialFiltergraph, hasSpatialEffects, spatialOutputSize, validateSpatial, Dimension } from '../../shared/spatialFiltergraph';
 
 type Encoder = 'cpu' | 'nvenc' | 'qsv';
-type Job = { record: PlanRecord; prober: KeyframeProber };
+type Job = { record: PlanRecord; prober: KeyframeProber; prepared?: { identity: string; info: ProbedFile } };
 export type PlanStatusListener = (event: { planId: string; status: ExecutionStatus; outputPath?: string; error?: string; record?: PlanRecord }) => void;
 
 export class MediaCuttingEngine {
@@ -61,7 +61,7 @@ export class MediaCuttingEngine {
   private clearProgress() { this.progressRun = null; this.progress = null; }
   private stateChanged() { this.onStateChange?.(this.getState()); }
   private async persist(record: PlanRecord) { await this.savePlanFn?.(record); }
-  private notify(record: PlanRecord) { this.onStatusChange?.({ planId: record.id, status: record.status, record: structuredClone(record), outputPath: record.outputPath, error: record.error }); }
+  private notify(record: PlanRecord) { this.onStatusChange?.({ planId: record.id, status: record.status, record: structuredClone(record), outputPath: record.outputPath || undefined, error: record.error }); }
   submitPlan(record: PlanRecord, prober: KeyframeProber): Promise<{ queued: boolean; active: boolean }> {
     const pending = this.submitting.get(record.id); if (pending) return pending;
     if (this.accepted.has(record.id)) return Promise.resolve({ queued: this.getActivePlanId() !== record.id, active: this.getActivePlanId() === record.id });
@@ -69,6 +69,10 @@ export class MediaCuttingEngine {
       if (this.closing) throw new Error('应用正在退出，未接受新任务');
       if (this.storageError) throw new Error('方案保存尚未恢复，请在方案中心重试保存后再提交');
       const snapshot = structuredClone(record); snapshot.status = 'queued'; delete snapshot.error;
+      if (snapshot.compressionOnly) {
+        snapshot.totalDurationMs = null; snapshot.keptDurationMs = null; snapshot.outputPath = null;
+        delete snapshot.outputPaths; delete snapshot.resolvedEncoder; snapshot.completedAt = null;
+      }
       await this.persist(snapshot);
       const job = { record: snapshot, prober };
       this.accepted.set(record.id, job); this.queue.push(job); this.notify(snapshot); this.stateChanged(); this.startDrain();
@@ -108,9 +112,20 @@ export class MediaCuttingEngine {
         const execution = this.executionSnapshot();
         execution.tracker = tracker;
         let plan: MediaRetentionPlan;
+        let prepared: ProbedFile | undefined;
         if (processing.compressionOnly) {
+          const identity = await fileIdentityAsync(processing.sourcePath);
+          prepared = job.prepared?.identity === identity ? job.prepared.info : await probeFile(processing.sourcePath, execution.ffprobePath, this.controller.signal);
+          if (await fileIdentityAsync(processing.sourcePath) !== identity) throw new Error('检查期间素材发生变化，请重试');
+          processing.totalDurationMs = prepared.durationMs; processing.keptDurationMs = prepared.durationMs;
+          job.prepared = { identity, info: prepared };
+          try { await this.persist(processing); }
+          catch (error) {
+            this.queue.unshift(job); this.active = null; this.controller = null; this.clearProgress(); this.blockStorage(error); return;
+          }
+          this.notify(processing);
           plan = { version: '1.0', title: processing.title, sourcePath: processing.sourcePath,
-            outputPath: processing.outputPath, durationMs: processing.totalDurationMs, totalKeptDurationMs: processing.totalDurationMs,
+            outputPath: '', outputDirectory: processing.outputDirectory, durationMs: prepared.durationMs, totalKeptDurationMs: prepared.durationMs,
             concatToSingleFile: true, stripOriginalCover: processing.stripOriginalCover !== false,
             compress: processing.compress, planSegments: [], blockers: [] };
         } else {
@@ -119,11 +134,12 @@ export class MediaCuttingEngine {
           const draft = RetentionDraft.fromRecord(processing, meta.durationMs);
           plan = draft.toPlan(meta.keyframes, { outputPath: processing.outputPath || processing.sourcePath, concatToSingleFile: processing.concatSingleFile !== false, stripOriginalCover: processing.stripOriginalCover !== false, title: processing.title, keyframePoints: meta.keyframePoints });
         }
-        const result = await execution.executeSnapshot(plan, this.controller.signal, processing.compressionOnly === true);
+        const result = await execution.executeSnapshot(plan, this.controller.signal, processing.compressionOnly === true, prepared);
         final = result.success
           ? { ...processing, status: 'completed', outputPath: result.outputPath, outputPaths: result.outputPaths, resolvedEncoder: result.resolvedEncoder, completedAt: new Date().toISOString(), error: undefined }
           : { ...processing, status: 'failed', outputPath: result.outputPath, outputPaths: result.outputPaths, error: result.error || '剪辑失败' };
       } catch (error) { final = { ...processing, status: 'failed', error: error instanceof Error ? error.message : String(error) }; }
+      if (final.compressionOnly && !final.outputPath) final.outputPath = null;
       if (final.status === 'completed') tracker.saving(); else tracker.failed();
       try { await this.persist(final); this.accepted.delete(final.id); this.notify(final); this.clearProgress(); }
       catch (error) { this.pendingFinal = final; this.blockStorage(error); }
@@ -190,8 +206,8 @@ export class MediaCuttingEngine {
     await runMediaTool(this.ffmpegPath, ['-progress', 'pipe:1', '-nostats', ...args], { signal, captureOutput: false, onOutput });
     this.tracker.complete(key);
   }
-  async compressFile(input: string, output: string, config: CompressConfig, encoder: Encoder = 'cpu', signal?: AbortSignal, spatialFilterArgs?: string[], progressKey?: string, cpuRetry = false, stripCover = false): Promise<void> {
-    const info = await probeFile(input, this.ffprobePath, signal);
+  async compressFile(input: string, output: string, config: CompressConfig, encoder: Encoder = 'cpu', signal?: AbortSignal, spatialFilterArgs?: string[], progressKey?: string, cpuRetry = false, stripCover = false, prepared?: ProbedFile): Promise<void> {
+    const info = prepared || await probeFile(input, this.ffprobePath, signal);
     await this.runStep(progressKey, buildCompressArgs(input, output, config, encoder, { streams: retainedStreams(info.streams, stripCover), stripCover: false, spatialFilterArgs }), info.durationMs, signal, cpuRetry);
   }
   private async cut(source: string, segment: PlanSegment, output: string, streams: MediaStreamInfo[], signal?: AbortSignal, offset = millisecondsTime(0), progressKey?: string) {
@@ -283,12 +299,12 @@ export class MediaCuttingEngine {
     parts.push(`${concat}${scale ? ',' + scale : ''}[spatialVideo]`);
     await this.runStep(progressKey, buildCompressArgs(input, output, config, encoder, { streams: info.streams, stripCover: false, videoFilterGraph: { graph: parts.join(';'), streamIndex: info.videoIndex, output: 'spatialVideo', timeBase: info.timeBase } }), info.durationMs, signal, cpuRetry);
   }
-  private async executeSnapshot(plan: MediaRetentionPlan, signal?: AbortSignal, compressionOnly = false): Promise<CutResult> {
+  private async executeSnapshot(plan: MediaRetentionPlan, signal?: AbortSignal, compressionOnly = false, prepared?: ProbedFile): Promise<CutResult> {
     const directory = path.join(this.tmpDir, `job_${randomUUID()}`);
     await fs.promises.mkdir(directory, { recursive: true });
     try {
       if (!compressionOnly && !plan.planSegments.length) throw new Error('未选择任何保留片段');
-      const info = await probeFile(plan.sourcePath, this.ffprobePath, signal);
+      const info = prepared || await probeFile(plan.sourcePath, this.ffprobePath, signal);
       const streams = retainedStreams(info.streams, plan.stripOriginalCover !== false);
       const sourceDim = { width: info.width, height: info.height };
       const configs = plan.spatialSegments?.map(segment => segment.spatialConfig) ?? [plan.spatialConfig, ...Object.values(plan.segmentSpatialOverrides ?? {})];
@@ -312,7 +328,7 @@ export class MediaCuttingEngine {
           encoder = 'cpu'; await work(encoder, true);
         }
       };
-      let source = plan.sourcePath, sourceStreams = streams, seekOffset: MediaTime = millisecondsTime(0);
+      let source = plan.sourcePath, sourceStreams = streams, seekOffset: MediaTime = millisecondsTime(0), sourceInfo = info;
       const repairTimestamps = await needsTimestampRepair(source, info, this.ffprobePath, signal);
       const durations = compressionOnly ? [info.durationMs] : plan.planSegments.map(segment => segment.safeRange.endMs - Number(ceilMicroseconds(segment.seekTime || millisecondsTime(segment.safeRange.startMs))) / 1000);
       const totalDuration = durations.reduce((sum, duration) => sum + duration, 0);
@@ -329,7 +345,7 @@ export class MediaCuttingEngine {
         await this.runStep('normalize', ['-n', '-fflags', '+genpts', '-copyts', '-start_at_zero', '-i', source, ...streams.flatMap(stream => ['-map', `0:${stream.index}`]), '-c', 'copy', ...this.audioDispositions(streams), normalized], info.durationMs, signal);
         const normalizedInfo = await probeFile(normalized, this.ffprobePath, signal);
         if (!compressionOnly) seekOffset = subtractTime(await presentationStartTime(normalized, normalizedInfo, this.ffprobePath, signal), await presentationStartTime(source, info, this.ffprobePath, signal));
-        source = normalized; sourceStreams = normalizedInfo.streams;
+        source = normalized; sourceStreams = normalizedInfo.streams; sourceInfo = normalizedInfo;
       }
 
       // 多分段合并单文件时，计算 Letterbox 母版画幅（取全局或首段）
@@ -378,13 +394,13 @@ export class MediaCuttingEngine {
         let output = originals[i];
         if (needCompress && !hasSpatial) {
           output = path.join(directory, `encoded_${i}${formats.outputExtension}`);
-          await encode(output, (selected, retry) => this.compressFile(originals[i], output, effectiveCompressConfig, selected, signal, undefined, `encode:${i}`, retry, compressionOnly && plan.stripOriginalCover));
+          await encode(output, (selected, retry) => this.compressFile(originals[i], output, effectiveCompressConfig, selected, signal, undefined, `encode:${i}`, retry, compressionOnly && plan.stripOriginalCover, compressionOnly ? sourceInfo : undefined));
         }
         this.tracker?.stage('verifying', i + 1, originals.length);
         await this.verify(output, streams, signal); finalFiles.push(output);
         this.tracker?.finishOperation(`verify:${i}`);
       }
-      const destination = path.dirname(plan.outputPath || plan.sourcePath);
+      const destination = plan.outputDirectory || path.dirname(plan.outputPath || plan.sourcePath);
       await fs.promises.mkdir(destination, { recursive: true });
       const timestamp = formatTaskTimestamp();
       for (let attempt = 0; attempt < 10; attempt++) {

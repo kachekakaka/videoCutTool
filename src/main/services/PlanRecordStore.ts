@@ -27,7 +27,7 @@ export class PlanRecordStore {
   validate(record: PlanRecord, id = record?.id): PlanRecord {
     validateRecord(record);
     this.file(id);
-    if (!record || record.id !== id || typeof record.sourcePath !== 'string' || !record.sourcePath || typeof record.title !== 'string' || !Array.isArray(record.cuts) || record.cuts.some(p => !Number.isFinite(p) || p < 0) || !record.decisions || typeof record.decisions !== 'object' || Object.values(record.decisions).some(value => value !== 'keep' && value !== 'discard') || !Number.isFinite(record.totalDurationMs) || record.totalDurationMs <= 0 || !['ready', 'queued', 'processing', 'completed', 'failed'].includes(record.status)) throw new Error(`方案 ${id} 内容无效`);
+    if (!record || record.id !== id || !['ready', 'queued', 'processing', 'completed', 'failed'].includes(record.status)) throw new Error(`方案 ${id} 内容无效`);
     return record;
   }
   private async recovery(id: string): Promise<Recovery | null> {

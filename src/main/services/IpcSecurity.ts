@@ -32,15 +32,18 @@ export function validateRecord(record: PlanRecord) {
   if (!record || typeof record !== 'object') throw new Error('方案内容无效');
   requestId(record.id); localPath(record.sourcePath); textValue(record.title, '方案标题', 256);
   if (record.outputPath) localPath(record.outputPath);
-  if (!Number.isFinite(record.totalDurationMs) || record.totalDurationMs <= 0 || !Array.isArray(record.cuts) || record.cuts.length > 10000 || record.cuts.some((cut, index) => !Number.isFinite(cut) || cut <= 0 || cut >= record.totalDurationMs || (index > 0 && cut <= record.cuts[index - 1]))) throw new Error('方案切点或时长无效');
+  const unknownDuration = record.compressionOnly === true && record.totalDurationMs === null && record.keptDurationMs === null;
+  if ((!unknownDuration && (typeof record.totalDurationMs !== 'number' || !Number.isFinite(record.totalDurationMs) || record.totalDurationMs <= 0)) || !Array.isArray(record.cuts) || record.cuts.length > 10000 || record.cuts.some((cut, index) => !Number.isFinite(cut) || cut <= 0 || record.totalDurationMs === null || cut >= record.totalDurationMs || (index > 0 && cut <= record.cuts[index - 1]))) throw new Error('方案切点或时长无效');
   if (!record.decisions || Array.isArray(record.decisions) || typeof record.decisions !== 'object') throw new Error('方案保留决策无效');
   const validId = (id: string) => /^seg_\d+$/.test(id) && Number(id.slice(4)) <= record.cuts.length;
   if (Object.keys(record.decisions).length > record.cuts.length + 1 || Object.entries(record.decisions).some(([id, value]) => !validId(id) || !['keep', 'discard'].includes(value))) throw new Error('方案保留决策无效');
   for (const value of [record.concatSingleFile, record.stripOriginalCover]) if (value !== undefined && typeof value !== 'boolean') throw new Error('方案选项无效');
   validateCompress(record.compress); validateSpatial(record.spatialConfig);
   if (record.compressionOnly !== undefined) {
+    localPath(record.outputDirectory);
+    if (record.outputPath !== null) localPath(record.outputPath);
     if (record.compressionOnly !== true || !record.compress?.enabled || record.cuts.length || record.cutsCount !== 0 || record.keptDurationMs !== record.totalDurationMs || record.concatSingleFile !== true || Object.keys(record.decisions).length !== 1 || record.decisions.seg_0 !== 'keep' || record.spatialConfig || record.segmentSpatialOverrides) throw new Error('整片压缩方案不能包含裁剪或画面处理');
-  }
+  } else if (typeof record.outputPath !== 'string' || typeof record.keptDurationMs !== 'number' || !Number.isFinite(record.keptDurationMs) || record.keptDurationMs < 0) throw new Error('裁剪方案时长或输出路径无效');
   if (record.segmentSpatialOverrides) {
     if (typeof record.segmentSpatialOverrides !== 'object' || Array.isArray(record.segmentSpatialOverrides) || Object.keys(record.segmentSpatialOverrides).length > record.cuts.length + 1) throw new Error('分段画面配置无效');
     for (const [id, config] of Object.entries(record.segmentSpatialOverrides)) { if (!validId(id) || !config) throw new Error('独立画面配置对应分段不存在'); validateSpatial(config); }

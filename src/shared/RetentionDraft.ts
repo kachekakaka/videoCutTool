@@ -335,6 +335,7 @@ export class RetentionDraft {
    * 从持久化记录还原草稿
    */
   public static fromRecord(record: PlanRecord, totalDurationMs: number): RetentionDraft {
+    if (record.compressionOnly) throw new Error('整片压缩方案不能载入裁剪草稿');
     const draft = new RetentionDraft(record.sourcePath, totalDurationMs);
     draft.concatSingleFile = record.concatSingleFile ?? true;
     draft.stripOriginalCover = record.stripOriginalCover ?? true;

@@ -134,6 +134,7 @@ export interface MediaRetentionPlan {
   concatToSingleFile: boolean;
   stripOriginalCover: boolean;
   outputPath: string;
+  outputDirectory?: string;
   planSegments: PlanSegment[];
   spatialSegments?: Array<PlanSegment & { spatialConfig?: SpatialConfig }>;
   totalKeptDurationMs: number;
@@ -145,14 +146,10 @@ export interface MediaRetentionPlan {
 
 export type ExecutionStatus = 'ready' | 'queued' | 'processing' | 'completed' | 'failed';
 
-export interface PlanRecord {
-  compressionOnly?: true;
+interface PlanRecordFields {
   id: string;
   title: string;
   sourcePath: string;
-  outputPath: string;
-  totalDurationMs: number;
-  keptDurationMs: number;
   cutsCount: number;
   status: ExecutionStatus;
   updatedAt: string;
@@ -169,14 +166,31 @@ export interface PlanRecord {
   resolvedEncoder?: 'cpu' | 'nvenc' | 'qsv';
 }
 
+export interface CuttingPlanRecord extends PlanRecordFields {
+  compressionOnly?: undefined;
+  outputPath: string;
+  totalDurationMs: number;
+  keptDurationMs: number;
+}
+export interface CompressionPlanRecord extends PlanRecordFields {
+  compressionOnly: true;
+  outputDirectory: string;
+  outputPath: string | null;
+  totalDurationMs: number | null;
+  keptDurationMs: number | null;
+}
+export type PlanRecord = CuttingPlanRecord | CompressionPlanRecord;
+
 export type CompressionOutputPolicy = Pick<AppConfig, 'outputDirectoryRule' | 'subFolderName' | 'customOutputDirectory'>;
 export interface CompressionFile {
   sourcePath: string;
   pathKey: string;
   fileName: string;
-  durationMs: number;
-  width: number;
-  height: number;
+  durationMs: null;
+  width: number | null;
+  height: number | null;
+  check: 'ready' | 'pending' | 'invalid';
+  message?: string;
 }
 export interface CompressionSaveRequest {
   id: string;
@@ -209,7 +223,7 @@ export interface ExecutionProgress {
   cpuRetry?: boolean;
 }
 export const EXECUTION_STAGE_LABELS: Record<ExecutionStage, string> = {
-  preparing: '准备中', normalizing: '整理时间戳', cutting: '裁剪中', merging: '合并中', encoding: '转码中',
+  preparing: '检查视频', normalizing: '整理时间戳', cutting: '裁剪中', merging: '合并中', encoding: '转码中',
   verifying: '校验产物', publishing: '发布中', saving: '等待保存结果', failed: '处理失败，等待保存结果',
 };
 export interface EngineState { activePlanId: string | null; queuedIds: string[]; storageError: string | null; progress: ExecutionProgress | null }

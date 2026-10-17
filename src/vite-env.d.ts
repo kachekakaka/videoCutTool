@@ -14,7 +14,8 @@ export interface ElectronAPI {
   // 媒体探测与对话框
   openVideoDialog: () => Promise<string | null>;
   openVideosDialog: () => Promise<SelectedVideo[]>;
-  inspectCompressionFile: (file: string) => Promise<CompressionFile>;
+  inspectCompressionFile: (file: string, id: string) => Promise<CompressionFile>;
+  cancelCompressionInspection: (id: string) => Promise<void>;
   saveCompressionPlan: (request: CompressionSaveRequest) => Promise<PlanRecord>;
   selectDirectory: (defaultPath?: string) => Promise<string | null>;
   probeMedia: (filePath: string) => Promise<MediaMetadata>;

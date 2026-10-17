@@ -88,7 +88,7 @@ The central repository and UI module for creating, viewing, updating, deleting (
 _Avoid_: Task queue, history list, plan store
 
 **Plan Record**:
-针对单个源视频持久化保存的方案记录，包含输出位置、保留决策、处理参数与最近执行状态。批量压缩创建的记录限定为整片压缩，独立编辑和执行，不与同次创建的其他记录保持参数联动。
+针对单个源视频持久化保存的方案记录，包含输出位置、保留决策、处理参数与最近执行状态。批量压缩创建的记录限定为整片压缩，允许准确时长尚未确认，独立编辑和执行，不与同次创建的其他记录保持参数联动；保存成功表示处理意图已持久化，不代表素材已通过完整媒体检查。
 _Avoid_: Task, job record, cut file
 
 **Data Directory**:
@@ -132,7 +132,7 @@ The curated encoding profile (`high_quality`, `balanced`, `high_compression`, `s
 _Avoid_: Transcode profile, export preset, quality mode
 
 **Batch Compression（批量压缩）**:
-对多个源视频整片应用同一套压缩参数，一次保存为每个源视频各自独立的 Plan Record，再由 Plan Manager 执行；创建及单条编辑不包含播放预览、画质对比、分段裁剪或画面处理。批量只描述方案的创建方式，不代表将多个视频合并为一个产物，也不新增包含多个视频的方案记录。
+对多个源视频整片应用同一套压缩参数，一次保存为每个源视频各自独立的 Plan Record，再由 Plan Manager 执行；创建和保存仅进行快速基础检查，准确时长可以待确认，耗时的完整媒体检查归属执行阶段，创建及单条编辑不包含播放预览、画质对比、分段裁剪或画面处理。批量只描述方案的创建方式，不代表将多个视频合并为一个产物，也不新增包含多个视频的方案记录。
 _Avoid_: 批量剪辑, 合并压缩, 多文件方案
 
 **Visual Compression Preview**:

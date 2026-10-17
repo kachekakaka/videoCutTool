@@ -23,7 +23,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 媒体探测与对话框
   openVideoDialog: (): Promise<string | null> => ipcRenderer.invoke('dialog:openVideo'),
   openVideosDialog: () => ipcRenderer.invoke('dialog:openVideos'),
-  inspectCompressionFile: file => ipcRenderer.invoke('compress:inspectFile', file),
+  inspectCompressionFile: (file, id) => ipcRenderer.invoke('compress:inspectFile', file, id),
+  cancelCompressionInspection: id => ipcRenderer.invoke('compress:cancelInspection', id),
   saveCompressionPlan: request => ipcRenderer.invoke('compress:savePlan', request),
   selectDirectory: (defaultPath?: string): Promise<string | null> => ipcRenderer.invoke('dialog:selectDirectory', defaultPath),
   probeMedia: (filePath: string): Promise<MediaMetadata> => ipcRenderer.invoke('media:probe', filePath),

@@ -244,9 +244,9 @@ export const Timeline: React.FC<TimelineProps> = ({
       ctx.fillText(formatTimecode(t, false), x, 5);
     }
 
-    // 3. 绘制分段区间 (高度 16px ~ 38px，共 22px 高度，紧凑利落)
+    // 3. 分段填满刻度下方的轨道，底部留出关键帧标记空间。
     const trackY = 16;
-    const trackHeight = 22;
+    const trackHeight = Math.max(1, logicalHeight - trackY - 8);
 
     for (const seg of segments) {
       if (seg.endMs < clampedViewStartMs || seg.startMs > viewEndMs) continue;
@@ -777,10 +777,10 @@ export const Timeline: React.FC<TimelineProps> = ({
 
   return (
     <div ref={timelineRootRef} className="w-full flex flex-col gap-1 px-3 py-1.5 rounded-xl bg-[#161b22]/90 border border-white/10 shadow-xl backdrop-blur-md">
-      {/* ── 顶部三段式控制条 (左侧时间与图例 + 中间绝对居中播放 + 右侧缩放与切点) ── */}
-      <div className="relative flex flex-wrap items-center justify-between gap-2 px-1 min-h-[28px]">
+      {/* 两侧等宽保证播放按钮居中；窄窗口将播放控制独立成行，避免相互遮挡。 */}
+      <div className="relative grid grid-cols-2 min-[1600px]:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 px-1 min-h-[28px]">
         {/* 左侧：时间码与比例切换 + 紧凑内联图例 */}
-        <div className="flex items-center gap-2 shrink-0 z-0">
+        <div className="col-start-1 row-start-1 justify-self-start flex items-center gap-2 shrink-0 z-0">
           <div className="flex items-center gap-1.5 font-mono text-xs text-zinc-300">
             <span className="text-white font-bold text-xs bg-black/50 px-1.5 py-0.5 rounded border border-white/10 shadow-inner">
               {formatTimecode(currentTimeMs)}
@@ -834,8 +834,8 @@ export const Timeline: React.FC<TimelineProps> = ({
           </div>
         </div>
 
-        {/* 播放控制参与排版，窄窗口换行，避免新增倍速控件覆盖两侧按钮。 */}
-        <div className="flex items-center justify-center gap-1.5 flex-1 shrink-0 z-10 pointer-events-auto">
+        {/* 倍速控件放在对称播放按钮组旁边，不参与居中宽度计算。 */}
+        <div className="relative col-span-2 col-start-1 row-start-2 min-[1600px]:col-span-1 min-[1600px]:col-start-2 min-[1600px]:row-start-1 justify-self-center flex items-center justify-center gap-1.5 shrink-0 z-10 pointer-events-auto">
           {playbackEnabled && onStepSeconds && (
             <button
               onClick={() => onStepSeconds(-1)}
@@ -886,7 +886,7 @@ export const Timeline: React.FC<TimelineProps> = ({
             </button>
           )}
           {playbackEnabled && onPlaybackRateChange && (
-            <div role="group" aria-label="播放速度" className="ml-1 flex shrink-0 items-center bg-black/50 border border-white/10 rounded-lg p-0.5 text-[10px]">
+            <div role="group" aria-label="播放速度" className="absolute left-full top-1/2 -translate-y-1/2 ml-2 flex shrink-0 items-center bg-black/50 border border-white/10 rounded-lg p-0.5 text-[10px]">
               <button
                 onClick={() => onPlaybackRateChange(Math.max(0.5, playbackRate - 0.25))}
                 disabled={playbackRate <= 0.5}
@@ -916,7 +916,7 @@ export const Timeline: React.FC<TimelineProps> = ({
         </div>
 
         {/* 右侧：缩放控制器与插入切点 */}
-        <div className="flex items-center gap-2 shrink-0 z-0 ml-auto">
+        <div className="col-start-2 min-[1600px]:col-start-3 row-start-1 justify-self-end flex items-center gap-2 shrink-0 z-0">
           {selectedCutMs !== null && onDeleteCut && (
             <button
               onClick={() => {
@@ -977,7 +977,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       {/* ── Canvas 时间轴主轨道与悬浮小窗外层包装 ── */}
       <div ref={trackWrapperRef} className="relative w-full">
         <div
-          className={`relative w-full h-[60px] rounded-xl overflow-hidden border border-white/10 select-none transition-colors ${
+          className={`relative w-full h-[64px] rounded-xl overflow-hidden border border-white/10 select-none transition-colors ${
             cutDragState.isDragging ? 'cursor-grabbing' : 'cursor-crosshair'
           }`}
         >

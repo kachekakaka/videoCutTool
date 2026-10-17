@@ -109,7 +109,7 @@ function handle(channel: string, work: (event: IpcMainInvokeEvent, ...args: any[
     } finally { ipcActive.set(channel, Math.max(0, (ipcActive.get(channel) ?? 1) - 1)); }
   });
 }
-function rememberPlanOutputs(records: PlanRecord[]) { for (const record of records) { files.allowReveal(record.outputPath); record.outputPaths?.forEach(file => files.allowReveal(file)); } }
+function rememberPlanOutputs(records: PlanRecord[]) { for (const record of records) { if (record.outputPath) files.allowReveal(record.outputPath); record.outputPaths?.forEach(file => files.allowReveal(file)); } }
 
 app.on('second-instance', () => {
   if (mainWindow) {
@@ -186,6 +186,7 @@ function createWindow() {
   mainWindow.on('closed', () => {
     files.clear();
     scanRequests.forEach(request => request.controller.abort());
+    compressionChecks.forEach(controller => controller.abort());
     mainWindow = null;
   });
   mainWindow.on('close', (event) => {
@@ -292,7 +293,19 @@ handle('plan:executeSelected', async (_event, ids: string[]) => {
   if (!Array.isArray(ids) || ids.length > 10000) throw new Error('方案选择无效');
   ids.forEach(id => requestId(id)); return planManager.executeSelected(ids);
 });
-handle('compress:inspectFile', async (_event, file: string) => batchCompression.inspect(file));
+const compressionChecks = new Map<string, AbortController>();
+handle('compress:inspectFile', async (event, file: string, id: string) => {
+  requestId(id); const key = `${event.sender.id}:${id}`;
+  checkCanceled(`compression:${key}`);
+  if (compressionChecks.has(key)) throw new Error('检查请求已存在');
+  const controller = new AbortController(); compressionChecks.set(key, controller);
+  try { return await batchCompression.inspect(file, controller.signal); }
+  finally { compressionChecks.delete(key); }
+});
+handle('compress:cancelInspection', async (event, id: string) => {
+  requestId(id); const key = `${event.sender.id}:${id}`;
+  markCanceled(`compression:${key}`); compressionChecks.get(key)?.abort();
+});
 handle('compress:savePlan', async (_event, request: CompressionSaveRequest) => batchCompression.save(request));
 handle('plan:batchExecute', async () => planManager.batchExecute());
 handle('shell:showItemInFolder', async (_event, fullPath: string) => {
@@ -514,6 +527,7 @@ app.on('before-quit', event => {
   event.preventDefault(); quitting = true;
   void (async () => {
     scanRequests.forEach(request => request.controller.abort());
+    compressionChecks.forEach(controller => controller.abort());
     await Promise.allSettled([previewService?.shutdown(), playbackService?.shutdown(), prober?.shutdown(), cuttingEngine?.shutdown(), stopMediaProcesses()]);
     await stopMediaProcesses();
     app.quit();

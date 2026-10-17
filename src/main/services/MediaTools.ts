@@ -1,7 +1,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { MediaStreamInfo, MediaTime } from '../../shared/types';
+import { CompressionFile, MediaStreamInfo, MediaTime } from '../../shared/types';
 import { frameTime, secondsTime, timeMs } from '../../shared/mediaTime';
 
 const children = new Set<ChildProcess>();
@@ -18,6 +18,26 @@ export function consumeJob<T>(job: SharedJob<T>, signal?: AbortSignal): Promise<
   });
 }
 export const abortError = () => Object.assign(new Error('操作已取消'), { name: 'AbortError' });
+
+/** 批量创建只读有限的格式／流摘要，绝不计算精确时长。 */
+export async function probeCompressionFile(file: string, ffprobe: string, signal?: AbortSignal): Promise<Pick<CompressionFile, 'width' | 'height' | 'check' | 'message'>> {
+  try {
+    const data = JSON.parse(await runMediaTool(ffprobe, ['-v', 'error', '-probesize', '1048576', '-analyzeduration', '1000000', '-show_entries', 'format=format_name:stream=codec_type,width,height:stream_disposition=attached_pic:stream_tags=rotate:stream_side_data=rotation', '-of', 'json', file], { signal, timeoutMs: 3000, maxOutputBytes: 1024 * 1024 }));
+    const video = data.streams?.find((stream: any) => stream.codec_type === 'video' && !stream.disposition?.attached_pic);
+    if (!video) {
+      // 有限探测未发现视频不等于证明不存在；纯音频容器可以明确排除。
+      const audioOnly = ['mp3', 'wav', 'flac', 'aac', 'aiff', 'amr'].includes(data.format?.format_name);
+      return { width: null, height: null, check: audioOnly ? 'invalid' : 'pending', message: audioOnly ? '素材不包含视频流' : '尚未确认视频流，执行时检查' };
+    }
+    const rotation = Number(video.side_data_list?.find((item: any) => item.rotation !== undefined)?.rotation || video.tags?.rotate || 0);
+    const rotated = Math.abs(rotation) % 180 === 90;
+    return { width: (rotated ? video.height : video.width) || null, height: (rotated ? video.width : video.height) || null, check: 'ready' };
+  } catch (error: any) {
+    if (signal?.aborted || error.name === 'AbortError') throw error;
+    const message = error.code === 'ENOENT' ? '未找到媒体检查工具，执行前请检查工具设置' : error.code === 'EACCES' || error.code === 'EPERM' ? '媒体检查工具无运行权限' : /超时/.test(error.message) ? '快速检查超时，执行时确认' : '暂未读到完整媒体信息，执行时确认';
+    return { width: null, height: null, check: 'pending', message };
+  }
+}
 export function resolveTool(name: 'ffmpeg' | 'ffprobe', preferred?: string): string {
   const resources = (process as any).resourcesPath;
   const candidates = [preferred, resources && path.join(resources, 'bin', `${name}.exe`), resources && path.join(resources, 'tools', `${name}.exe`), path.resolve('tools', `${name}.exe`), `D:/Tools/ffmpeg/${name}.exe`].filter(Boolean) as string[];
