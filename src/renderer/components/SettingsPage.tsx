@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { AppConfig, OutputDirectoryRule } from '../../shared/types';
+import { AppConfig } from '../../shared/types';
 import { useAppData } from '../AppDataContext';
 import { Check, Folder, ShieldCheck, HardDrive, FileJson, RefreshCw, AlertCircle } from 'lucide-react';
 
@@ -24,33 +24,6 @@ export const SettingsPage: React.FC = () => {
     } catch (err) {
       console.error('加载配置失败:', err);
       setErrorMsg('读取配置文件失败');
-    }
-  };
-
-  const handleRuleChange = async (rule: OutputDirectoryRule) => {
-    await persistConfig({ outputDirectoryRule: rule });
-  };
-
-  const handleSubFolderChange = async (name: string) => {
-    setDraftPatch(previous => ({ ...previous, subFolderName: name }));
-  };
-
-  const handleCustomDirChange = async (dir: string) => {
-    setDraftPatch(previous => ({ ...previous, customOutputDirectory: dir }));
-  };
-
-  const handleBrowseCustomDir = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (window.electronAPI) {
-      try {
-        const selected = await window.electronAPI.selectDirectory(config.customOutputDirectory);
-        if (selected) {
-          const updated = { customOutputDirectory: selected, outputDirectoryRule: 'custom_fixed' as OutputDirectoryRule };
-          await persistConfig(updated);
-        }
-      } catch (err) {
-        console.error('选择目录失败:', err);
-      }
     }
   };
 
@@ -106,115 +79,14 @@ export const SettingsPage: React.FC = () => {
           <div className="p-6 rounded-2xl bg-[#161b22]/80 border border-white/10 shadow-xl backdrop-blur-md">
             <h2 className="text-sm font-bold text-white flex items-center gap-2 mb-4">
               <Folder className="w-4 h-4 text-blue-400" />
-              剪辑产物默认输出目录规则
+              产物输出位置
             </h2>
 
-            <div className="space-y-3.5">
-              {/* sub_folder */}
-              <label 
-                className={`flex items-start gap-3.5 p-4 rounded-xl border cursor-pointer transition-all ${
-                  config.outputDirectoryRule === 'sub_folder'
-                    ? 'bg-blue-500/10 border-blue-500/40 text-white'
-                    : 'bg-white/[0.02] border-white/5 text-zinc-300 hover:border-white/10'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="outputRule"
-                  checked={config.outputDirectoryRule === 'sub_folder'}
-                  onChange={() => handleRuleChange('sub_folder')}
-                  className="mt-1 accent-blue-500"
-                />
-                <div className="flex-1">
-                  <div className="text-sm font-semibold flex items-center gap-2">
-                    <span>原视频同级专属子文件夹（推荐）</span>
-                    <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded font-mono">DEFAULT</span>
-                  </div>
-                  <div className="text-xs text-zinc-400 mt-1">
-                    在原视频所在目录下自动创建专属文件夹保存切片，防止原目录混乱。
-                  </div>
-                  {config.outputDirectoryRule === 'sub_folder' && (
-                    <div className="mt-3 flex items-center gap-2">
-                      <span className="text-xs text-zinc-400">子文件夹名：</span>
-                      <input
-                        type="text"
-                        value={config.subFolderName}
-                        onChange={(e) => handleSubFolderChange(e.target.value)}
-                        onBlur={() => persistConfig({ subFolderName: config.subFolderName })}
-                        className="bg-black/40 border border-white/15 rounded-md px-2.5 py-1 text-xs text-white font-mono w-32 focus:border-blue-500 focus:outline-none"
-                      />
-                      <span className="text-xs text-zinc-500 font-mono">例：D:/Videos/_cuts/name_cut.mp4</span>
-                    </div>
-                  )}
-                </div>
-              </label>
-
-              {/* same_directory */}
-              <label 
-                className={`flex items-start gap-3.5 p-4 rounded-xl border cursor-pointer transition-all ${
-                  config.outputDirectoryRule === 'same_directory'
-                    ? 'bg-blue-500/10 border-blue-500/40 text-white'
-                    : 'bg-white/[0.02] border-white/5 text-zinc-300 hover:border-white/10'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="outputRule"
-                  checked={config.outputDirectoryRule === 'same_directory'}
-                  onChange={() => handleRuleChange('same_directory')}
-                  className="mt-1 accent-blue-500"
-                />
-                <div className="flex-1">
-                  <div className="text-sm font-semibold">原视频同级目录（直接存放）</div>
-                  <div className="text-xs text-zinc-400 mt-1">
-                    直接保存在原视频文件边上，追加 <code className="text-zinc-300">_cut</code> 后缀名。
-                  </div>
-                </div>
-              </label>
-
-              {/* custom_fixed */}
-              <label 
-                className={`flex items-start gap-3.5 p-4 rounded-xl border cursor-pointer transition-all ${
-                  config.outputDirectoryRule === 'custom_fixed'
-                    ? 'bg-blue-500/10 border-blue-500/40 text-white'
-                    : 'bg-white/[0.02] border-white/5 text-zinc-300 hover:border-white/10'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="outputRule"
-                  checked={config.outputDirectoryRule === 'custom_fixed'}
-                  onChange={() => handleRuleChange('custom_fixed')}
-                  className="mt-1 accent-blue-500"
-                />
-                <div className="flex-1">
-                  <div className="text-sm font-semibold">固定输出到统一指定目录</div>
-                  <div className="text-xs text-zinc-400 mt-1">
-                    所有视频切片集中汇总到一个专用的存储目录中。
-                  </div>
-                  {config.outputDirectoryRule === 'custom_fixed' && (
-                    <div className="mt-3 flex items-center gap-2">
-                      <input
-                        type="text"
-                        placeholder="例如 D:/ExportedCuts"
-                        value={config.customOutputDirectory}
-                        onChange={(e) => handleCustomDirChange(e.target.value)}
-                        onBlur={() => persistConfig({ customOutputDirectory: config.customOutputDirectory })}
-                        className="flex-1 bg-black/40 border border-white/15 rounded-md px-2.5 py-1.5 text-xs text-white font-mono focus:border-blue-500 focus:outline-none"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleBrowseCustomDir}
-                        className="px-3 py-1.5 rounded-md bg-white/10 hover:bg-white/20 text-zinc-200 hover:text-white text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 shrink-0 border border-white/10"
-                        title="唤起系统文件夹选择器"
-                      >
-                        <Folder className="w-3.5 h-3.5 text-amber-400" />
-                        <span>浏览...</span>
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </label>
+            <div className="space-y-3.5 text-sm text-zinc-300">
+              <p>产物保存在原视频所在目录，按处理类型自动归类。</p>
+              <p>裁剪结果（含裁剪后压缩）：<code className="text-blue-300">cut_方案名/</code></p>
+              <p>整片压缩结果：<code className="text-purple-300">压缩/</code>，不按方案分目录。</p>
+              <p className="text-xs text-zinc-500">已有文件保持原位，新产物遇到同名文件自动加序号。</p>
             </div>
           </div>
 

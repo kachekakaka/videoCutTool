@@ -116,11 +116,11 @@ _Avoid_: Run state, task progress, finish flag
 _Avoid_: Preview progress, segment progress, elapsed-time ratio
 
 **Output Directory Policy**:
-The automated rule determining where exported videos and plan records are written (e.g., source directory, source subfolder, or fixed dedicated directory).
+产物固定保存在原视频所在目录下：裁剪方案（含裁剪后压缩）的产物放入 `cut_方案名/`，整片压缩产物统一放入 `压缩/`，不按方案分目录。裁剪未命名时使用原文件主名作为目录名中的方案名。已有产物不搬迁，方案记录仍存放在 Data Directory 中。
 _Avoid_: Export path rule, save target
 
 **Output Naming Policy**:
-The deterministic rule governing generated output filenames, assembling a leading task start timestamp (`YYYYMMDD_HHmm`), optional bracketed plan title (`[Title]`), original media basename, and per-segment index.
+产物文件名依次由可选方案标签 `[Title]`、原文件主名、分段编号（或默认 `_cut` 标记）、处理日期时间 `YYYYMMDD_HHmm` 组成，日期位于扩展名前；同名时在日期后追加递增序号。裁剪与整片压缩共用此命名规则，已有文件不重命名。
 _Avoid_: Export filename rule, cut name format, naming template
 
 **Collision Avoidance**:

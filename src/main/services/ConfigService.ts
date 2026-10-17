@@ -1,8 +1,8 @@
 import fs from 'fs';
 import path from 'path';
-import { AppConfig, DEFAULT_APP_CONFIG, CompressionOutputPolicy } from '../../shared/types';
+import { AppConfig, DEFAULT_APP_CONFIG } from '../../shared/types';
 import { CompressConfig } from '../../shared/types';
-import { resolveOutputBatch } from './OutputPathResolver';
+import { resolveOutputBatch, resolveOutputDirectory } from './OutputPathResolver';
 import { resolveFormats } from './MediaFormatResolver';
 import { probeFile, resolveTool } from './MediaTools';
 
@@ -160,29 +160,6 @@ export class ConfigService {
   }
 
   /**
-   * 根据当前输出目录策略推导视频切片的目标目录
-   */
-  public resolveTargetDirectory(videoSourcePath: string, policy: CompressionOutputPolicy = this.currentConfig): string {
-    const sourceDir = path.dirname(videoSourcePath);
-    switch (policy.outputDirectoryRule) {
-      case 'sub_folder': {
-        const subFolder = policy.subFolderName || '_cut';
-        return path.join(sourceDir, subFolder);
-      }
-      case 'custom_fixed': {
-        if (policy.customOutputDirectory) {
-          return policy.customOutputDirectory;
-        }
-        // 若未设置固定目录，安全回退到同级子目录
-        return path.join(sourceDir, '_cut');
-      }
-      case 'same_directory':
-      default:
-        return sourceDir;
-    }
-  }
-
-  /**
    * 根据当前输出目录策略推导视频切片的输出路径
    */
   public resolveOutputPath(videoSourcePath: string, isConcat: boolean = true, planTitle?: string): Promise<string> {
@@ -190,10 +167,10 @@ export class ConfigService {
   }
 
   /**
-   * 安全解析输出路径（增加任务时间戳前缀与方案名，自动避让同名文件与源文件物理冲突）
+   * 安全解析输出路径（方案名在前、处理日期在后，自动避让同名文件与源文件物理冲突）
    * 格式规范：
-   * - 有方案名：YYYYMMDD_HHmm_[方案名]原文件名.mp4 (合并) / YYYYMMDD_HHmm_[方案名]原文件名_seg01.mp4 (分段)
-   * - 无方案名：YYYYMMDD_HHmm_原文件名_cut.mp4 (合并) / YYYYMMDD_HHmm_原文件名_seg01.mp4 (分段)
+   * - 有方案名：[方案名]原文件名_YYYYMMDD_HHmm.mp4 (合并) / [方案名]原文件名_seg01_YYYYMMDD_HHmm.mp4 (分段)
+   * - 无方案名：原文件名_cut_YYYYMMDD_HHmm.mp4 (合并) / 原文件名_seg01_YYYYMMDD_HHmm.mp4 (分段)
    * @param videoSourcePath 源视频路径
    * @param isConcat 是否为单文件合并模式（若为 false 则推导多分段切片的第一段预定路径）
    * @param planTitle 可选方案名称
@@ -203,12 +180,11 @@ export class ConfigService {
     isConcat: boolean = true,
     planTitle?: string,
     compress?: CompressConfig,
-    stripCover = true,
-    policy: CompressionOutputPolicy = this.currentConfig
+    stripCover = true
   ): Promise<string> {
     const tool = resolveTool('ffprobe', this.currentConfig.ffprobePath);
     const extension = resolveFormats(videoSourcePath, (await probeFile(videoSourcePath, tool)).streams, compress, stripCover).outputExtension;
-    return resolveOutputBatch({ directory: this.resolveTargetDirectory(videoSourcePath, policy), source: videoSourcePath, extension, title: planTitle, segmented: !isConcat })[0];
+    return resolveOutputBatch({ directory: resolveOutputDirectory(videoSourcePath, planTitle), source: videoSourcePath, extension, title: planTitle, segmented: !isConcat })[0];
   }
 
   public getConfigPath(): string {

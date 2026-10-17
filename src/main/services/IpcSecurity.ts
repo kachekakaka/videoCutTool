@@ -19,12 +19,10 @@ export function validateCompress(value?: CompressConfig) {
 export function validateConfigPatch(patch: Partial<AppConfig>) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('配置内容无效');
   const booleans = ['autoConcatSingleFile', 'stripOriginalCover', 'notifyOnExportComplete'];
-  const paths = ['customOutputDirectory', 'ffmpegPath', 'ffprobePath'];
+  const paths = ['ffmpegPath', 'ffprobePath'];
   for (const [key, value] of Object.entries(patch)) {
     if (booleans.includes(key)) { if (typeof value !== 'boolean') throw new Error('配置开关无效'); }
     else if (paths.includes(key)) { if (value !== '') localPath(value); }
-    else if (key === 'outputDirectoryRule') { if (!['sub_folder', 'same_directory', 'custom_fixed'].includes(value as string)) throw new Error('输出策略无效'); }
-    else if (key === 'subFolderName') { textValue(value, '子文件夹名', 128); if (/[\\/:*?"<>|]/.test(value) || value === '.' || value === '..' || /[. ]$/.test(value)) throw new Error('子文件夹名称无效'); }
     else throw new Error(`不允许通过页面修改配置字段：${key}`);
   }
 }

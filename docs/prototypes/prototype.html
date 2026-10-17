@@ -1585,7 +1585,7 @@
           <label>画质参数 <input id="batch-crf" type="range" min="18" max="35" oninput="batchSettings().crf=Number(this.value);batchSettings().preset='custom';document.getElementById('batch-preset').value='custom'" /></label>
           <select id="batch-height" class="form-input" onchange="batchSettings().height=Number(this.value)"><option value="0">原分辨率</option><option value="1080">限高 1080p</option><option value="720">限高 720p</option></select>
           <label><input id="batch-gpu" type="checkbox" onchange="batchSettings().gpu=this.checked" /> 优先启用 GPU 硬件加速</label>
-          <label>输出目录<input id="batch-directory" class="form-input" placeholder="留空使用系统规则" oninput="batchSettings().directory=this.value" /></label>
+          <p style="font-size:12px;color:var(--text-dim)">输出到各原视频所在目录下的「压缩」文件夹，不按方案分目录。</p>
           <button id="batch-save" class="btn btn-primary" onclick="saveBatchPlans()">保存方案</button><p style="color:var(--text-dim);font-size:12px">保留原始音轨。时长待确认也可保存，执行时检查视频，不立即压缩。</p>
         </section>
       </div>
@@ -1627,14 +1627,7 @@
         <div class="setting-item">
           <div class="setting-text">
             <h4>默认输出位置</h4>
-            <p>已默认配置为原视频同级目录下的专属 _cuts/ 子文件夹，原片与剪切片物理隔离，杜绝混乱。</p>
-          </div>
-          <div class="setting-control">
-            <select class="select-input" id="setting-output-rule">
-              <option value="sub_folder" selected>原视频同级 _cuts/ 子文件夹 (默认推荐)</option>
-              <option value="same_directory">原视频同级目录 (加 _cut 后缀)</option>
-              <option value="custom_fixed">固定自定义全局输出目录</option>
-            </select>
+            <p>原视频目录下：裁剪结果（含裁剪后压缩）放入 cut_方案名/；整片压缩结果放入 压缩/，不按方案分目录。同名自动加序号，已有产物不搬迁。</p>
           </div>
         </div>
       </div>
@@ -2029,7 +2022,7 @@
           id: 'plan_20260903_01',
           title: 'sample_movie.mp4 (去片头与中插广告)',
           sourcePath: 'D:/Movies/sample_movie.mp4',
-          outputPath: 'D:/Movies/_cuts/sample_movie_cut.mp4',
+          outputPath: 'D:/Movies/cut_sample_movie.mp4 (去片头与中插广告)/sample_movie_cut.mp4',
           totalDurationMs: 150000,
           keptDurationMs: 103055,
           cutsCount: 3,
@@ -2045,7 +2038,7 @@
           id: 'plan_20260902_02',
           title: 'tutorial_full_hd.mkv (仅截取核心讲解)',
           sourcePath: 'D:/Projects/tutorial_full_hd.mkv',
-          outputPath: 'D:/Projects/_cuts/tutorial_full_hd_cut.mkv',
+          outputPath: 'D:/Projects/cut_tutorial_full_hd.mkv (仅截取核心讲解)/tutorial_full_hd_cut.mkv',
           totalDurationMs: 3600000,
           keptDurationMs: 1800000,
           cutsCount: 2,
@@ -2242,7 +2235,7 @@
     // 方案管理中心
     // ==========================================
     let batchRows = [], batchEdit = null, batchSaving = false;
-    const batchConfig = { preset: 'balanced', crf: 22, height: 0, gpu: true, directory: '' };
+    const batchConfig = { preset: 'balanced', crf: 22, height: 0, gpu: true };
     const selectedPrototypePlans = new Set();
     const safeText = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
     function batchSettings() { return batchEdit ? batchEdit.compress : batchConfig; }
@@ -2263,7 +2256,6 @@
       document.getElementById('batch-crf').value = settings.crf;
       document.getElementById('batch-height').value = settings.height;
       document.getElementById('batch-gpu').checked = settings.gpu;
-      document.getElementById('batch-directory').value = settings.directory;
       const list = document.getElementById('batch-file-list'); list.innerHTML = '';
       (batchEdit ? [batchEdit] : batchRows).forEach(row => {
         const item = document.createElement('div'); item.style.cssText = 'padding:12px;border-bottom:1px solid #ffffff18;display:flex;gap:12px;align-items:center';
@@ -2287,7 +2279,7 @@
         if (row.error || !row.title.trim()) continue;
         const existing = state.savedPlans.find(plan => plan.id === row.id);
         if (existing && ['queued','processing'].includes(existing.status)) continue;
-        const plan = { ...row, title: row.title.trim(), compressionOnly: true, compress: {...batchSettings()}, status: 'ready', outputDirectory: batchSettings().directory || '系统输出目录', outputPath: null, cuts: [], decisions: {seg_0:'keep'}, cutsCount:0, totalDurationMs:null, keptDurationMs:null, updatedAt:'刚刚', completedAt:null };
+        const plan = { ...row, title: row.title.trim(), compressionOnly: true, compress: {...batchSettings()}, status: 'ready', outputDirectory: row.sourcePath.replace(/[\\/][^\\/]+$/, '') + '/压缩', outputPath: null, cuts: [], decisions: {seg_0:'keep'}, cutsCount:0, totalDurationMs:null, keptDurationMs:null, updatedAt:'刚刚', completedAt:null };
         if (existing) Object.assign(existing, plan); else state.savedPlans.unshift(plan);
         if (!batchEdit) batchRows = batchRows.filter(item => item !== row);
         saved++;
@@ -2400,7 +2392,7 @@
         id: planId,
         title: `${state.currentVideoPath.split('/').pop()} (剪辑方案)`,
         sourcePath: state.currentVideoPath,
-        outputPath: `D:/Movies/_cuts/${state.currentVideoPath.split('/').pop().replace(/\.[^/.]+$/, "")}_cut.mp4`,
+        outputPath: `${state.currentVideoPath.replace(/[\\/][^\\/]+$/, '')}/cut_${state.currentVideoPath.split('/').pop()} (剪辑方案)/${state.currentVideoPath.split('/').pop().replace(/\.[^/.]+$/, "")}_cut.mp4`,
         totalDurationMs: state.durationMs,
         keptDurationMs: keptMs,
         cutsCount: state.cuts.length,
@@ -2486,9 +2478,6 @@
       const sampleConfig = {
         "_comment": "VideoCutTool 默认启动配置文件 (放置于 exe 同级目录)",
         "version": "1.0.0",
-        "output_directory_rule": "sub_folder",
-        "sub_folder_name": "_cuts",
-        "custom_output_directory": "D:/VideoExports",
         "keyframe_safety_guaranteed": true,
         "auto_concat_single_file": true,
         "ffmpeg_path": "./tools/ffmpeg.exe",

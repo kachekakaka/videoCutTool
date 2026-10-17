@@ -10,7 +10,7 @@ import { addTime, subtractTime, ceilMicroseconds, formatMicroseconds, millisecon
 import { KeyframeProber } from './KeyframeProber';
 import { abortError, fileIdentityAsync, needsTimestampRepair, presentationStart, presentationStartTime, probeFile, ProbedFile, removeOwnedDirectory, resolveTool, runMediaTool } from './MediaTools';
 import { resolveFormats, resolveNormalizationExtension, retainedStreams } from './MediaFormatResolver';
-import { resolveOutputBatch } from './OutputPathResolver';
+import { resolveOutputBatch, resolveOutputDirectory } from './OutputPathResolver';
 import { buildSpatialFiltergraph, hasSpatialEffects, spatialOutputSize, validateSpatial, Dimension } from '../../shared/spatialFiltergraph';
 
 type Encoder = 'cpu' | 'nvenc' | 'qsv';
@@ -125,7 +125,7 @@ export class MediaCuttingEngine {
           }
           this.notify(processing);
           plan = { version: '1.0', title: processing.title, sourcePath: processing.sourcePath,
-            outputPath: '', outputDirectory: processing.outputDirectory, durationMs: prepared.durationMs, totalKeptDurationMs: prepared.durationMs,
+            outputPath: '', durationMs: prepared.durationMs, totalKeptDurationMs: prepared.durationMs,
             concatToSingleFile: true, stripOriginalCover: processing.stripOriginalCover !== false,
             compress: processing.compress, planSegments: [], blockers: [] };
         } else {
@@ -304,6 +304,7 @@ export class MediaCuttingEngine {
     await fs.promises.mkdir(directory, { recursive: true });
     try {
       if (!compressionOnly && !plan.planSegments.length) throw new Error('未选择任何保留片段');
+      const destination = resolveOutputDirectory(plan.sourcePath, plan.title, compressionOnly);
       const info = prepared || await probeFile(plan.sourcePath, this.ffprobePath, signal);
       const streams = retainedStreams(info.streams, plan.stripOriginalCover !== false);
       const sourceDim = { width: info.width, height: info.height };
@@ -400,7 +401,6 @@ export class MediaCuttingEngine {
         await this.verify(output, streams, signal); finalFiles.push(output);
         this.tracker?.finishOperation(`verify:${i}`);
       }
-      const destination = plan.outputDirectory || path.dirname(plan.outputPath || plan.sourcePath);
       await fs.promises.mkdir(destination, { recursive: true });
       const timestamp = formatTaskTimestamp();
       for (let attempt = 0; attempt < 10; attempt++) {

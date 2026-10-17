@@ -3,14 +3,9 @@
  * 对齐 CONTEXT.md 与 ADR-0001 / ADR-0003
  */
 
-export type OutputDirectoryRule = 'sub_folder' | 'same_directory' | 'custom_fixed';
-
 export interface AppConfig {
   version: string;
   dataDirectory?: string;
-  outputDirectoryRule: OutputDirectoryRule;
-  subFolderName: string;
-  customOutputDirectory: string;
   keyframeSafetyGuaranteed: boolean;
   autoConcatSingleFile: boolean;
   stripOriginalCover: boolean;
@@ -22,9 +17,6 @@ export interface AppConfig {
 
 export const DEFAULT_APP_CONFIG: AppConfig = {
   version: '1.0.0',
-  outputDirectoryRule: 'sub_folder',
-  subFolderName: '_cut',
-  customOutputDirectory: '',
   keyframeSafetyGuaranteed: true,
   autoConcatSingleFile: true,
   stripOriginalCover: true,
@@ -134,7 +126,6 @@ export interface MediaRetentionPlan {
   concatToSingleFile: boolean;
   stripOriginalCover: boolean;
   outputPath: string;
-  outputDirectory?: string;
   planSegments: PlanSegment[];
   spatialSegments?: Array<PlanSegment & { spatialConfig?: SpatialConfig }>;
   totalKeptDurationMs: number;
@@ -181,7 +172,6 @@ export interface CompressionPlanRecord extends PlanRecordFields {
 }
 export type PlanRecord = CuttingPlanRecord | CompressionPlanRecord;
 
-export type CompressionOutputPolicy = Pick<AppConfig, 'outputDirectoryRule' | 'subFolderName' | 'customOutputDirectory'>;
 export interface CompressionFile {
   sourcePath: string;
   pathKey: string;
@@ -197,7 +187,6 @@ export interface CompressionSaveRequest {
   sourcePath: string;
   title: string;
   compress: CompressConfig;
-  outputPolicy: CompressionOutputPolicy;
   stripOriginalCover: boolean;
   expectedUpdatedAt?: string;
 }

@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { CompressionFile, CompressionPlanRecord, CompressConfig, CompressionOutputPolicy, PlanRecord, SelectedVideo } from '../../shared/types';
+import { CompressionFile, CompressionPlanRecord, CompressConfig, PlanRecord, SelectedVideo } from '../../shared/types';
 import { CompressionSettings } from './CompressionSettings';
 import { useAppData } from '../AppDataContext';
-import { FileVideo, FolderOpen, Package, Plus, Save, Trash2 } from 'lucide-react';
+import { FileVideo, Package, Plus, Save, Trash2 } from 'lucide-react';
 
 interface Row { id: string; path: string; key: string; title: string; media?: CompressionFile; checking: boolean; error?: string }
 const defaults = (): CompressConfig => ({ enabled: true, preset: 'balanced', crf: 22, hardwareAcceleration: true });
@@ -15,11 +15,9 @@ export const BatchCompressionPage: React.FC<{ editRequest: { record: PlanRecord;
   const [rows, setRows] = useState<Row[]>([]);
   const rowRef = useRef<Row[]>([]);
   const [compress, setCompress] = useState(defaults);
-  const [directory, setDirectory] = useState('');
   const [edit, setEdit] = useState<CompressionPlanRecord | null>(null);
   const [editCompress, setEditCompress] = useState(defaults);
   const [editTitle, setEditTitle] = useState('');
-  const [editDirectory, setEditDirectory] = useState('');
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const locked = useRef(false);
@@ -36,7 +34,7 @@ export const BatchCompressionPage: React.FC<{ editRequest: { record: PlanRecord;
     const record = editRequest.record;
     if (!record.compressionOnly) return;
     setEdit(record); setEditTitle(record.title); setEditCompress(structuredClone(record.compress || defaults()));
-    setEditDirectory(record.outputDirectory); setNotice('');
+    setNotice('');
   }, [editRequest]);
 
   const cancelRow = (id: string) => {
@@ -113,15 +111,6 @@ export const BatchCompressionPage: React.FC<{ editRequest: { record: PlanRecord;
       }
     }
   };
-  const chooseDirectory = async () => {
-    try {
-      const value = await window.electronAPI?.selectDirectory(edit ? editDirectory : directory);
-      if (value) { if (edit) setEditDirectory(value); else setDirectory(value); }
-    } catch (error) { setNotice(String(error)); }
-  };
-  const outputPolicy = (chosen: string): CompressionOutputPolicy => chosen
-    ? { outputDirectoryRule: 'custom_fixed', customOutputDirectory: chosen, subFolderName: config.subFolderName }
-    : { outputDirectoryRule: config.outputDirectoryRule, customOutputDirectory: config.customOutputDirectory, subFolderName: config.subFolderName };
   const liveEdit = edit && plans.find(plan => plan.id === edit.id);
   const editBusy = Boolean(edit && (['queued', 'processing'].includes(liveEdit?.status || edit.status) || engine.activePlanId === edit.id || engine.queuedIds.includes(edit.id)));
   const save = async () => {
@@ -131,7 +120,6 @@ export const BatchCompressionPage: React.FC<{ editRequest: { record: PlanRecord;
     const editing = edit;
     const editToken = incomingEdit.current;
     const settings = structuredClone(editing ? editCompress : compress);
-    const policy = outputPolicy(editing ? editDirectory : directory);
     const cover = editing ? editing.stripOriginalCover !== false : config.stripOriginalCover;
     const selected = editing ? [{ id: editing.id, path: editing.sourcePath, title: editTitle }] : rowRef.current.filter(row => row.media && row.media.check !== 'invalid' && !row.checking).map(row => ({ ...row }));
     setSaveProgress({ done: 0, total: selected.length });
@@ -140,7 +128,7 @@ export const BatchCompressionPage: React.FC<{ editRequest: { record: PlanRecord;
       for (const row of selected) {
         try {
           const saved = await api.saveCompressionPlan({ id: row.id, sourcePath: row.path, title: row.title, compress: settings,
-            outputPolicy: policy, stripOriginalCover: cover, ...(editing ? { expectedUpdatedAt: editing.updatedAt } : {}) });
+            stripOriginalCover: cover, ...(editing ? { expectedUpdatedAt: editing.updatedAt } : {}) });
           success++;
           if (editing) { if (incomingEdit.current === editToken && saved.compressionOnly) setEdit(saved); }
           else mutate(list => list.filter(item => item.id !== row.id));
@@ -175,7 +163,7 @@ export const BatchCompressionPage: React.FC<{ editRequest: { record: PlanRecord;
         <aside className="rounded-2xl border border-white/10 bg-[#161b22]/70 p-5 space-y-5">
           <h2 className="text-sm font-semibold">{edit ? '压缩参数' : '整批共用参数'}</h2>
           <CompressionSettings value={value} onChange={edit ? setEditCompress : setCompress} disabled={saving || editBusy} />
-          <div className="border-t border-white/10 pt-4 space-y-2"><h2 className="text-xs font-semibold">输出位置</h2><p className="text-xs text-zinc-400 break-all">{edit ? editDirectory : directory || '使用系统输出目录规则'}</p><div className="flex gap-2"><button disabled={saving || editBusy} className={button} onClick={chooseDirectory}><FolderOpen className="w-3 h-3 inline mr-1" />选择目录</button>{!edit && directory && <button disabled={saving} className={button} onClick={() => setDirectory('')}>恢复系统规则</button>}</div></div>
+          <div className="border-t border-white/10 pt-4 space-y-2"><h2 className="text-xs font-semibold">输出位置</h2><p className="text-xs text-zinc-400">各原视频所在目录下的「压缩」文件夹，不按方案分目录。</p></div>
           <button disabled={saving || editBusy || (!edit && !ready)} onClick={save} className="w-full p-3 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-bold"><Save className="w-4 h-4 inline mr-2" />{saving ? `正在保存 ${saveProgress.done} / ${saveProgress.total}` : edit ? '保存修改' : `保存方案（${ready}）`}</button>
           <p className="text-[11px] text-zinc-500">保存后不会立即压缩。时长及素材完整性将在执行时确认，请在方案中心勾选执行。</p>
         </aside>

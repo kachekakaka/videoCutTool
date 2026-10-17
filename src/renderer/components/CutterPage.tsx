@@ -22,7 +22,6 @@ import {
   Undo2,
   Redo2,
   FolderOpen,
-  FolderEdit,
   UploadCloud,
   Zap,
   Settings,
@@ -54,7 +53,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   onRequestVideo,
   onVideoLoaded,
 }) => {
-  const { config: appConfig, plans, saveConfig } = useAppData();
+  const { config: appConfig, plans } = useAppData();
   const loadEpoch = useRef(0);
   const scanId = useRef<string | null>(null);
   const cancelScan = () => { if (scanId.current) void window.electronAPI?.cancelKeyframes(scanId.current).catch(() => {}); scanId.current = null; };
@@ -192,7 +191,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const currentMasks = effectiveSpatial?.masks || [];
   const hasSpatialActive = Boolean(draft?.hasSpatialConfig(metadata ? { width: metadata.width, height: metadata.height } : undefined));
   const exportCompressConfig: CompressConfig = hasSpatialActive && !isCompressMode ? { enabled: true, preset: 'balanced', crf: 22 } : currentCompressConfig;
-  const outputPolicyKey = JSON.stringify([exportCompressConfig.enabled, exportCompressConfig.preset, appConfig.outputDirectoryRule, appConfig.subFolderName, appConfig.customOutputDirectory, appConfig.ffprobePath]);
+  const outputPolicyKey = JSON.stringify([exportCompressConfig.enabled, exportCompressConfig.preset, appConfig.ffprobePath]);
   useEffect(() => { setCropRatio(currentCropBox?.ratio ?? 'free'); setIsCropLocked(currentCropBox?.locked ?? false); }, [draft, draftVersion, targetSegmentId]);
 
   const segmentSpatialMap = useMemo(() => {
@@ -944,31 +943,6 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     }
   };
 
-  // 选择自定义输出目录
-  const handleSelectOutputDir = async () => {
-    if (!window.electronAPI) return;
-    try {
-      const currentDir = safeOutputPath ? safeOutputPath.replace(/[\\/][^\\/]+$/, '') : undefined;
-      const selectedDir = await window.electronAPI.selectDirectory(currentDir);
-      if (selectedDir) {
-        await saveConfig({
-          outputDirectoryRule: 'custom_fixed',
-          customOutputDirectory: selectedDir,
-        });
-        setNotice({
-          type: 'success',
-          message: `输出目录已更新为: ${selectedDir}`,
-        });
-        if (metadata?.filePath) {
-          const newPath = await window.electronAPI.resolveOutputPath(metadata.filePath, concatSingleFile, currentPlanTitle, currentCompressConfig, stripOriginalCover);
-          setSafeOutputPath(newPath);
-        }
-      }
-    } catch (err: any) {
-      setNotice({ type: 'error', message: `设置输出目录失败: ${err?.message || err}` });
-    }
-  };
-
   // 拖拽事件处理
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -1398,13 +1372,6 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                     <span className="text-sky-300 font-bold max-w-[90px] sm:max-w-[140px] 2xl:max-w-[220px] truncate">
                       {safeOutputPath.split(/[\\/]/).pop()}
                     </span>
-                  </button>
-                  <button
-                    onClick={handleSelectOutputDir}
-                    className="p-1 hover:bg-white/10 rounded text-zinc-400 hover:text-amber-400 transition-all shrink-0 border-l border-white/10 pl-1.5 ml-0.5"
-                    title="点击更换剪辑产物的保存目录"
-                  >
-                    <FolderEdit className="w-3.5 h-3.5" />
                   </button>
                 </div>
               )}

@@ -3,7 +3,8 @@ import fs from 'fs';
 import { CompressionFile, CompressionSaveRequest, PlanRecord } from '../../shared/types';
 import { ConfigService } from './ConfigService';
 import { PlanManager } from './PlanManager';
-import { FileAccessRegistry, localPath, requestId, textValue, validateCompress, validateConfigPatch } from './IpcSecurity';
+import { FileAccessRegistry, localPath, requestId, textValue, validateCompress } from './IpcSecurity';
+import { resolveOutputDirectory } from './OutputPathResolver';
 import { abortError, fileIdentityAsync, MediaLimiter, probeCompressionFile, resolveTool } from './MediaTools';
 
 /** 整片压缩的检查和记录构造；存储和执行仍由方案管理器负责。 */
@@ -45,17 +46,13 @@ export class BatchCompressionService {
     if (!title || /[<>:"/\\|?*\x00-\x1f]/.test(title)) throw new Error('方案标题为空或包含文件名不支持的字符');
     validateCompress(request.compress);
     if (!request.compress?.enabled || typeof request.stripOriginalCover !== 'boolean') throw new Error('整片压缩参数无效');
-    const policy = request.outputPolicy;
-    if (!policy || !['sub_folder', 'same_directory', 'custom_fixed'].includes(policy.outputDirectoryRule) || typeof policy.subFolderName !== 'string' || typeof policy.customOutputDirectory !== 'string') throw new Error('输出规则无效');
-    validateConfigPatch(policy);
-    if (policy.outputDirectoryRule === 'custom_fixed') localPath(policy.customOutputDirectory);
     const existing = await this.plans.getPlan(request.id);
     const sourcePath = await this.files.check(request.sourcePath);
     const handle = await fs.promises.open(sourcePath, 'r'); await handle.close();
     const identity = await fileIdentityAsync(sourcePath);
     const invalid = this.invalid.get(process.platform === 'win32' ? sourcePath.toLowerCase() : sourcePath);
     if (invalid?.identity === identity) throw new Error(invalid.message);
-    const directory = path.resolve(this.config.resolveTargetDirectory(sourcePath, policy));
+    const directory = resolveOutputDirectory(sourcePath, title, true);
     const same = existing?.compressionOnly && existing.sourcePath === sourcePath && existing.title === title && JSON.stringify(existing.compress) === JSON.stringify(request.compress) && existing.stripOriginalCover === request.stripOriginalCover && existing.outputDirectory === directory;
     // 成功回执丢失后的同 ID 重试只返回原记录，绝不重置已排队或已完成状态。
     if (same && (!request.expectedUpdatedAt || request.expectedUpdatedAt !== existing!.updatedAt)) return existing!;
