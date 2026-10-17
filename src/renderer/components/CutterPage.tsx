@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { MediaMetadata, RetentionDecision, PlanRecord, CompressConfig, SpatialCropBox, SpatialMaskItem } from '../../shared/types';
+import { MediaMetadata, RetentionDecision, PlanRecord, CompressConfig, SpatialCropBox, SpatialMaskItem, OutputMode } from '../../shared/types';
 import { COMPRESS_PRESETS } from '../../shared/compressPresets';
 import { CompressionSettings } from './CompressionSettings';
 import { VideoCompareView, PreviewSample } from './VideoCompareView';
@@ -77,6 +77,9 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   // 核心领域深模块草稿
   const [draft, setDraft] = useState<RetentionDraft | null>(null);
   const [draftVersion, setDraftVersion] = useState(0);
+  const [selectingOutputs, setSelectingOutputs] = useState(false);
+  const [selectedOutputSegments, setSelectedOutputSegments] = useState<string[]>([]);
+  useEffect(() => { setSelectedOutputSegments([]); setSelectingOutputs(false); }, [draft, draftVersion]);
 
   // 历史快照栈支持撤销/重做 (Undo / Redo)
   const [history, setHistory] = useState<DraftSnapshot[]>([]);
@@ -159,7 +162,10 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const segments = useMemo(() => (draft ? draft.getSegments() : []), [draft, draftVersion]);
   const keptDurationMs = useMemo(() => (draft ? draft.getKeptDurationMs() : 0), [draft, draftVersion]);
   const discardedDurationMs = useMemo(() => (draft ? draft.getDiscardedDurationMs() : 0), [draft, draftVersion]);
-  const concatSingleFile = draft ? draft.concatSingleFile : true;
+  const outputMode = draft?.outputMode ?? 'single';
+  const outputs = useMemo(() => draft?.getOutputs() ?? [], [draft, draftVersion]);
+  const singleOutput = outputs.length <= 1;
+  const outputNumbers = useMemo(() => Object.fromEntries(outputs.flatMap((output, index) => output.segmentIds.map(id => [id, index + 1]))), [outputs]);
   const stripOriginalCover = draft ? draft.stripOriginalCover : true;
 
   // 降码模式状态与当前配置派生
@@ -299,7 +305,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     let isCancelled = false;
     if (window.electronAPI?.resolveOutputPath) {
       window.electronAPI
-        .resolveOutputPath(metadata.filePath, concatSingleFile, currentPlanTitle, exportCompressConfig, stripOriginalCover)
+        .resolveOutputPath(metadata.filePath, singleOutput, currentPlanTitle, exportCompressConfig, stripOriginalCover, metadata.streams)
         .then((resolved) => {
           if (!isCancelled) {
             setSafeOutputPath(resolved);
@@ -312,7 +318,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     return () => {
       isCancelled = true;
     };
-  }, [metadata?.filePath, concatSingleFile, currentPlanTitle, outputPolicyKey, stripOriginalCover]);
+  }, [metadata, singleOutput, currentPlanTitle, outputPolicyKey, stripOriginalCover]);
 
 
 
@@ -471,7 +477,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           setCurrentPlanTitle(recordToLoad.title);
         } else {
           newDraft = new RetentionDraft(filePath, basicMeta.durationMs);
-          newDraft.concatSingleFile = appConfig.autoConcatSingleFile;
+          newDraft.setOutputMode(appConfig.autoConcatSingleFile ? 'single' : 'separate');
           newDraft.stripOriginalCover = appConfig.stripOriginalCover;
           setCurrentPlanId(null);
           setCurrentPlanTitle('');
@@ -567,7 +573,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     });
     setNotice({
       type: 'warning',
-      message: '已安全合并相邻分段（执行保留优先保全铁律）',
+      message: '已移除切点；保留内容优先，不同文件的片段合并后单独输出，可撤销',
     });
   };
 
@@ -599,11 +605,13 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     });
   };
 
-  // 切换多段合并偏好
-  const handleToggleConcat = (val: boolean) => {
-    commitDraftChange((d) => {
-      d.concatSingleFile = val;
-    });
+  const handleOutputMode = (mode: OutputMode) => {
+    commitDraftChange(d => d.setOutputMode(mode));
+  };
+
+  const handleCombineOutputs = () => {
+    commitDraftChange(d => d.combineSegments(selectedOutputSegments));
+    setNotice({ type: 'success', message: '已合成一个输出文件，按原视频顺序拼接；可撤销' });
   };
 
   // 切换导出模式 (无损秒切 vs 智能降码)
@@ -838,7 +846,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const buildCurrentRecord = async (): Promise<PlanRecord | null> => {
     if (!draft || !metadata || !window.electronAPI) return null;
     const title = currentPlanTitle || metadata.fileName.replace(/\.[^/.]+$/, '');
-    const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.concatSingleFile, title, exportCompressConfig, draft.stripOriginalCover);
+    if (!draft.getOutputs().length) throw new Error('请至少保留一个片段');
+    const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.getOutputs().length <= 1, title, exportCompressConfig, draft.stripOriginalCover, metadata.streams);
     const planId = currentPlanId || `plan_${crypto.randomUUID()}`;
     return draft.toRecord({
       id: planId,
@@ -863,7 +872,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     savingRef.current = true; setSaving(true);
     const epoch = loadEpoch.current;
     try {
-      const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.concatSingleFile, trimmedTitle, exportCompressConfig, draft.stripOriginalCover);
+      if (!draft.getOutputs().length) throw new Error('请至少保留一个片段');
+      const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.getOutputs().length <= 1, trimmedTitle, exportCompressConfig, draft.stripOriginalCover, metadata.streams);
       const isUpdating = saveMode === 'update' && Boolean(currentPlanId);
       const targetId = isUpdating && currentPlanId ? currentPlanId : `plan_${crypto.randomUUID()}`;
 
@@ -935,7 +945,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     }
     if (metadata?.filePath) {
       try {
-        const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, concatSingleFile, currentPlanTitle, currentCompressConfig, stripOriginalCover);
+        const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, singleOutput, currentPlanTitle, exportCompressConfig, stripOriginalCover, metadata.streams);
         window.electronAPI.showItemInFolder(outPath);
       } catch {
         window.electronAPI.showItemInFolder(metadata.filePath);
@@ -1312,10 +1322,25 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           </div>
         </div>
 
+        <div className="flex flex-wrap items-center gap-2 text-xs shrink-0" aria-label="合并片段工具栏">
+          {!selectingOutputs ? (
+            <button disabled={segments.filter(segment => segment.decision === 'keep').length < 2} onClick={() => setSelectingOutputs(true)} className="px-3 py-1.5 rounded-lg border border-white/20 text-zinc-200 hover:bg-white/10 disabled:opacity-40" title="任意选择保留片段，合成一个输出文件">选择合并片段</button>
+          ) : <>
+            <span className="text-violet-200">已选 {selectedOutputSegments.length} 段</span>
+            <button disabled={selectedOutputSegments.length < 2} title={selectedOutputSegments.length < 2 ? '至少选择两个保留片段' : '仅将选中片段合成一个文件'} onClick={handleCombineOutputs} className="px-3 py-1.5 rounded-lg bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-40">合成一个文件</button>
+            <button onClick={() => { setSelectingOutputs(false); setSelectedOutputSegments([]); }} className="px-3 py-1.5 rounded-lg text-zinc-300 hover:bg-white/10">取消选择</button>
+            <span className="text-zinc-400">{outputMode === 'single' ? '选中片段合成一个文件，其余片段分别输出' : '按原视频顺序拼接，丢弃片段不参与'}</span>
+          </>}
+        </div>
+
         {/* 4. 精炼双行分段卡片流 */}
         <div className="max-h-[160px] shrink-0 overflow-y-auto overflow-x-hidden pr-0.5">
           <SegmentCardsGrid
             segments={segments}
+            selectingOutputs={selectingOutputs}
+            selectedOutputSegments={selectedOutputSegments}
+            onSelectOutputSegment={id => setSelectedOutputSegments(previous => previous.includes(id) ? previous.filter(item => item !== id) : [...previous, id])}
+            outputNumbers={outputMode === 'custom' ? outputNumbers : undefined}
             currentTimeMs={currentTimeMs}
             auditionRange={auditionRange}
             stepMs={nudgeStepMs}
@@ -1334,9 +1359,25 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           />
         </div>
 
+        <div className="shrink-0 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs" aria-label="输出文件清单">
+          <div className="text-zinc-200" role="status">将输出 {outputs.length} 个文件<span className="ml-3 text-zinc-400">按原视频顺序拼接</span></div>
+          <div className="max-h-[72px] overflow-y-auto mt-1 space-y-1">
+            {outputs.map((output, index) => <div key={output.segmentIds.join(',')} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-zinc-300">
+              <span className="text-violet-200">文件 {index + 1}：</span>
+              {output.segmentIds.map((id, memberIndex) => <React.Fragment key={id}>
+                {memberIndex > 0 && <span aria-hidden="true">→</span>}
+                <span className="inline-flex items-center gap-1">第 {segments.find(segment => segment.id === id)?.index} 段
+                  {outputMode === 'custom' && output.segmentIds.length > 1 && <button aria-label={`从文件 ${index + 1} 移出第 ${segments.find(segment => segment.id === id)?.index} 段`} title="移出此段，单独输出" onClick={() => commitDraftChange(d => d.separateSegments([id]))} className="px-1.5 py-0.5 rounded hover:bg-white/15 text-zinc-400 hover:text-white">×</button>}
+                </span>
+              </React.Fragment>)}
+              {outputMode === 'custom' && output.segmentIds.length > 1 && <button onClick={() => commitDraftChange(d => d.separateSegments(output.segmentIds))} className="px-2 py-0.5 rounded text-violet-200 hover:bg-white/10" aria-label={`将文件 ${index + 1} 拆开输出`}>拆开输出</button>}
+            </div>)}
+          </div>
+        </div>
+
         {/* 5. 底部固定状态 Dock 栏 (建立顶级 relative z-50 层叠上下文，彻底杜绝任何下层视窗横穿切断弹窗) */}
         <div className="mt-auto shrink-0 pt-1 pb-1 relative z-50">
-          <div className="px-3 py-2 rounded-2xl bg-[#161b22]/95 border border-white/10 shadow-2xl backdrop-blur-md flex flex-wrap lg:flex-nowrap items-center justify-between gap-2 min-w-0">
+          <div className="px-3 py-2 rounded-2xl bg-[#161b22]/95 border border-white/10 shadow-2xl backdrop-blur-md flex flex-wrap 2xl:flex-nowrap items-center justify-between gap-2 min-w-0">
             {/* 左侧：统计指标与预定产物名 */}
             <div className="flex items-center gap-2 sm:gap-2.5 text-xs font-mono shrink min-w-0">
               <div className="whitespace-nowrap hidden 2xl:block">
@@ -1379,14 +1420,12 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
             {/* 中间：剪辑偏好选项组 */}
             <div className="flex items-center gap-2 sm:gap-2.5 text-xs text-zinc-300 select-none shrink-0 mx-0.5">
-              <label className="flex items-center gap-1 cursor-pointer hover:text-white transition-colors" title="多个保留片段是否拼接合并为一个视频文件">
-                <input
-                  type="checkbox"
-                  checked={concatSingleFile}
-                  onChange={(e) => handleToggleConcat(e.target.checked)}
-                  className="w-3.5 h-3.5 accent-blue-500 rounded cursor-pointer"
-                />
-                <span>多段合并</span>
+              <label className="flex items-center gap-1">输出方式
+                <select aria-label="输出方式" value={outputMode} onChange={event => handleOutputMode(event.target.value as OutputMode)} className="bg-zinc-900 text-zinc-100 border border-white/20 rounded px-2 py-1" title="切换方式会重设组合，可撤销">
+                  <option value="separate">分别输出</option>
+                  <option value="single">全部合成一个</option>
+                  <option value="custom">自定义合并</option>
+                </select>
               </label>
 
               <label className="flex items-center gap-1 cursor-pointer hover:text-white transition-colors" title="勾选后剥离原片固定封面，让切片视频自动展示各段首帧画面，防止所有切片封面雷同">

@@ -4,6 +4,10 @@ import { formatTimecode, parseTimecodeToMs } from './VideoPlayer';
 import { Play, ArrowRight, Clock, Trash2 } from 'lucide-react';
 
 interface SegmentCardsGridProps {
+  selectingOutputs?: boolean;
+  selectedOutputSegments?: string[];
+  onSelectOutputSegment?: (id: string) => void;
+  outputNumbers?: Record<string, number>;
   segments: Segment[];
   currentTimeMs?: number;
   auditionRange?: { startMs: number; endMs: number } | null;
@@ -161,6 +165,10 @@ const TimecodeWheel: React.FC<TimecodeWheelProps> = ({
 };
 // 单个分段卡片项组件（独立承载自身的生命周期与聚焦滚动 Hook，严格遵守 React 规范）
 interface SegmentCardItemProps {
+  selectingOutputs?: boolean;
+  selectedForOutput?: boolean;
+  onSelectOutputSegment?: (id: string) => void;
+  outputNumber?: number;
   seg: Segment;
   idx: number;
   totalSegments: number;
@@ -194,6 +202,10 @@ const SegmentCardItem: React.FC<SegmentCardItemProps> = ({
   onMergeWithPrevious,
   onSeek,
   hasSpatial,
+  selectingOutputs,
+  selectedForOutput,
+  onSelectOutputSegment,
+  outputNumber,
 }) => {
   const isKept = seg.decision === 'keep';
   const durationSec = (seg.durationMs / 1000).toFixed(1);
@@ -235,7 +247,7 @@ const SegmentCardItem: React.FC<SegmentCardItemProps> = ({
   return (
     <div
       ref={cardRef}
-      className={`flex flex-col justify-between rounded-xl px-2.5 py-1.5 border transition-all shadow-md relative group h-[74px] select-none ${
+      className={`flex flex-col justify-between rounded-xl px-2.5 py-1.5 border transition-all shadow-md relative group h-[74px] select-none ${selectedForOutput ? 'outline outline-2 outline-offset-1 outline-violet-400' : ''} ${
         isAuditioning
           ? 'bg-[#12281e]/95 border-emerald-400 ring-2 ring-emerald-400/70 shadow-[0_0_15px_rgba(52,211,153,0.35)] animate-pulse'
           : isPlayheadActive
@@ -262,6 +274,7 @@ const SegmentCardItem: React.FC<SegmentCardItemProps> = ({
       <div className="flex items-center justify-between pl-1 shrink-0 h-6">
         {/* 左：序号 + 保留/丢弃切换小胶囊 */}
         <div className="flex items-center gap-1.5 shrink-0">
+          {selectingOutputs && <input type="checkbox" aria-label={`选择第 ${seg.index} 段合并`} checked={Boolean(selectedForOutput)} disabled={!isKept} onChange={() => onSelectOutputSegment?.(seg.id)} title={isKept ? '选择要合成一个文件的片段' : '丢弃片段不参与输出'} className="h-4 w-4 accent-violet-500 disabled:opacity-30" />}
           <span
             onClick={() => onSeek && onSeek(seg.startMs)}
             className={`font-mono font-bold text-[11px] px-1.5 py-0.2 rounded cursor-pointer transition-colors ${
@@ -312,15 +325,14 @@ const SegmentCardItem: React.FC<SegmentCardItemProps> = ({
         {/* 右：时长 + 删除合并 + 试听 */}
         <div className="flex items-center gap-1 shrink-0">
           <span className="text-[10px] text-zinc-400 font-mono flex items-center gap-0.5 bg-black/40 px-1.5 py-0.5 rounded border border-white/5 whitespace-nowrap">
-            <Clock className="w-2.5 h-2.5 text-zinc-400" />
-            <span>{durationSec}s</span>
+            {outputNumber ? <span className="text-violet-200" title={`文件 ${outputNumber} · 时长 ${durationSec} 秒`}>文件 {outputNumber}</span> : <><Clock className="w-2.5 h-2.5 text-zinc-400" /><span>{durationSec}s</span></>}
           </span>
 
           {canDelete && (
             <button
               onClick={handleDelete}
               className="p-1 rounded text-amber-400/80 hover:text-amber-300 hover:bg-amber-500/15 transition-all text-[10px] flex items-center active:scale-95"
-              title={idx === 0 ? '删除切点，将此段与下一段合并' : '删除切点，将此段与上一段合并'}
+              title={idx === 0 ? '移除切点：与下一段连成连续区间' : '移除切点：与上一段连成连续区间'}
             >
               <Trash2 className="w-3 h-3" />
             </button>
@@ -426,12 +438,16 @@ export const SegmentCardsGrid: React.FC<SegmentCardsGridProps> = ({
   onSeek,
   segmentSpatialMap,
   hasGlobalSpatial,
+  selectingOutputs,
+  selectedOutputSegments,
+  onSelectOutputSegment,
+  outputNumbers,
 }) => {
   const activeStepMs = stepMs;
   const stepLabel = formatStepLabel(activeStepMs);
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5 items-stretch">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-2.5 items-stretch">
       {segments.map((seg, idx) => {
         const hasSpatial = Boolean((segmentSpatialMap && segmentSpatialMap[seg.id]) || hasGlobalSpatial);
         return (
@@ -452,6 +468,10 @@ export const SegmentCardsGrid: React.FC<SegmentCardsGridProps> = ({
             onMergeWithPrevious={onMergeWithPrevious}
             onSeek={onSeek}
             hasSpatial={hasSpatial}
+            selectingOutputs={selectingOutputs}
+            selectedForOutput={selectedOutputSegments?.includes(seg.id)}
+            onSelectOutputSegment={onSelectOutputSegment}
+            outputNumber={outputNumbers?.[seg.id]}
           />
         );
       })}

@@ -1,7 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import { randomUUID } from 'crypto';
-import { PlanRecord, CutResult, MediaRetentionPlan, CompressConfig, ExecutionStatus, EngineState, PlanSegment, MediaStreamInfo, MediaTime, ExecutionProgress } from '../../shared/types';
+import { PlanRecord, CutResult, MediaRetentionPlan, CompressConfig, ExecutionStatus, EngineState, PlanSegment, MediaStreamInfo, MediaTime, ExecutionProgress, OutputFilePlan, SpatialConfig } from '../../shared/types';
 import { ExecutionProgressTracker, ExecutionStep } from './ExecutionProgress';
 import { RetentionDraft } from '../../shared/RetentionDraft';
 import { formatTaskTimestamp } from '../../shared/timeUtils';
@@ -126,13 +126,13 @@ export class MediaCuttingEngine {
           this.notify(processing);
           plan = { version: '1.0', title: processing.title, sourcePath: processing.sourcePath,
             outputPath: '', durationMs: prepared.durationMs, totalKeptDurationMs: prepared.durationMs,
-            concatToSingleFile: true, stripOriginalCover: processing.stripOriginalCover !== false,
-            compress: processing.compress, planSegments: [], blockers: [] };
+            stripOriginalCover: processing.stripOriginalCover !== false,
+            compress: processing.compress, outputs: [{ segmentIds: [], planSegments: [], spatialSegments: [] }], blockers: [] };
         } else {
           const meta = await job.prober.probe(processing.sourcePath, this.controller.signal);
           if (this.controller.signal.aborted) throw new Error('上次执行中断，可重试');
           const draft = RetentionDraft.fromRecord(processing, meta.durationMs);
-          plan = draft.toPlan(meta.keyframes, { outputPath: processing.outputPath || processing.sourcePath, concatToSingleFile: processing.concatSingleFile !== false, stripOriginalCover: processing.stripOriginalCover !== false, title: processing.title, keyframePoints: meta.keyframePoints });
+          plan = draft.toPlan(meta.keyframes, { outputPath: processing.outputPath || processing.sourcePath, stripOriginalCover: processing.stripOriginalCover !== false, title: processing.title, keyframePoints: meta.keyframePoints });
         }
         const result = await execution.executeSnapshot(plan, this.controller.signal, processing.compressionOnly === true, prepared);
         final = result.success
@@ -217,14 +217,14 @@ export class MediaCuttingEngine {
     if (endUs <= startUs) throw new Error('保留区间没有有效时长');
     await this.runStep(progressKey, ['-n', '-ss', formatMicroseconds(startUs), '-i', source, '-t', formatMicroseconds(endUs - startUs), '-c', 'copy', '-avoid_negative_ts', 'make_zero', ...streams.flatMap(stream => ['-map', `0:${stream.index}`]), ...this.audioDispositions(streams), output], Number(endUs - startUs) / 1000, signal);
   }
-  private async concat(files: string[], output: string, directory: string, signal?: AbortSignal) {
+  private async concat(files: string[], output: string, directory: string, signal?: AbortSignal, progressKey?: string) {
     const list = path.join(directory, 'concat.txt');
     await fs.promises.writeFile(list, files.map(file => `file '${file.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'), 'utf8');
     const info = await probeFile(files[0], this.ffprobePath, signal);
     let durationMs = info.containerDurationMs;
     // 分段数可能很多，逐个读取元数据，避免进度统计同时启动大量 FFprobe。
     for (const file of files.slice(1)) durationMs += (await probeFile(file, this.ffprobePath, signal)).containerDurationMs;
-    await this.runStep('merge', ['-n', '-f', 'concat', '-safe', '0', '-i', list, '-map', '0', '-c', 'copy', ...this.audioDispositions(info.streams), output], durationMs, signal);
+    await this.runStep(progressKey, ['-n', '-f', 'concat', '-safe', '0', '-i', list, '-map', '0', '-c', 'copy', ...this.audioDispositions(info.streams), output], durationMs, signal);
   }
   private audioDispositions(streams: MediaStreamInfo[]) { return streams.filter(stream => stream.type === 'audio').flatMap((stream, index) => [`-disposition:a:${index}`, stream.default ? 'default' : '0']); }
   private async verify(file: string, expected: MediaStreamInfo[], signal?: AbortSignal) {
@@ -256,11 +256,11 @@ export class MediaCuttingEngine {
   executeRawPlan(plan: MediaRetentionPlan, signal?: AbortSignal): Promise<CutResult> { return this.executionSnapshot().executeSnapshot(plan, signal); }
 
   /** 一份安全覆盖只编码一次；视频在解码后按逻辑边界分窗，音轨不跟随窗口重复。 */
-  private async spatialPiece(input: string, output: string, pieces: string[], unions: PlanSegment[], plan: MediaRetentionPlan, size: Dimension, target: Dimension | undefined, config: CompressConfig, encoder: Encoder, signal?: AbortSignal, progressKey?: string, cpuRetry = false) {
+  private async spatialPiece(input: string, output: string, pieces: string[], unions: PlanSegment[], plan: OutputFilePlan, size: Dimension, target: Dimension | undefined, config: CompressConfig, encoder: Encoder, signal?: AbortSignal, progressKey?: string, cpuRetry = false) {
     const info = await probeFile(input, this.ffprobePath, signal);
     const startMs = await presentationStart(input, info, this.ffprobePath, signal);
-    const segments = plan.spatialSegments ?? plan.planSegments.map(segment => ({ ...segment, spatialConfig: plan.segmentSpatialOverrides?.[segment.segmentId] ?? plan.spatialConfig }));
-    const logical: Array<{ startMs: number; spatialConfig: typeof plan.spatialConfig }> = [];
+    const segments = plan.spatialSegments;
+    const logical: Array<{ startMs: number; spatialConfig: SpatialConfig | undefined }> = [];
     let elapsedMs = 0, firstStartMs = 0;
     // concat demuxer 以各文件的容器时长推进时间轴。采用中间素材实测值，不能用请求切片时长替代。
     for (let p = 0; p < pieces.length; p++) {
@@ -278,7 +278,7 @@ export class MediaCuttingEngine {
     }
     const parts: string[] = [];
     const sampleAspect = info.displayAspectRatio / (info.width / info.height);
-    const configurations: Array<typeof plan.spatialConfig> = [], keys: string[] = [];
+    const configurations: Array<SpatialConfig | undefined> = [], keys: string[] = [];
     const indices = logical.map(window => {
       const key = JSON.stringify(window.spatialConfig ?? null);
       let index = keys.indexOf(key);
@@ -303,12 +303,12 @@ export class MediaCuttingEngine {
     const directory = path.join(this.tmpDir, `job_${randomUUID()}`);
     await fs.promises.mkdir(directory, { recursive: true });
     try {
-      if (!compressionOnly && !plan.planSegments.length) throw new Error('未选择任何保留片段');
+      if (!plan.outputs.length || (!compressionOnly && plan.outputs.some(output => !output.planSegments.length))) throw new Error('未选择任何保留片段');
       const destination = resolveOutputDirectory(plan.sourcePath, plan.title, compressionOnly);
       const info = prepared || await probeFile(plan.sourcePath, this.ffprobePath, signal);
       const streams = retainedStreams(info.streams, plan.stripOriginalCover !== false);
       const sourceDim = { width: info.width, height: info.height };
-      const configs = plan.spatialSegments?.map(segment => segment.spatialConfig) ?? [plan.spatialConfig, ...Object.values(plan.segmentSpatialOverrides ?? {})];
+      const configs = plan.outputs.flatMap(output => output.spatialSegments.map(segment => segment.spatialConfig));
       configs.forEach(config => validateSpatial(config, sourceDim));
       const hasSpatial = configs.some(config => hasSpatialEffects(config, sourceDim));
       const needCompress = Boolean(plan.compress?.enabled) || hasSpatial;
@@ -331,14 +331,16 @@ export class MediaCuttingEngine {
       };
       let source = plan.sourcePath, sourceStreams = streams, seekOffset: MediaTime = millisecondsTime(0), sourceInfo = info;
       const repairTimestamps = await needsTimestampRepair(source, info, this.ffprobePath, signal);
-      const durations = compressionOnly ? [info.durationMs] : plan.planSegments.map(segment => segment.safeRange.endMs - Number(ceilMicroseconds(segment.seekTime || millisecondsTime(segment.safeRange.startMs))) / 1000);
-      const totalDuration = durations.reduce((sum, duration) => sum + duration, 0);
-      const outputCount = plan.concatToSingleFile ? 1 : durations.length;
+      const durations = plan.outputs.map(output => compressionOnly ? [info.durationMs] : output.planSegments.map(segment => segment.safeRange.endMs - Number(ceilMicroseconds(segment.seekTime || millisecondsTime(segment.safeRange.startMs))) / 1000));
+      const outputCount = plan.outputs.length;
       const steps: ExecutionStep[] = [];
       if (repairTimestamps) steps.push({ key: 'normalize', stage: 'normalizing', durationMs: info.durationMs });
-      if (!compressionOnly) durations.forEach((durationMs, i) => steps.push({ key: `cut:${i}`, stage: 'cutting', durationMs, current: i + 1, total: durations.length }));
-      if (plan.concatToSingleFile && durations.length > 1) steps.push({ key: 'merge', stage: 'merging', durationMs: totalDuration });
-      if (needCompress) for (let i = 0; i < outputCount; i++) steps.push({ key: `encode:${i}`, stage: 'encoding', durationMs: plan.concatToSingleFile ? totalDuration : durations[i], current: i + 1, total: outputCount });
+      durations.forEach((members, i) => {
+        if (!compressionOnly) members.forEach((durationMs, j) => steps.push({ key: `cut:${i}:${j}`, stage: 'cutting', durationMs, current: i + 1, total: outputCount }));
+        const durationMs = members.reduce((sum, duration) => sum + duration, 0);
+        if (members.length > 1) steps.push({ key: `merge:${i}`, stage: 'merging', durationMs, current: i + 1, total: outputCount });
+        if (needCompress) steps.push({ key: `encode:${i}`, stage: 'encoding', durationMs, current: i + 1, total: outputCount });
+      });
       this.tracker?.configure(steps, outputCount);
       // 缺失包 PTS 的 AVI 等素材，直接跳转可能选到前一个 GOP。先无损整理时间戳与索引。
       if (repairTimestamps) {
@@ -349,55 +351,31 @@ export class MediaCuttingEngine {
         source = normalized; sourceStreams = normalizedInfo.streams; sourceInfo = normalizedInfo;
       }
 
-      // 多分段合并单文件时，计算 Letterbox 母版画幅（取全局或首段）
-      let targetLetterboxDim = undefined;
-      if (plan.concatToSingleFile && hasSpatial) {
-        const firstConfig = plan.spatialSegments?.[0]?.spatialConfig ?? plan.segmentSpatialOverrides?.[plan.planSegments[0]?.segmentId] ?? plan.spatialConfig;
-        targetLetterboxDim = spatialOutputSize(sourceDim, firstConfig);
-      }
-
-      const pieces: string[] = compressionOnly ? [source] : [];
-      for (let i = 0; i < plan.planSegments.length; i++) {
-        const piece = path.join(directory, `segment_${i}${formats.intermediateExtension}`);
-        await this.cut(source, plan.planSegments[i], piece, sourceStreams, signal, seekOffset, `cut:${i}`); pieces.push(piece);
-      }
-
-      let processedPieces: string[] = [];
-      if (hasSpatial) {
-        if (plan.concatToSingleFile) {
-          let input = pieces[0];
-          if (pieces.length > 1) {
-            input = path.join(directory, `spatial_input${formats.intermediateExtension}`);
-            await this.concat(pieces, input, directory, signal);
-          }
-          const output = path.join(directory, `spatial_merged${formats.outputExtension}`);
-          await encode(output, (selected, retry) => this.spatialPiece(input, output, pieces, plan.planSegments, plan, sourceDim, targetLetterboxDim, effectiveCompressConfig, selected, signal, 'encode:0', retry));
-          processedPieces.push(output);
-        } else for (let i = 0; i < pieces.length; i++) {
-          const spatialPiece = path.join(directory, `spatial_${i}${formats.outputExtension}`);
-          await encode(spatialPiece, (selected, retry) => this.spatialPiece(pieces[i], spatialPiece, [pieces[i]], [plan.planSegments[i]], plan, sourceDim, targetLetterboxDim, effectiveCompressConfig, selected, signal, `encode:${i}`, retry));
-          processedPieces.push(spatialPiece);
-        }
-      } else {
-        processedPieces = pieces;
-      }
-
-      let originals = processedPieces;
-      if (plan.concatToSingleFile && processedPieces.length > 1) {
-        const mergedExt = hasSpatial ? formats.outputExtension : formats.intermediateExtension;
-        const merged = path.join(directory, `merged${mergedExt}`);
-        await this.concat(processedPieces, merged, directory, signal);
-        originals = [merged];
-      }
-
       const finalFiles: string[] = [];
-      for (let i = 0; i < originals.length; i++) {
-        let output = originals[i];
-        if (needCompress && !hasSpatial) {
-          output = path.join(directory, `encoded_${i}${formats.outputExtension}`);
-          await encode(output, (selected, retry) => this.compressFile(originals[i], output, effectiveCompressConfig, selected, signal, undefined, `encode:${i}`, retry, compressionOnly && plan.stripOriginalCover, compressionOnly ? sourceInfo : undefined));
+      for (let i = 0; i < plan.outputs.length; i++) {
+        const filePlan = plan.outputs[i];
+        const pieces: string[] = compressionOnly ? [source] : [];
+        for (let j = 0; j < filePlan.planSegments.length; j++) {
+          const piece = path.join(directory, `segment_${i}_${j}${formats.intermediateExtension}`);
+          await this.cut(source, filePlan.planSegments[j], piece, sourceStreams, signal, seekOffset, `cut:${i}:${j}`);
+          pieces.push(piece);
         }
-        this.tracker?.stage('verifying', i + 1, originals.length);
+        let input = pieces[0];
+        if (pieces.length > 1) {
+          input = path.join(directory, `merged_${i}${formats.intermediateExtension}`);
+          await this.concat(pieces, input, directory, signal, `merge:${i}`);
+        }
+        let output = input;
+        const fileHasSpatial = filePlan.spatialSegments.some(segment => hasSpatialEffects(segment.spatialConfig, sourceDim));
+        if (fileHasSpatial) {
+          const target = spatialOutputSize(sourceDim, filePlan.spatialSegments[0]?.spatialConfig);
+          output = path.join(directory, `spatial_${i}${formats.outputExtension}`);
+          await encode(output, (selected, retry) => this.spatialPiece(input, output, pieces, filePlan.planSegments, filePlan, sourceDim, target, effectiveCompressConfig, selected, signal, `encode:${i}`, retry));
+        } else if (needCompress) {
+          output = path.join(directory, `encoded_${i}${formats.outputExtension}`);
+          await encode(output, (selected, retry) => this.compressFile(input, output, effectiveCompressConfig, selected, signal, undefined, `encode:${i}`, retry, compressionOnly && plan.stripOriginalCover, compressionOnly ? sourceInfo : undefined));
+        }
+        this.tracker?.stage('verifying', i + 1, outputCount);
         await this.verify(output, streams, signal); finalFiles.push(output);
         this.tracker?.finishOperation(`verify:${i}`);
       }
@@ -405,7 +383,7 @@ export class MediaCuttingEngine {
       const timestamp = formatTaskTimestamp();
       for (let attempt = 0; attempt < 10; attempt++) {
         if (signal?.aborted) throw new Error('操作已取消');
-        const targets = resolveOutputBatch({ directory: destination, source: plan.sourcePath, title: plan.title, extension: formats.outputExtension, count: finalFiles.length, segmented: !plan.concatToSingleFile, timestamp });
+        const targets = resolveOutputBatch({ directory: destination, source: plan.sourcePath, title: plan.title, extension: formats.outputExtension, count: finalFiles.length, segmented: finalFiles.length > 1, timestamp });
         const published: Array<{ file: string; identity: fs.Stats }> = [];
         try {
           for (let i = 0; i < targets.length; i++) {

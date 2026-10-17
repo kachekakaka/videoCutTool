@@ -1,11 +1,12 @@
-import { Segment, RetentionDecision, MediaRetentionPlan, PlanRecord, CompressConfig, KeyframePoint, SpatialConfig, SpatialCropBox, SpatialMaskItem } from './types';
-import { planRetention } from './RetentionPlanner';
+import { Segment, RetentionDecision, MediaRetentionPlan, PlanRecord, CompressConfig, KeyframePoint, SpatialConfig, SpatialCropBox, SpatialMaskItem, OutputMode, SegmentOutputGroups } from './types';
+import { planRetention, resolveOutputGroups, validateOutputGroups } from './RetentionPlanner';
 import { hasSpatialEffects } from './spatialFiltergraph';
 
 export interface DraftSnapshot {
   cuts: number[];
   decisions: Record<string, RetentionDecision>;
-  concatSingleFile: boolean;
+  outputMode: OutputMode;
+  outputGroups: SegmentOutputGroups;
   stripOriginalCover: boolean;
   compress?: CompressConfig;
   spatialConfig?: SpatialConfig;
@@ -21,8 +22,8 @@ export class RetentionDraft {
   public readonly totalDurationMs: number;
   private cuts: number[] = [];
   // 维护内部区间及其保留决策列表：每项代表一个物理连续区间
-  private intervals: Array<{ startMs: number; endMs: number; decision: RetentionDecision }> = [];
-  public concatSingleFile: boolean = true;
+  private intervals: Array<{ startMs: number; endMs: number; decision: RetentionDecision; outputGroup?: string }> = [];
+  public outputMode: OutputMode = 'single';
   public stripOriginalCover: boolean = true;
   public compress?: CompressConfig;
   public spatialConfig?: SpatialConfig;
@@ -75,11 +76,13 @@ export class RetentionDraft {
       startMs: target.startMs,
       endMs: rounded,
       decision: originalDecision,
+      outputGroup: target.outputGroup,
     };
     const rightInterval = {
       startMs: rounded,
       endMs: target.endMs,
       decision: originalDecision,
+      outputGroup: target.outputGroup,
     };
 
     const spatial = this.spatialByInterval();
@@ -133,11 +136,13 @@ export class RetentionDraft {
       startMs: left.startMs,
       endMs: right.endMs,
       decision: mergedDecision,
+      outputGroup: left.decision !== 'keep' ? right.outputGroup : right.decision !== 'keep' ? left.outputGroup : left.outputGroup === right.outputGroup ? left.outputGroup : undefined,
     };
 
     const spatial = this.spatialByInterval();
     spatial.splice(cutIdx, 2, spatial[cutIdx]);
     this.intervals.splice(cutIdx, 2, mergedInterval);
+    this.normalizeOutputGroups();
     this.restoreSpatialIntervals(spatial);
     this.rebuildCuts();
     return true;
@@ -150,6 +155,8 @@ export class RetentionDraft {
     const idx = this.parseSegmentIndex(segmentId);
     if (idx >= 0 && idx < this.intervals.length) {
       this.intervals[idx].decision = decision;
+      if (decision === 'discard') this.intervals[idx].outputGroup = undefined;
+      this.normalizeOutputGroups();
       return true;
     }
     return false;
@@ -247,6 +254,48 @@ export class RetentionDraft {
       .reduce((acc, it) => acc + (it.endMs - it.startMs), 0);
   }
 
+  public getOutputGroups(): SegmentOutputGroups {
+    return Object.fromEntries(this.intervals.flatMap((interval, index) => interval.outputGroup ? [[`seg_${index}`, interval.outputGroup]] : []));
+  }
+
+  public getOutputs() { return resolveOutputGroups(this.getSegments(), this.outputMode, this.getOutputGroups()); }
+
+  public setOutputMode(mode: OutputMode): void {
+    if (mode === this.outputMode) return;
+    this.outputMode = mode;
+    this.intervals.forEach(interval => { interval.outputGroup = undefined; });
+  }
+
+  public combineSegments(ids: string[]): boolean {
+    const indices = [...new Set(ids)].map(id => this.parseSegmentIndex(id));
+    if (indices.length < 2 || indices.some(index => !this.intervals[index] || this.intervals[index].decision !== 'keep')) return false;
+    if (this.outputMode !== 'custom') this.setOutputMode('custom');
+    const existing = new Set(Object.values(this.getOutputGroups()));
+    let next = 1;
+    while (existing.has(`group_${next}`)) next++;
+    indices.forEach(index => { this.intervals[index].outputGroup = `group_${next}`; });
+    this.normalizeOutputGroups();
+    return true;
+  }
+
+  public separateSegments(ids: string[]): void {
+    if (this.outputMode !== 'custom') return;
+    ids.forEach(id => { const interval = this.intervals[this.parseSegmentIndex(id)]; if (interval) interval.outputGroup = undefined; });
+    this.normalizeOutputGroups();
+  }
+
+  private normalizeOutputGroups(): void {
+    const counts = new Map<string, number>();
+    this.intervals.forEach(interval => { if (interval.outputGroup && interval.decision === 'keep') counts.set(interval.outputGroup, (counts.get(interval.outputGroup) ?? 0) + 1); });
+    this.intervals.forEach(interval => { if (interval.decision !== 'keep' || (interval.outputGroup && (counts.get(interval.outputGroup) ?? 0) < 2)) interval.outputGroup = undefined; });
+  }
+
+  private restoreOutputGroups(mode: OutputMode, membership: SegmentOutputGroups): void {
+    validateOutputGroups(this.getSegments(), mode, membership);
+    this.outputMode = mode;
+    this.intervals.forEach((interval, index) => { interval.outputGroup = membership[`seg_${index}`]; });
+  }
+
   /**
    * 生成对齐关键帧的不可变物理切片计划 (MediaRetentionPlan)
    */
@@ -254,15 +303,12 @@ export class RetentionDraft {
     keyframes: number[],
     options: {
       outputPath: string;
-      concatSingleFile?: boolean;
-      concatToSingleFile?: boolean;
       stripOriginalCover?: boolean;
       title?: string;
       compress?: CompressConfig;
       keyframePoints?: KeyframePoint[];
     }
   ): MediaRetentionPlan {
-    const isConcat = options.concatSingleFile ?? options.concatToSingleFile ?? this.concatSingleFile;
     const stripCover = options.stripOriginalCover ?? this.stripOriginalCover;
 
     const plan = planRetention(
@@ -271,9 +317,10 @@ export class RetentionDraft {
       this.getSegments(),
       keyframes,
       options.outputPath,
-      isConcat,
+      this.outputMode,
       stripCover,
-      options.keyframePoints
+      options.keyframePoints,
+      this.getOutputGroups()
     );
     if (options.title) {
       plan.title = options.title;
@@ -281,13 +328,7 @@ export class RetentionDraft {
     if (options.compress || this.compress) {
       plan.compress = options.compress ? { ...options.compress } : this.compress ? { ...this.compress } : undefined;
     }
-    if (this.spatialConfig) {
-      plan.spatialConfig = structuredClone(this.spatialConfig);
-    }
-    if (Object.keys(this.segmentSpatialOverrides).length > 0) {
-      plan.segmentSpatialOverrides = structuredClone(this.segmentSpatialOverrides);
-    }
-    plan.spatialSegments = planRetention(this.mediaPath, this.totalDurationMs, this.getSegments(), keyframes, options.outputPath, false, stripCover, options.keyframePoints).planSegments.map(segment => ({ ...segment, spatialConfig: structuredClone(this.getEffectiveSpatialConfig(segment.segmentId)) }));
+    for (const output of plan.outputs) output.spatialSegments = output.spatialSegments.map(segment => ({ ...segment, spatialConfig: structuredClone(this.getEffectiveSpatialConfig(segment.segmentId)) }));
     return plan;
   }
 
@@ -323,7 +364,8 @@ export class RetentionDraft {
       completedAt: null,
       cuts: [...this.cuts],
       decisions,
-      concatSingleFile: this.concatSingleFile,
+      outputMode: this.outputMode,
+      outputGroups: this.getOutputGroups(),
       stripOriginalCover: this.stripOriginalCover,
       compress: compress ? { ...compress } : undefined,
       spatialConfig: this.spatialConfig ? structuredClone(this.spatialConfig) : undefined,
@@ -337,7 +379,6 @@ export class RetentionDraft {
   public static fromRecord(record: PlanRecord, totalDurationMs: number): RetentionDraft {
     if (record.compressionOnly) throw new Error('整片压缩方案不能载入裁剪草稿');
     const draft = new RetentionDraft(record.sourcePath, totalDurationMs);
-    draft.concatSingleFile = record.concatSingleFile ?? true;
     draft.stripOriginalCover = record.stripOriginalCover ?? true;
     if (record.compress) {
       draft.compress = { ...record.compress };
@@ -350,6 +391,7 @@ export class RetentionDraft {
     }
 
     draft.rebuildFromCutsAndDecisions(record.cuts || [], record.decisions || {});
+    draft.restoreOutputGroups(record.outputMode, record.outputGroups);
     return draft;
   }
 
@@ -364,7 +406,8 @@ export class RetentionDraft {
     return {
       cuts: [...this.cuts],
       decisions,
-      concatSingleFile: this.concatSingleFile,
+      outputMode: this.outputMode,
+      outputGroups: this.getOutputGroups(),
       stripOriginalCover: this.stripOriginalCover,
       compress: this.compress ? { ...this.compress } : undefined,
       spatialConfig: this.spatialConfig ? structuredClone(this.spatialConfig) : undefined,
@@ -376,12 +419,12 @@ export class RetentionDraft {
    * 从快照原子化恢复
    */
   public restore(snapshot: DraftSnapshot): void {
-    this.concatSingleFile = snapshot.concatSingleFile;
     this.stripOriginalCover = snapshot.stripOriginalCover;
     this.compress = snapshot.compress ? { ...snapshot.compress } : undefined;
     this.spatialConfig = snapshot.spatialConfig ? structuredClone(snapshot.spatialConfig) : undefined;
     this.segmentSpatialOverrides = snapshot.segmentSpatialOverrides ? structuredClone(snapshot.segmentSpatialOverrides) : {};
     this.rebuildFromCutsAndDecisions(snapshot.cuts || [], snapshot.decisions || {});
+    this.restoreOutputGroups(snapshot.outputMode, snapshot.outputGroups);
   }
 
   /**

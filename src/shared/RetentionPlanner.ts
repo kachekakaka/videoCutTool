@@ -1,5 +1,31 @@
-import { Segment, MediaRetentionPlan, PlanSegment, KeyframePoint } from './types';
+import { Segment, MediaRetentionPlan, PlanSegment, KeyframePoint, OutputMode, SegmentOutputGroups, OutputGroup } from './types';
 import { compareTime, millisecondsTime } from './mediaTime';
+
+/** 同一份逻辑清单用于页面、保存摘要及实际执行，编号按最早成员排序。 */
+export function resolveOutputGroups(segments: Segment[], mode: OutputMode, membership: SegmentOutputGroups): OutputGroup[] {
+  const kept = segments.filter(segment => segment.decision === 'keep').sort((a, b) => a.startMs - b.startMs);
+  if (mode === 'single') return kept.length ? [{ segmentIds: kept.map(segment => segment.id) }] : [];
+  const groups = new Map<string, OutputGroup>();
+  for (const segment of kept) {
+    const key = mode === 'custom' && membership[segment.id] ? `group:${membership[segment.id]}` : `segment:${segment.id}`;
+    if (!groups.has(key)) groups.set(key, { segmentIds: [] });
+    groups.get(key)!.segmentIds.push(segment.id);
+  }
+  return [...groups.values()];
+}
+
+export function validateOutputGroups(segments: Segment[], mode: OutputMode, membership: SegmentOutputGroups): void {
+  if (!['separate', 'single', 'custom'].includes(mode) || !membership || typeof membership !== 'object' || Array.isArray(membership)) throw new Error('裁剪方案输出配置无效，请重新建立方案');
+  const entries = Object.entries(membership);
+  if (entries.length > segments.length || (mode !== 'custom' && entries.length)) throw new Error('输出方式与自定义组合不一致');
+  const kept = new Set(segments.filter(segment => segment.decision === 'keep').map(segment => segment.id));
+  const counts = new Map<string, number>();
+  for (const [id, group] of entries) {
+    if (!kept.has(id) || typeof group !== 'string' || !/^[\w-]{1,80}$/.test(group)) throw new Error('输出组合包含无效或丢弃的片段');
+    counts.set(group, (counts.get(group) ?? 0) + 1);
+  }
+  if ([...counts.values()].some(count => count < 2)) throw new Error('输出组合至少需要两个保留片段');
+}
 
 /**
  * 关键帧保全规划器纯函数 (RetentionPlanner)
@@ -11,10 +37,12 @@ export function planRetention(
   segments: Segment[],
   keyframes: number[],
   outputPath: string,
-  concatToSingleFile: boolean = true,
+  outputMode: OutputMode = 'single',
   stripOriginalCover: boolean = true,
-  keyframePoints?: KeyframePoint[]
+  keyframePoints?: KeyframePoint[],
+  membership: SegmentOutputGroups = {}
 ): MediaRetentionPlan {
+  validateOutputGroups(segments, outputMode, membership);
   const sortedKeyframes = [...keyframes].sort((a, b) => a - b);
   // 确保关键帧列表中至少包含 0
   if (sortedKeyframes.length === 0 || sortedKeyframes[0] > 0) {
@@ -50,16 +78,13 @@ export function planRetention(
     });
   }
 
-  // 3. 相邻重叠自动融合 (Overlap Consolidation)
-  // 仅在合并单文件模式 (concatToSingleFile === true) 下，相邻且重叠的正片才进行融合以减少拼接开销；
-  // 当不合并 (concatToSingleFile === false) 时，用户要求将各个保留片段独立导出为视频，必须保持各段独立性！
-  let effectiveSegments: PlanSegment[] = planSegments;
-
-  if (concatToSingleFile) {
+  const outputs = resolveOutputGroups(segments, outputMode, membership).map(group => {
+    const members = group.segmentIds.map(id => planSegments.find(segment => segment.segmentId === id)!);
+    // 安全区间只在同一个输出文件内融合，空间配置仍保留每个逻辑成员。
     const mergedSegments: PlanSegment[] = [];
-    for (const seg of planSegments) {
+    for (const seg of members) {
       if (mergedSegments.length === 0) {
-        mergedSegments.push({ ...seg });
+        mergedSegments.push(structuredClone(seg));
       } else {
         const prev = mergedSegments[mergedSegments.length - 1];
         // 如果当前段的安全起点小于等于前一段的安全终点，说明产生重叠，执行合并
@@ -67,20 +92,20 @@ export function planRetention(
           prev.safeRange.endMs = Math.max(prev.safeRange.endMs, seg.safeRange.endMs);
           prev.userRange.endMs = Math.max(prev.userRange.endMs, seg.userRange.endMs);
         } else {
-          mergedSegments.push({ ...seg });
+          mergedSegments.push(structuredClone(seg));
         }
       }
     }
-    effectiveSegments = mergedSegments;
-  }
+    return { ...group, planSegments: mergedSegments, spatialSegments: members };
+  });
 
-  const totalKeptDurationMs = effectiveSegments.reduce(
+  const totalKeptDurationMs = outputs.flatMap(output => output.planSegments).reduce(
     (acc, s) => acc + (s.safeRange.endMs - s.safeRange.startMs),
     0
   );
 
   const blockers: string[] = [];
-  if (effectiveSegments.length === 0) {
+  if (outputs.length === 0) {
     blockers.push('未选择任何保留片段，无法生成剪辑方案');
   }
 
@@ -88,10 +113,9 @@ export function planRetention(
     version: '1.0',
     sourcePath,
     durationMs: totalDurationMs,
-    concatToSingleFile,
     stripOriginalCover,
     outputPath,
-    planSegments: effectiveSegments,
+    outputs,
     totalKeptDurationMs,
     blockers,
   };

@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { AppConfig, CompressConfig, PlanRecord } from '../../shared/types';
 import { validateSpatial } from '../../shared/spatialFiltergraph';
+import { validateOutputGroups } from '../../shared/RetentionPlanner';
 
 export function textValue(value: unknown, label: string, max = 4096): asserts value is string {
   if (typeof value !== 'string' || !value || value.length > max || value.includes('\0')) throw new Error(`${label}无效`);
@@ -35,13 +36,17 @@ export function validateRecord(record: PlanRecord) {
   if (!record.decisions || Array.isArray(record.decisions) || typeof record.decisions !== 'object') throw new Error('方案保留决策无效');
   const validId = (id: string) => /^seg_\d+$/.test(id) && Number(id.slice(4)) <= record.cuts.length;
   if (Object.keys(record.decisions).length > record.cuts.length + 1 || Object.entries(record.decisions).some(([id, value]) => !validId(id) || !['keep', 'discard'].includes(value))) throw new Error('方案保留决策无效');
-  for (const value of [record.concatSingleFile, record.stripOriginalCover]) if (value !== undefined && typeof value !== 'boolean') throw new Error('方案选项无效');
+  if (record.stripOriginalCover !== undefined && typeof record.stripOriginalCover !== 'boolean') throw new Error('方案选项无效');
   validateCompress(record.compress); validateSpatial(record.spatialConfig);
   if (record.compressionOnly !== undefined) {
     localPath(record.outputDirectory);
     if (record.outputPath !== null) localPath(record.outputPath);
-    if (record.compressionOnly !== true || !record.compress?.enabled || record.cuts.length || record.cutsCount !== 0 || record.keptDurationMs !== record.totalDurationMs || record.concatSingleFile !== true || Object.keys(record.decisions).length !== 1 || record.decisions.seg_0 !== 'keep' || record.spatialConfig || record.segmentSpatialOverrides) throw new Error('整片压缩方案不能包含裁剪或画面处理');
-  } else if (typeof record.outputPath !== 'string' || typeof record.keptDurationMs !== 'number' || !Number.isFinite(record.keptDurationMs) || record.keptDurationMs < 0) throw new Error('裁剪方案时长或输出路径无效');
+    if (record.compressionOnly !== true || !record.compress?.enabled || record.cuts.length || record.cutsCount !== 0 || record.keptDurationMs !== record.totalDurationMs || Object.keys(record.decisions).length !== 1 || record.decisions.seg_0 !== 'keep' || record.spatialConfig || record.segmentSpatialOverrides || 'outputMode' in record || 'outputGroups' in record) throw new Error('整片压缩方案不能包含裁剪或画面处理');
+  } else {
+    if (typeof record.outputPath !== 'string' || typeof record.keptDurationMs !== 'number' || !Number.isFinite(record.keptDurationMs) || record.keptDurationMs <= 0) throw new Error('裁剪方案必须包含保留片段');
+    const boundaries = [0, ...record.cuts, record.totalDurationMs];
+    validateOutputGroups(boundaries.slice(1).map((endMs, index) => ({ id: `seg_${index}`, index: index + 1, startMs: boundaries[index], endMs, durationMs: endMs - boundaries[index], decision: record.decisions[`seg_${index}`] ?? 'keep' })), record.outputMode, record.outputGroups);
+  }
   if (record.segmentSpatialOverrides) {
     if (typeof record.segmentSpatialOverrides !== 'object' || Array.isArray(record.segmentSpatialOverrides) || Object.keys(record.segmentSpatialOverrides).length > record.cuts.length + 1) throw new Error('分段画面配置无效');
     for (const [id, config] of Object.entries(record.segmentSpatialOverrides)) { if (!validId(id) || !config) throw new Error('独立画面配置对应分段不存在'); validateSpatial(config); }

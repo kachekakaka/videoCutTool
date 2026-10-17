@@ -61,7 +61,7 @@ describe('RetentionDraft 核心领域深模块不变量验证', () => {
     draft.addCut(2500);
     draft.addCut(6000);
     draft.setDecision('seg_1', 'discard');
-    draft.concatSingleFile = false;
+    draft.setOutputMode('separate');
 
     const snap = draft.snapshot();
     draft.addCut(8000);
@@ -72,7 +72,7 @@ describe('RetentionDraft 核心领域深模块不变量验证', () => {
     const segments = draft.getSegments();
     expect(segments[0].decision).toBe('keep');
     expect(segments[1].decision).toBe('discard');
-    expect(draft.concatSingleFile).toBe(false);
+    expect(draft.outputMode).toBe('separate');
   });
 
   it('toRecord 与 fromRecord 序列化双向还原应保持完全一致', () => {
@@ -102,8 +102,8 @@ describe('RetentionDraft 核心领域深模块不变量验证', () => {
     const keyframes = [0, 2000, 4000, 6000, 8000];
     const plan = draft.toPlan(keyframes, { outputPath: '/test/out.mp4' });
 
-    expect(plan.planSegments.length).toBe(1);
-    const planSeg = plan.planSegments[0];
+    expect(plan.outputs[0].planSegments.length).toBe(1);
+    const planSeg = plan.outputs[0].planSegments[0];
     // userRange: 3000-7000; 向左吸附前向 I-Frame 应吸附到 2000!
     expect(planSeg.userRange.startMs).toBe(3000);
     expect(planSeg.safeRange.startMs).toBe(2000);

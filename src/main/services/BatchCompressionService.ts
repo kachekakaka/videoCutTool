@@ -62,7 +62,7 @@ export class BatchCompressionService {
     const record: PlanRecord = {
       id: request.id, compressionOnly: true, title, sourcePath, outputDirectory: directory, outputPath: null,
       totalDurationMs: null, keptDurationMs: null, cutsCount: 0,
-      cuts: [], decisions: { seg_0: 'keep' }, concatSingleFile: true,
+      cuts: [], decisions: { seg_0: 'keep' },
       stripOriginalCover: request.stripOriginalCover, compress: structuredClone(request.compress),
       status: 'ready', updatedAt: new Date().toISOString(), completedAt: null,
     };

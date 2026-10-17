@@ -240,10 +240,11 @@ handle('config:save', async (_event, patch: Partial<AppConfig>) => {
   configChanges = task.catch(() => {}); return task;
 });
 handle('config:getPath', async () => configService.getConfigPath());
-handle('config:resolveOutputPath', async (_event, videoPath: string, isConcat: boolean = true, planTitle?: string, compress?: CompressConfig, stripCover?: boolean) => {
+handle('config:resolveOutputPath', async (_event, videoPath: string, isConcat: boolean = true, planTitle?: string, compress?: CompressConfig, stripCover?: boolean, streams: import('../src/shared/types').MediaStreamInfo[] = []) => {
   await files.check(videoPath); validateCompress(compress); if (planTitle) textValue(planTitle, '方案标题', 256);
   if (typeof isConcat !== 'boolean' || (stripCover !== undefined && typeof stripCover !== 'boolean')) throw new Error('输出选项无效');
-  const output = await configService.resolveSafeOutputPath(videoPath, isConcat, planTitle, compress, stripCover); files.allowReveal(output); return output;
+  if (!Array.isArray(streams) || streams.length > 256 || streams.some(stream => !stream || typeof stream.type !== 'string' || typeof stream.codec !== 'string' || stream.type.length > 40 || stream.codec.length > 80 || typeof stream.attachedPicture !== 'boolean')) throw new Error('媒体流摘要无效');
+  const output = await configService.resolveSafeOutputPath(videoPath, isConcat, planTitle, compress, stripCover, streams); files.allowReveal(output); return output;
 });
 
 handle('media:registerDroppedFile', async (_event, file: string) => files.authorize(file));

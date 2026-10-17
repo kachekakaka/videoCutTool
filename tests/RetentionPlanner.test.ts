@@ -10,7 +10,7 @@ describe('RetentionPlanner 关键帧保全数学不变量', () => {
       { id: '1', index: 1, startMs: 3200, endMs: 6500, durationMs: 3300, decision: 'keep' as const },
     ];
     const plan = planRetention('test.mp4', totalMs, segments, keyframes, 'out.mp4');
-    const seg = plan.planSegments[0];
+    const seg = plan.outputs[0].planSegments[0];
 
     // 数学不变量：安全起点 <= 用户起点，安全终点 >= 用户终点
     expect(seg.safeRange.startMs).toBeLessThanOrEqual(seg.userRange.startMs);
@@ -25,8 +25,8 @@ describe('RetentionPlanner 关键帧保全数学不变量', () => {
       { id: '2', index: 2, startMs: 2600, endMs: 4000, durationMs: 1400, decision: 'keep' as const },
     ];
     const plan = planRetention('test.mp4', totalMs, segments, keyframes, 'out.mp4');
-    expect(plan.planSegments.length).toBe(1); // 合并为 1 个连续段
-    expect(plan.planSegments[0].safeRange.startMs).toBe(0);
-    expect(plan.planSegments[0].safeRange.endMs).toBe(4000);
+    expect(plan.outputs[0].planSegments.length).toBe(1); // 合并为 1 个连续段
+    expect(plan.outputs[0].planSegments[0].safeRange.startMs).toBe(0);
+    expect(plan.outputs[0].planSegments[0].safeRange.endMs).toBe(4000);
   });
 });

@@ -9,7 +9,7 @@ export interface ElectronAPI {
   saveConfig: (config: Partial<AppConfig>) => Promise<AppConfig>;
   onConfigChanged: (callback: (config: AppConfig) => void) => () => void;
   getConfigPath: () => Promise<string>;
-  resolveOutputPath: (videoPath: string, isConcat?: boolean, planTitle?: string, compress?: CompressConfig, stripCover?: boolean) => Promise<string>;
+  resolveOutputPath: (videoPath: string, isConcat?: boolean, planTitle?: string, compress?: CompressConfig, stripCover?: boolean, streams?: import('./shared/types').MediaStreamInfo[]) => Promise<string>;
 
   // 媒体探测与对话框
   openVideoDialog: () => Promise<string | null>;

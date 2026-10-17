@@ -118,21 +118,29 @@ export interface SpatialConfig {
   scope: 'global' | 'segment';
 }
 
+export type OutputMode = 'separate' | 'single' | 'custom';
+export type SegmentOutputGroups = Record<string, string>;
+
+export interface OutputGroup {
+  segmentIds: string[];
+}
+
+export interface OutputFilePlan extends OutputGroup {
+  planSegments: PlanSegment[];
+  spatialSegments: Array<PlanSegment & { spatialConfig?: SpatialConfig }>;
+}
+
 export interface MediaRetentionPlan {
   version: '1.0';
   title?: string;
   sourcePath: string;
   durationMs: number;
-  concatToSingleFile: boolean;
   stripOriginalCover: boolean;
   outputPath: string;
-  planSegments: PlanSegment[];
-  spatialSegments?: Array<PlanSegment & { spatialConfig?: SpatialConfig }>;
+  outputs: OutputFilePlan[];
   totalKeptDurationMs: number;
   blockers: string[];
   compress?: CompressConfig;
-  spatialConfig?: SpatialConfig;
-  segmentSpatialOverrides?: Record<string, SpatialConfig>;
 }
 
 export type ExecutionStatus = 'ready' | 'queued' | 'processing' | 'completed' | 'failed';
@@ -147,7 +155,6 @@ interface PlanRecordFields {
   completedAt: string | null;
   cuts: number[];
   decisions: Record<string, RetentionDecision>;
-  concatSingleFile?: boolean;
   stripOriginalCover?: boolean;
   compress?: CompressConfig;
   spatialConfig?: SpatialConfig;
@@ -159,6 +166,8 @@ interface PlanRecordFields {
 
 export interface CuttingPlanRecord extends PlanRecordFields {
   compressionOnly?: undefined;
+  outputMode: OutputMode;
+  outputGroups: SegmentOutputGroups;
   outputPath: string;
   totalDurationMs: number;
   keptDurationMs: number;

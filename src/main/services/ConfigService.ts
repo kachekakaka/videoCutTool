@@ -4,7 +4,6 @@ import { AppConfig, DEFAULT_APP_CONFIG } from '../../shared/types';
 import { CompressConfig } from '../../shared/types';
 import { resolveOutputBatch, resolveOutputDirectory } from './OutputPathResolver';
 import { resolveFormats } from './MediaFormatResolver';
-import { probeFile, resolveTool } from './MediaTools';
 
 export class ConfigService {
   private configPath: string;
@@ -180,10 +179,11 @@ export class ConfigService {
     isConcat: boolean = true,
     planTitle?: string,
     compress?: CompressConfig,
-    stripCover = true
+    stripCover = true,
+    streams: import('../../shared/types').MediaStreamInfo[] = []
   ): Promise<string> {
-    const tool = resolveTool('ffprobe', this.currentConfig.ffprobePath);
-    const extension = resolveFormats(videoSourcePath, (await probeFile(videoSourcePath, tool)).streams, compress, stripCover).outputExtension;
+    // 路径仅为预定摘要；复用已载入的流信息，准确媒体检查留在实际执行。
+    const extension = resolveFormats(videoSourcePath, streams, compress, stripCover).outputExtension;
     return resolveOutputBatch({ directory: resolveOutputDirectory(videoSourcePath, planTitle), source: videoSourcePath, extension, title: planTitle, segmented: !isConcat })[0];
   }
 

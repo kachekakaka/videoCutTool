@@ -1566,9 +1566,11 @@
           </div>
         </div>
 
+        <div id="output-selection-toolbar" style="font-size:12px;margin-bottom:8px"></div>
         <div class="cards-grid" id="cards-container">
           <!-- 由 JS 动态渲染 -->
         </div>
+        <div id="output-file-list" style="font-size:12px;max-height:100px;overflow:auto;margin-top:8px"></div>
       </section>
     </div>
 
@@ -1944,8 +1946,8 @@
 
         <div style="display: flex; align-items: center; gap: 16px;">
           <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); cursor: pointer;">
-            <input type="checkbox" id="concat-checkbox" checked style="accent-color: #2ea043;" />
-            <span>自动合并为单文件</span>
+            <span>输出方式</span>
+            <select id="output-mode" onchange="setOutputMode(this.value)"><option value="separate">分别输出</option><option value="single" selected>全部合成一个</option><option value="custom">自定义合并</option></select>
           </label>
           <button class="btn btn-primary" onclick="triggerExecution()">🚀 立即执行剪辑</button>
         </div>
@@ -1992,6 +1994,7 @@
       isRealVideo: false,
       currentVideoPath: 'D:/Movies/sample_movie.mp4',
       currentFilter: 'all',
+      outputMode: 'single', outputGroups: {},
       cuts: [30000, 93055, 110000],
       decisions: {
         seg_0: 'discard',
@@ -2110,6 +2113,39 @@
       return segments;
     }
 
+    let selectingOutput = false, selectedOutput = new Set(), outputHistory = [];
+    function outputFiles() {
+      const result = new Map();
+      getSegments().filter(s => s.decision === 'keep').forEach(s => {
+        const key = state.outputMode === 'single' ? 'single' : state.outputMode === 'custom' && state.outputGroups[s.id] ? state.outputGroups[s.id] : s.id;
+        if (!result.has(key)) result.set(key, []);
+        result.get(key).push(s);
+      });
+      return [...result.values()];
+    }
+    function changeOutputs(change) {
+      outputHistory.push({ mode: state.outputMode, groups: { ...state.outputGroups } });
+      change(); selectingOutput = false; selectedOutput.clear(); renderSegmentCards();
+    }
+    function setOutputMode(mode) { changeOutputs(() => { state.outputMode = mode; state.outputGroups = {}; }); }
+    function combineOutputs() {
+      if (selectedOutput.size < 2) return;
+      changeOutputs(() => { state.outputMode = 'custom'; const group = `group_${Date.now()}`; selectedOutput.forEach(id => { state.outputGroups[id] = group; }); });
+    }
+    function separateOutputs(ids) { changeOutputs(() => ids.forEach(id => { delete state.outputGroups[id]; })); }
+    function undoOutputs() {
+      const previous = outputHistory.pop(); if (!previous) return;
+      state.outputMode = previous.mode; state.outputGroups = previous.groups; renderSegmentCards();
+    }
+    function renderOutputs() {
+      const files = outputFiles();
+      document.getElementById('output-mode').value = state.outputMode;
+      document.getElementById('output-selection-toolbar').innerHTML = selectingOutput
+        ? `已选 ${selectedOutput.size} 段 <button class="btn" ${selectedOutput.size < 2 ? 'disabled' : ''} onclick="combineOutputs()">合成一个文件</button> <button class="btn" onclick="selectingOutput=false;selectedOutput.clear();renderSegmentCards()">取消选择</button> 选中片段合成一个文件，其余按输出清单处理`
+        : `<button class="btn" onclick="selectingOutput=true;renderSegmentCards()">选择合并片段</button> <button class="btn" ${outputHistory.length ? '' : 'disabled'} onclick="undoOutputs()">撤销合并操作</button>`;
+      document.getElementById('output-file-list').innerHTML = `将输出 ${files.length} 个文件（按原视频顺序拼接）` + files.map((members, index) => `<div>文件 ${index + 1}：${members.map(s => `第 ${s.index} 段${state.outputMode === 'custom' && members.length > 1 ? ` <button onclick="separateOutputs(['${s.id}'])" title="移出此段">×</button>` : ''}`).join(' → ')} ${state.outputMode === 'custom' && members.length > 1 ? `<button onclick='separateOutputs(${JSON.stringify(members.map(s => s.id))})'>拆开输出</button>` : ''}</div>`).join('');
+    }
+
     // ==========================================
     // 渲染分段卡片：严格 3 行固定栅格架构
     // ==========================================
@@ -2129,6 +2165,7 @@
           <!-- 行 1：元信息 (序号 + 决策徽章 | 时长胶囊) 永不折行 -->
           <div class="card-row-meta">
             <div class="meta-left">
+              ${selectingOutput ? `<input type="checkbox" aria-label="选择第 ${seg.index} 段合并" ${isKeep ? '' : 'disabled'} ${selectedOutput.has(seg.id) ? 'checked' : ''} onchange="this.checked?selectedOutput.add('${seg.id}'):selectedOutput.delete('${seg.id}');renderOutputs()">` : ''}
               <span class="card-id-text" style="color: ${isKeep ? '#3fb950' : '#f85149'};">#${seg.index}</span>
               <span class="decision-pill ${isKeep ? 'keep' : 'discard'}">
                 ${isKeep ? '✔ 保留' : '✖ 丢弃'}
@@ -2140,7 +2177,7 @@
                 </span>
               ` : ''}
             </div>
-            <span class="duration-pill">⏱ ${formatDuration(seg.durationMs)}</span>
+            <span class="duration-pill">${isKeep && state.outputMode === 'custom' ? `文件 ${outputFiles().findIndex(members => members.some(s => s.id === seg.id)) + 1} · ` : ''}⏱ ${formatDuration(seg.durationMs)}</span>
           </div>
 
           <!-- 行 2：专属独立起止时间行 (等宽大字体，箭头连接，绝对单行呈现！) -->
@@ -2183,10 +2220,13 @@
       });
 
       updateStatistics(segments);
+      renderOutputs();
     }
 
     function setSegmentDecision(segmentId, decision) {
       state.decisions[segmentId] = decision;
+      if (decision === 'discard') delete state.outputGroups[segmentId];
+      selectedOutput.clear();
       renderSegmentCards();
       drawTimeline();
       renderVirtualVideo();
@@ -2223,8 +2263,16 @@
       if (pos <= 100 || pos >= state.durationMs - 100) return;
       if (state.cuts.some(c => Math.abs(c - pos) < 200)) return;
 
+      const previous = getSegments().map(segment => ({ ...segment, group: state.outputGroups[segment.id] }));
       state.cuts.push(pos);
       state.cuts.sort((a, b) => a - b);
+      state.outputGroups = {};
+      getSegments().forEach(segment => {
+        const parent = previous.find(old => segment.startMs >= old.startMs && segment.endMs <= old.endMs);
+        state.decisions[segment.id] = parent.decision;
+        if (parent.group) state.outputGroups[segment.id] = parent.group;
+      });
+      selectedOutput.clear(); outputHistory = [];
 
       renderSegmentCards();
       drawTimeline();
@@ -2400,7 +2448,7 @@
         updatedAt: '刚刚',
         completedAt: null,
         cuts: [...state.cuts],
-        decisions: { ...state.decisions }
+        decisions: { ...state.decisions }, outputMode: state.outputMode, outputGroups: { ...state.outputGroups }
       };
 
       state.savedPlans.unshift(newPlan);
@@ -2415,6 +2463,8 @@
 
       state.cuts = [...plan.cuts];
       state.decisions = { ...plan.decisions };
+      state.outputMode = plan.outputMode || 'single'; state.outputGroups = { ...plan.outputGroups };
+      selectedOutput.clear(); selectingOutput = false; outputHistory = [];
       state.currentVideoPath = plan.sourcePath;
       document.getElementById('video-name-tag').innerText = `${plan.title} (正在编辑)`;
 
@@ -2660,7 +2710,8 @@
         version: "1.0.0",
         sourcePath: state.currentVideoPath,
         durationMs: state.durationMs,
-        concatToSingleFile: document.getElementById('concat-checkbox').checked,
+        outputMode: state.outputMode,
+        outputs: outputFiles().map(members => ({ segmentIds: members.map(s => s.id) })),
         cuts: state.cuts,
         segments: getSegments()
       };

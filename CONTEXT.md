@@ -26,6 +26,9 @@ _Avoid_: Workspace state, project, draft file
 The immutable, keyframe-aligned execution specification computed from a draft, containing exact physical slice boundaries, destinations, and concatenation rules.
 _Avoid_: Export config, cut recipe, job
 
+**Output File Group**:
+A set of retained segments that produces one output file. Membership may be non-adjacent; members are concatenated in source-time order, and files are ordered by their earliest member. The UI names the result “文件 N”, exposes its members, and distinguishes “合成一个文件” from removing a Cut Point. A Retention Draft supports separate, single-file, or custom output; group membership follows intervals through cut edits and is included in snapshots and saved plans.
+
 **Plan Title**:
 The operator-assigned semantic label designating an editing draft or retention plan, persisted in the plan record and injected into the exported media artifact filename as a bracketed prefix (`[Title]`).
 _Avoid_: Plan name, job label, tag name
