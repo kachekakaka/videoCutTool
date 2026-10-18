@@ -43,3 +43,23 @@ body {
   background: rgba(255, 255, 255, 0.28);
 }
 
+/* 时间轴按自身可用宽度排布，不因窗口断点过早挤成两排。 */
+.timeline-shell { container: timeline / inline-size; }
+.timeline-toolbar { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+.timeline-playback { grid-column: 2; grid-row: 1; }
+.timeline-actions { grid-column: 3; grid-row: 1; }
+.timeline-legend-compact { display: none; }
+
+@container timeline (max-width: 1249px) {
+  .timeline-legend-full, .timeline-control-label { display: none; }
+  .timeline-legend-compact { display: flex; }
+}
+@container timeline (max-width: 1099px) {
+  .timeline-legend-compact { display: none; }
+}
+@container timeline (max-width: 919px) {
+  .timeline-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .timeline-playback { grid-column: 1 / -1; grid-row: 2; }
+  .timeline-actions { grid-column: 2; }
+}
+

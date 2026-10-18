@@ -15,6 +15,7 @@ import {
   Scissors,
   Minus,
   Plus,
+  Trash2,
 } from 'lucide-react';
 
 interface CutDragState {
@@ -776,9 +777,9 @@ export const Timeline: React.FC<TimelineProps> = ({
   };
 
   return (
-    <div ref={timelineRootRef} className="w-full flex flex-col gap-1 px-3 py-1.5 rounded-xl bg-[#161b22]/90 border border-white/10 shadow-xl backdrop-blur-md">
-      {/* 两侧等宽保证播放按钮居中；窄窗口将播放控制独立成行，避免相互遮挡。 */}
-      <div className="relative grid grid-cols-2 min-[1600px]:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 px-1 min-h-[28px]">
+    <div ref={timelineRootRef} className="timeline-shell w-full flex flex-col gap-1 px-3 py-1.5 rounded-xl bg-[#161b22]/90 border border-white/10 shadow-xl backdrop-blur-md">
+      {/* 依据容器空间收起次要信息；两侧等宽，倍速不参与播放按钮居中计算。 */}
+      <div className="timeline-toolbar relative grid items-center gap-2 px-1 min-h-[28px]" aria-label="时间轴控制区">
         {/* 左侧：时间码与比例切换 + 紧凑内联图例 */}
         <div className="col-start-1 row-start-1 justify-self-start flex items-center gap-2 shrink-0 z-0">
           <div className="flex items-center gap-1.5 font-mono text-xs text-zinc-300">
@@ -803,7 +804,7 @@ export const Timeline: React.FC<TimelineProps> = ({
           </div>
 
           {/* 紧凑内联图例 (大屏完整展开，小屏微型色标自适应，彻底杜绝重叠) */}
-          <div className="hidden min-[1080px]:flex items-center gap-1.5 text-[10px] text-zinc-400 bg-black/40 border border-white/10 rounded-md px-1.5 py-0.5">
+          <div className="timeline-legend-full flex items-center gap-1.5 text-[10px] text-zinc-400 bg-black/40 border border-white/10 rounded-md px-1.5 py-0.5">
             <span className="flex items-center gap-0.5" title="I 帧关键帧 (安全吸附切点)">
               <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />
               <span>关键帧</span>
@@ -823,7 +824,7 @@ export const Timeline: React.FC<TimelineProps> = ({
           </div>
 
           <div
-            className="flex min-[1080px]:hidden items-center gap-1 text-[10px] text-zinc-400 bg-black/40 border border-white/10 rounded-md px-1.5 py-0.5 cursor-help"
+            className="timeline-legend-compact items-center gap-1 text-[10px] text-zinc-400 bg-black/40 border border-white/10 rounded-md px-1.5 py-0.5 cursor-help"
             title="图例说明: 蓝点=关键帧, 绿块=保留正片, 红块=丢弃切片, 黄块=时间切点"
           >
             <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />
@@ -835,7 +836,7 @@ export const Timeline: React.FC<TimelineProps> = ({
         </div>
 
         {/* 倍速控件放在对称播放按钮组旁边，不参与居中宽度计算。 */}
-        <div className="relative col-span-2 col-start-1 row-start-2 min-[1600px]:col-span-1 min-[1600px]:col-start-2 min-[1600px]:row-start-1 justify-self-center flex items-center justify-center gap-1.5 shrink-0 z-10 pointer-events-auto">
+        <div className="timeline-playback relative justify-self-center flex items-center justify-center gap-1.5 shrink-0 z-10 pointer-events-auto">
           {playbackEnabled && onStepSeconds && (
             <button
               onClick={() => onStepSeconds(-1)}
@@ -886,7 +887,8 @@ export const Timeline: React.FC<TimelineProps> = ({
             </button>
           )}
           {playbackEnabled && onPlaybackRateChange && (
-            <div role="group" aria-label="播放速度" className="absolute left-full top-1/2 -translate-y-1/2 ml-2 flex shrink-0 items-center bg-black/50 border border-white/10 rounded-lg p-0.5 text-[10px]">
+            <div role="group" aria-label="播放速度" title="播放倍速：仅改变播放速度" className="absolute left-full top-1/2 -translate-y-1/2 ml-2 flex shrink-0 items-center bg-black/50 border border-white/10 rounded-lg p-0.5 text-[10px]">
+              <span className="timeline-control-label px-1 text-zinc-400 whitespace-nowrap">倍速</span>
               <button
                 onClick={() => onPlaybackRateChange(Math.max(0.5, playbackRate - 0.25))}
                 disabled={playbackRate <= 0.5}
@@ -916,7 +918,7 @@ export const Timeline: React.FC<TimelineProps> = ({
         </div>
 
         {/* 右侧：缩放控制器与插入切点 */}
-        <div className="col-start-2 min-[1600px]:col-start-3 row-start-1 justify-self-end flex items-center gap-2 shrink-0 z-0">
+        <div className="timeline-actions justify-self-end flex items-center gap-2 shrink-0 z-0">
           {selectedCutMs !== null && onDeleteCut && (
             <button
               onClick={() => {
@@ -924,13 +926,17 @@ export const Timeline: React.FC<TimelineProps> = ({
                 setSelectedCutMs(null);
               }}
               className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold hover:bg-amber-500/30 transition-all flex items-center gap-1 active:scale-95"
+              aria-label="删除选中切点"
+              title={`删除选中切点 (${formatTimecode(selectedCutMs, false)})`}
             >
-              <span>删除切点 ({formatTimecode(selectedCutMs, false)})</span>
+              <Trash2 className="w-3 h-3" />
+              <span className="timeline-control-label whitespace-nowrap">删除切点</span>
             </button>
           )}
 
           {/* 恒定等宽缩放胶囊，重置按钮常驻防位移错位 */}
-          <div className="flex items-center bg-black/50 border border-white/10 rounded-lg p-0.5 text-[10px]">
+          <div role="group" aria-label="时间轴缩放" title="时间轴缩放：仅改变时间轴显示范围" className="flex items-center bg-black/50 border border-white/10 rounded-lg p-0.5 text-[10px]">
+            <span className="timeline-control-label px-1 text-zinc-400 whitespace-nowrap">缩放</span>
             <button
               onClick={() => handleZoom(-0.5)}
               className="p-1 rounded hover:bg-white/10 text-zinc-300 hover:text-white transition-all active:scale-95"
