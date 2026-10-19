@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
-import crypto from 'crypto';
+import { PreviewCache } from './PreviewCache';
+import { CacheMaintenanceService, externalTemporaryDirectory } from './CacheMaintenanceService';
 import { KeyframePoint, MediaMetadata, MediaTime } from '../../shared/types';
 import { ceilMicroseconds, compareTime, formatMicroseconds, frameTime, millisecondsTime, rational, timeMs } from '../../shared/mediaTime';
 import { abortError, consumeJob, fileIdentityAsync, MediaLimiter, probeFile, ProbedFile, resolveTool, runMediaTool, SharedJob } from './MediaTools';
@@ -8,22 +9,23 @@ import { abortError, consumeJob, fileIdentityAsync, MediaLimiter, probeFile, Pro
 interface FrameIndex { version: 5; identity: string; points: KeyframePoint[] }
 export class KeyframeProber {
   private ffprobePath: string;
-  private cacheDir: string;
+  private cache: PreviewCache;
   private pending = new Map<string, SharedJob<FrameIndex>>();
   private limiter = new MediaLimiter(() => 1);
   private frameWindows = new Map<string, { points: number[]; center: number }>();
   private closing = false;
-  constructor(preferredPath?: string, baseDir = process.cwd()) {
+  constructor(preferredPath?: string, baseDir = process.cwd(), maintenance?: CacheMaintenanceService) {
     this.ffprobePath = resolveTool('ffprobe', preferredPath);
-    const external = path.basename(baseDir).toLowerCase() === 'release' ? path.resolve(baseDir, '../../videoCutTool_tmp') : path.resolve(baseDir, '../videoCutTool_tmp');
-    this.cacheDir = path.join(external, 'cache'); fs.mkdirSync(this.cacheDir, { recursive: true });
+    const external = externalTemporaryDirectory(baseDir);
+    this.cache = new PreviewCache(path.join(external, 'cache'), 'index', maintenance);
   }
   updateTool(preferredPath?: string) { this.ffprobePath = resolveTool('ffprobe', preferredPath); this.frameWindows.clear(); }
   async shutdown() { this.closing = true; await Promise.all([...this.pending.values()].map(job => { job.controller.abort(); return job.promise.catch(() => {}); })); }
-  private cachePath(identity: string) { return path.join(this.cacheDir, `kfs_v5_${crypto.createHash('sha256').update(identity).digest('hex')}.json`); }
   private async readIndex(identity: string): Promise<FrameIndex | null> {
+    const use = await this.cache.lookup(identity);
+    if (!use) return null;
     try {
-      const file = this.cachePath(identity);
+      const file = use.file;
       if ((await fs.promises.stat(file)).size > 64 * 1024 ** 2) return null;
       const data = JSON.parse(await fs.promises.readFile(file, 'utf8')) as FrameIndex;
       if (data.version !== 5 || data.identity !== identity || !data.points.length || data.points.length > 500000) return null;
@@ -32,7 +34,7 @@ export class KeyframeProber {
       }
       if (data.points.some((point, index) => index > 0 && compareTime(data.points[index - 1].time, point.time) >= 0)) return null;
       return data;
-    } catch { return null; }
+    } catch { return null; } finally { use.release(); }
   }
   private async scan(file: string, info: ProbedFile, tool: string, signal: AbortSignal, full = false): Promise<{ points: KeyframePoint[]; missing: boolean }> {
     let tail = '', missing = false;
@@ -72,7 +74,10 @@ export class KeyframeProber {
         if (await fileIdentityAsync(file) !== sourceIdentity) throw new Error('扫描期间源视频发生变化，请重新载入');
         const index: FrameIndex = { version: 5, identity, points: result.points };
         if (controller.signal.aborted || this.closing) throw abortError();
-        await fs.promises.writeFile(this.cachePath(identity), JSON.stringify(index), 'utf8');
+        const use = await this.cache.acquire(identity, '.json');
+        try { if (use.fresh) { await fs.promises.writeFile(use.file, JSON.stringify(index), { flag: 'wx' }); await this.cache.maintenance.ready(use.file); } }
+        catch (error) { await this.cache.fail(use); throw error; }
+        finally { use.release(); this.cache.maintenance.schedule(); }
         return index;
       }, controller.signal).finally(() => { if (this.pending.get(identity) === created) this.pending.delete(identity); });
       job = created; this.pending.set(identity, job);
@@ -92,6 +97,7 @@ export class KeyframeProber {
     return [...unique.values()].sort((a, b) => compareTime(a.time, b.time));
   }
   async probeBasic(file: string, signal?: AbortSignal): Promise<MediaMetadata> {
+    this.cache.maintenance.protect(file);
     if (this.closing) throw abortError();
     const tool = this.ffprobePath, info = await probeFile(file, tool, signal);
     const index = await this.readIndex(`${tool}:${await fileIdentityAsync(file)}`);
@@ -99,11 +105,13 @@ export class KeyframeProber {
     return this.toMetadata(file, info, index?.points);
   }
   async probeKeyframes(file: string, signal?: AbortSignal): Promise<number[]> {
+    this.cache.maintenance.protect(file);
     if (this.closing || signal?.aborted) throw abortError();
     const tool = this.ffprobePath, info = await probeFile(file, tool, signal);
     return (await this.getIndex(file, info, tool, signal)).points.map(point => Math.max(0, point.timeMs));
   }
   async probe(file: string, signal?: AbortSignal): Promise<MediaMetadata> {
+    this.cache.maintenance.protect(file);
     if (this.closing || signal?.aborted) throw abortError();
     const tool = this.ffprobePath, info = await probeFile(file, tool, signal);
     return this.toMetadata(file, info, (await this.getIndex(file, info, tool, signal)).points);
@@ -112,6 +120,7 @@ export class KeyframeProber {
     return { filePath: file, fileName: path.basename(file), durationMs: info.durationMs, width: info.width, height: info.height, displayAspectRatio: info.displayAspectRatio, fps: info.fps, keyframes: points?.map(point => Math.max(0, point.timeMs)) || [0], keyframePoints: points, timeOrigin: info.origin, streams: info.streams };
   }
   async adjacentFrame(file: string, currentMs: number, direction: number): Promise<number> {
+    this.cache.maintenance.protect(file);
     if (this.closing || !Number.isFinite(currentMs) || currentMs < 0 || ![-1, 1].includes(direction)) throw new Error('逐帧参数无效');
     const tool = this.ffprobePath, identity = `${tool}:${await fileIdentityAsync(file)}`;
     const cached = this.frameWindows.get(identity);

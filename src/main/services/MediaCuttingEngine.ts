@@ -1,6 +1,6 @@
 import path from 'path';
 import fs from 'fs';
-import { randomUUID } from 'crypto';
+import { CacheMaintenanceService, externalTemporaryDirectory } from './CacheMaintenanceService';
 import { PlanRecord, CutResult, MediaRetentionPlan, CompressConfig, ExecutionStatus, EngineState, PlanSegment, MediaStreamInfo, MediaTime, ExecutionProgress, OutputFilePlan, SpatialConfig } from '../../shared/types';
 import { ExecutionProgressTracker, ExecutionStep } from './ExecutionProgress';
 import { RetentionDraft } from '../../shared/RetentionDraft';
@@ -8,7 +8,7 @@ import { formatTaskTimestamp } from '../../shared/timeUtils';
 import { buildCompressArgs, buildScaleFilterArgs } from '../../shared/compressPresets';
 import { addTime, subtractTime, ceilMicroseconds, formatMicroseconds, millisecondsTime } from '../../shared/mediaTime';
 import { KeyframeProber } from './KeyframeProber';
-import { abortError, fileIdentityAsync, needsTimestampRepair, presentationStart, presentationStartTime, probeFile, ProbedFile, removeOwnedDirectory, resolveTool, runMediaTool } from './MediaTools';
+import { abortError, fileIdentityAsync, needsTimestampRepair, presentationStart, presentationStartTime, probeFile, ProbedFile, resolveTool, runMediaTool } from './MediaTools';
 import { resolveFormats, resolveNormalizationExtension, retainedStreams } from './MediaFormatResolver';
 import { resolveOutputBatch, resolveOutputDirectory } from './OutputPathResolver';
 import { buildSpatialFiltergraph, hasSpatialEffects, spatialOutputSize, validateSpatial, Dimension } from '../../shared/spatialFiltergraph';
@@ -42,12 +42,16 @@ export class MediaCuttingEngine {
   private progressRun: symbol | null = null;
   private tracker?: ExecutionProgressTracker;
 
-  constructor(preferredPath?: string, customSlicesDir?: string, saver?: (record: PlanRecord) => any, listener?: PlanStatusListener) {
+  private maintenance: CacheMaintenanceService;
+  private tempReady: Promise<void>;
+  constructor(preferredPath?: string, customSlicesDir?: string, saver?: (record: PlanRecord) => any, listener?: PlanStatusListener, maintenance?: CacheMaintenanceService) {
     this.ffmpegPath = resolveTool('ffmpeg', preferredPath);
     this.ffprobePath = resolveTool('ffprobe', preferredPath ? path.join(path.dirname(preferredPath), 'ffprobe.exe') : undefined);
     const base = process.cwd();
-    this.tmpDir = customSlicesDir || path.resolve(base, path.basename(base).toLowerCase() === 'release' ? '../../videoCutTool_tmp/slices' : '../videoCutTool_tmp/slices');
-    fs.mkdirSync(this.tmpDir, { recursive: true });
+    this.tmpDir = customSlicesDir || path.join(externalTemporaryDirectory(base), 'slices');
+    this.maintenance = maintenance ?? new CacheMaintenanceService(path.join(path.dirname(this.tmpDir), '.cache-maintenance'));
+    this.tmpDir = path.join(this.tmpDir, 'managed');
+    this.tempReady = this.maintenance.registerRoot(this.tmpDir);
     this.savePlanFn = saver; this.onStatusChange = listener;
   }
   updateTools(ffmpeg?: string, ffprobe?: string) { this.ffmpegPath = resolveTool('ffmpeg', ffmpeg); this.ffprobePath = resolveTool('ffprobe', ffprobe); this.cachedEncoders.clear(); }
@@ -219,6 +223,7 @@ export class MediaCuttingEngine {
   }
   private async concat(files: string[], output: string, directory: string, signal?: AbortSignal, progressKey?: string) {
     const list = path.join(directory, 'concat.txt');
+    await this.maintenance.allowTaskFile(directory, list);
     await fs.promises.writeFile(list, files.map(file => `file '${file.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'), 'utf8');
     const info = await probeFile(files[0], this.ffprobePath, signal);
     let durationMs = info.containerDurationMs;
@@ -300,8 +305,10 @@ export class MediaCuttingEngine {
     await this.runStep(progressKey, buildCompressArgs(input, output, config, encoder, { streams: info.streams, stripCover: false, videoFilterGraph: { graph: parts.join(';'), streamIndex: info.videoIndex, output: 'spatialVideo', timeBase: info.timeBase } }), info.durationMs, signal, cpuRetry);
   }
   private async executeSnapshot(plan: MediaRetentionPlan, signal?: AbortSignal, compressionOnly = false, prepared?: ProbedFile): Promise<CutResult> {
-    const directory = path.join(this.tmpDir, `job_${randomUUID()}`);
-    await fs.promises.mkdir(directory, { recursive: true });
+    this.maintenance.protect(plan.sourcePath);
+    await this.tempReady;
+    const directory = await this.maintenance.create(this.tmpDir, 'task', '');
+    return this.maintenance.task(directory, async () => {
     try {
       if (!plan.outputs.length || (!compressionOnly && plan.outputs.some(output => !output.planSegments.length))) throw new Error('未选择任何保留片段');
       const destination = resolveOutputDirectory(plan.sourcePath, plan.title, compressionOnly);
@@ -399,7 +406,11 @@ export class MediaCuttingEngine {
       }
       throw new Error('输出目录持续出现同名文件，未覆盖已有文件，请重试');
     } catch (error) { return { success: false, outputPath: plan.outputPath, error: error instanceof Error ? error.message : String(error) }; }
-    finally { await removeOwnedDirectory(this.tmpDir, directory).catch(error => console.warn('本次切片缓存清理失败：', error)); }
+    finally {
+      await this.maintenance.abandon(directory).catch(error => console.warn('本次切片缓存收尾失败：', error));
+    this.maintenance.release(directory); await this.maintenance.sweep();
+    }
+    });
   }
   resolveSafeSingleOutputPath(candidate: string, source: string, title?: string) { return resolveOutputBatch({ directory: path.dirname(candidate), source, extension: path.extname(candidate) || path.extname(source), title })[0]; }
   resolveSafeSegmentPaths(directory: string, _base: string, extension: string, count: number, source: string, title?: string) { return resolveOutputBatch({ directory, source, extension, count, title, segmented: true }); }

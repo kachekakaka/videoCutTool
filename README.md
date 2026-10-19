@@ -39,6 +39,10 @@
 
 Windows 便携构建入口为 [`scripts/build-portable.ps1`](./scripts/build-portable.ps1)，通过 `PATH` 中的 PowerShell 7 执行；原有 BAT 入口继续转发到该脚本。使用 `-BuildOnly` 只验证候选包。构建资源可通过 `VCT_FFMPEG_PATH`、`VCT_FFPROBE_PATH` 指定完整路径，解析及验证规则见 [`scripts/electron-builder.cjs`](./scripts/electron-builder.cjs)。候选包验证通过后才切换正式目录，构建失败保留旧版本；正式使用时保留根启动器和 `app/` 的完整目录结构。
 
+缓存维护按登记归属和实际使用引用回收闲置资产；长视频允许超过缓存软目标，配置、已保存方案和验收资料不参与淘汰。策略真源为 [`CacheMaintenanceService.ts`](./src/main/services/CacheMaintenanceService.ts)，实施及验收边界见[缓存与旧包自动清理方案](./archive/docs/方案/20261019-缓存与旧包自动清理实施方案.md)。历史未登记文件不会被自动认领。
+
+构建候选自动登记并按保留策略收尾。手动预览已登记旧产物的清理清单使用 `pwsh -File scripts/cleanup-artifacts.ps1`，添加 `-Apply` 才执行删除；发布副本和一次性验证素材的显式登记入口在 [`portable-artifacts.ps1`](./scripts/portable-artifacts.ps1)，发布登记要求已关联合格候选并显式确认实际验收完成。
+
 ## 验证与交付
 
 按改动风险选择最小验证范围，通过即结束；只有新增改动、失败或明确未解决的问题才追加检查。验证脚本自身出错时，修正并重跑受影响部分，不默认重跑全部流程。

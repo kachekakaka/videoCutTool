@@ -10,7 +10,8 @@ import { PlanManager } from '../src/main/services/PlanManager';
 import { BatchCompressionService } from '../src/main/services/BatchCompressionService';
 import { CompressionPreviewService } from '../src/main/services/CompressionPreviewService';
 import { PlaybackPreviewService } from '../src/main/services/PlaybackPreviewService';
-import { MediaLimiter, stopMediaProcesses, clearProbeCache } from '../src/main/services/MediaTools';
+import { CacheMaintenanceService, externalTemporaryDirectory as getExternalTmpDir } from '../src/main/services/CacheMaintenanceService';
+import { MediaLimiter, stopMediaProcesses, clearProbeCache, hasActiveMediaProcesses } from '../src/main/services/MediaTools';
 import { FileAccessRegistry, localPath, requestId, textValue, validateCompress, validateConfigPatch, validateRecord } from '../src/main/services/IpcSecurity';
 import { AppConfig, PlanRecord, CompressConfig, CompressionSaveRequest, SelectedVideo } from '../src/shared/types';
 
@@ -47,14 +48,6 @@ nativeTheme.themeSource = 'dark';
 const rawHostDir = process.env.VCT_WORKSPACE_DIR || process.env.PORTABLE_EXECUTABLE_DIR || (app.isPackaged ? path.dirname(app.getPath('exe')) : process.cwd());
 const hostDir = path.basename(rawHostDir).toLowerCase() === 'app' ? path.dirname(rawHostDir) : rawHostDir;
 
-// 绿色临时目录解析：若宿主位于开发打包输出的 release/ 目录内，向上退两级与仓库同级的外部 tmp 对齐
-function getExternalTmpDir(baseDir: string): string {
-  if (path.basename(baseDir).toLowerCase() === 'release') {
-    return path.resolve(baseDir, '../../videoCutTool_tmp');
-  }
-  return path.resolve(baseDir, '../videoCutTool_tmp');
-}
-
 // 严格遵守绿色便携隔离规范：必须在 requestSingleInstanceLock 之前重定向 userData，彻底杜绝 APPDATA 污染与锁竞争
 const externalUserData = path.resolve(getExternalTmpDir(hostDir), 'electron_userdata');
 try {
@@ -82,6 +75,7 @@ let planManager: PlanManager;
 let batchCompression: BatchCompressionService;
 let previewService: CompressionPreviewService;
 let playbackService: PlaybackPreviewService;
+let maintenance: CacheMaintenanceService;
 
 let mainWindow: BrowserWindow | null = null;
 const files = new FileAccessRegistry();
@@ -109,7 +103,7 @@ function handle(channel: string, work: (event: IpcMainInvokeEvent, ...args: any[
     } finally { ipcActive.set(channel, Math.max(0, (ipcActive.get(channel) ?? 1) - 1)); }
   });
 }
-function rememberPlanOutputs(records: PlanRecord[]) { for (const record of records) { if (record.outputPath) files.allowReveal(record.outputPath); record.outputPaths?.forEach(file => files.allowReveal(file)); } }
+function rememberPlanOutputs(records: PlanRecord[]) { for (const record of records) { maintenance?.protect(record.sourcePath, ...(record.outputPaths ?? []), ...(record.outputPath ? [record.outputPath] : [])); if (record.outputPath) files.allowReveal(record.outputPath); record.outputPaths?.forEach(file => files.allowReveal(file)); } }
 
 app.on('second-instance', () => {
   if (mainWindow) {
@@ -182,6 +176,10 @@ function createWindow() {
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
     console.error('[Window Error] 页面加载失败:', errorCode, errorDescription);
   });
+  const ownerPrefix = `${mainWindow.webContents.id}:`;
+  const releaseWindowCaches = () => { void previewService?.releaseOwner(ownerPrefix); void playbackService?.releaseOwner(ownerPrefix); };
+  mainWindow.webContents.on('render-process-gone', releaseWindowCaches);
+  mainWindow.webContents.on('destroyed', releaseWindowCaches);
 
   mainWindow.on('closed', () => {
     files.clear();
@@ -262,20 +260,32 @@ handle('media:adjacentFrame', async (_event, file: string, time: number, directi
 handle('media:preparePlayback', async (event, file: string, convert: boolean, id: string) => {
   requestId(id); if (typeof convert !== 'boolean') throw new Error('播放选项无效'); await files.check(file);
   checkCanceled(`play:${event.sender.id}:${id}`);
-  const result = await playbackService.prepare(file, convert, `${event.sender.id}:${id}`, progress => { if (!event.sender.isDestroyed()) event.sender.send('media:previewProgress', { ...progress, requestId: id }); });
-  if (result.path) await files.authorize(result.path); return result;
+  maintenance.protect(file);
+  const key = `${event.sender.id}:${id}`;
+  try {
+    const result = await playbackService.prepare(file, convert, key, progress => { if (!event.sender.isDestroyed()) event.sender.send('media:previewProgress', { ...progress, requestId: id }); });
+    if (event.sender.isDestroyed()) throw new Error('播放窗口已关闭');
+    if (result.path) await files.authorize(result.path); return result;
+  } catch (error) { playbackService.release(key); throw error; }
 });
 handle('media:cancelPlayback', async (event, id: string) => { requestId(id); markCanceled(`play:${event.sender.id}:${id}`); return playbackService.cancel(`${event.sender.id}:${id}`); });
+handle('media:releasePlayback', async (event, id: string) => { requestId(id); playbackService.release(`${event.sender.id}:${id}`); });
 
 // 降码画质抽样对比与硬件探测
 handle('compress:previewSamples', async (event, videoPath: string, timestampsMs: number[], config: CompressConfig, id: string) => {
   requestId(id); validateCompress(config); await files.check(videoPath);
   checkCanceled(`compare:${event.sender.id}:${id}`);
   if (!Array.isArray(timestampsMs) || timestampsMs.length > 5 || !timestampsMs.length || timestampsMs.some(time => !Number.isFinite(time) || time < 0)) throw new Error('抽样时间点无效');
-  const result = await previewService.generatePreviewSamples(videoPath, timestampsMs, config, `${event.sender.id}:${id}`);
-  await Promise.all(result.flatMap(sample => [sample.originalUrl!, sample.compressedUrl!]).map(url => files.authorize(new URL(url).searchParams.get('path')!))); return result;
+  maintenance.protect(videoPath);
+  const key = `${event.sender.id}:${id}`;
+  try {
+    const result = await previewService.generatePreviewSamples(videoPath, timestampsMs, config, key);
+    if (event.sender.isDestroyed()) throw new Error('预览窗口已关闭');
+    await Promise.all(result.flatMap(sample => [sample.originalUrl!, sample.compressedUrl!]).map(url => files.authorize(new URL(url).searchParams.get('path')!))); return result.map(sample => ({ ...sample, cacheLeaseId: id }));
+  } catch (error) { previewService.release(key); throw error; }
 });
 handle('compress:cancelPreview', async (event, id: string) => { requestId(id); markCanceled(`compare:${event.sender.id}:${id}`); return previewService.cancel(`${event.sender.id}:${id}`); });
+handle('compress:releasePreview', async (event, id: string) => { requestId(id); previewService.release(`${event.sender.id}:${id}`); });
 handle('compress:probeEncoder', async (_event, config?: CompressConfig) => { validateCompress(config); return cuttingEngine.probeEncoderSupport(config); });
 
 // 剪辑引擎与后台任务
@@ -411,15 +421,17 @@ app.whenReady().then(async () => {
   const currentConfig = configService.getConfig();
   const tempSlicesDir = path.resolve(getExternalTmpDir(exeDir), 'slices');
   const tempPreviewDir = path.resolve(getExternalTmpDir(exeDir), 'preview_cache');
-  prober = new KeyframeProber(currentConfig.ffprobePath, exeDir);
-  cuttingEngine = new MediaCuttingEngine(currentConfig.ffmpegPath, tempSlicesDir);
+  maintenance = new CacheMaintenanceService(path.join(getExternalTmpDir(exeDir), '.cache-maintenance'), { busy: () => Boolean(cuttingEngine?.getActivePlanId()) || hasActiveMediaProcesses() });
+  maintenance.protect(configService.getConfigPath(), path.join(configService.getDataDirectory(), 'plans'), path.join(exeDir, 'workspace.json'));
+  prober = new KeyframeProber(currentConfig.ffprobePath, exeDir, maintenance);
+  cuttingEngine = new MediaCuttingEngine(currentConfig.ffmpegPath, tempSlicesDir, undefined, undefined, maintenance);
   cuttingEngine.updateTools(currentConfig.ffmpegPath, currentConfig.ffprobePath);
   planManager = new PlanManager(configService.getDataDirectory(), cuttingEngine, prober);
   batchCompression = new BatchCompressionService(configService, planManager, files);
   const previewLimiter = new MediaLimiter(() => cuttingEngine.getActivePlanId() ? 1 : 2);
-  previewService = new CompressionPreviewService(currentConfig.ffmpegPath, tempPreviewDir, (config, signal) => cuttingEngine.probeEncoderSupport(config, signal), previewLimiter);
+  previewService = new CompressionPreviewService(currentConfig.ffmpegPath, tempPreviewDir, (config, signal) => cuttingEngine.probeEncoderSupport(config, signal), previewLimiter, maintenance);
   previewService.updateTools(currentConfig.ffmpegPath, currentConfig.ffprobePath);
-  playbackService = new PlaybackPreviewService(path.resolve(getExternalTmpDir(exeDir), 'playback_cache'), currentConfig.ffmpegPath, currentConfig.ffprobePath, previewLimiter);
+  playbackService = new PlaybackPreviewService(path.resolve(getExternalTmpDir(exeDir), 'playback_cache'), currentConfig.ffmpegPath, currentConfig.ffprobePath, previewLimiter, maintenance);
   planManager.setChangeListener(change => { if (change.record) rememberPlanOutputs([change.record]); mainWindow?.webContents.send('plan:changed', change); });
   cuttingEngine.setStateListener(state => mainWindow?.webContents.send('engine:stateChanged', state));
   await planManager.ready;
@@ -473,7 +485,9 @@ app.whenReady().then(async () => {
 
           const validEnd = Math.min(end, totalSize - 1);
           const chunkSize = validEnd - start + 1;
+          const release = await maintenance.pin(filePath);
           const nodeStream = fs.createReadStream(filePath, { start, end: validEnd });
+          nodeStream.once('close', release); nodeStream.once('error', release);
           const webStream = Readable.toWeb(nodeStream) as ReadableStream<Uint8Array>;
 
           return new Response(webStream, {
@@ -489,7 +503,9 @@ app.whenReady().then(async () => {
         }
       }
 
+      const release = await maintenance.pin(filePath);
       const nodeStream = fs.createReadStream(filePath);
+      nodeStream.once('close', release); nodeStream.once('error', release);
       const webStream = Readable.toWeb(nodeStream) as ReadableStream<Uint8Array>;
 
       return new Response(webStream, {
@@ -507,6 +523,7 @@ app.whenReady().then(async () => {
   });
 
   createWindow();
+  void maintenance.discover().then(async () => { rememberPlanOutputs(await planManager.listPlans()); maintenance.start(); }).catch(error => console.warn('缓存维护启动失败：', error));
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -531,6 +548,7 @@ app.on('before-quit', event => {
     compressionChecks.forEach(controller => controller.abort());
     await Promise.allSettled([previewService?.shutdown(), playbackService?.shutdown(), prober?.shutdown(), cuttingEngine?.shutdown(), stopMediaProcesses()]);
     await stopMediaProcesses();
+    await maintenance?.close();
     app.quit();
   })();
 });

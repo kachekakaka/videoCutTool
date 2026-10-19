@@ -232,6 +232,7 @@ export interface PreviewProgress { requestId: string; percent: number; message: 
  * 降码画质 A/B 对比抽样画格数据契约 (Visual Compression Preview Sample)
  */
 export interface PreviewSample {
+  cacheLeaseId?: string;
   index: number;
   timestampMs: number;
   originalBase64: string;

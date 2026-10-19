@@ -34,12 +34,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   adjacentFrame: (file, time, direction) => ipcRenderer.invoke('media:adjacentFrame', file, time, direction),
   preparePlayback: (file, convert, id) => ipcRenderer.invoke('media:preparePlayback', file, convert, id),
   cancelPlayback: id => ipcRenderer.invoke('media:cancelPlayback', id),
+  releasePlayback: id => ipcRenderer.invoke('media:releasePlayback', id),
   onPreviewProgress: callback => subscribe('media:previewProgress', callback),
 
   // 降码与画质对比预览
   previewCompressionSamples: (videoPath: string, timestampsMs: number[], config: CompressConfig, id?: string): Promise<PreviewSample[]> =>
     ipcRenderer.invoke('compress:previewSamples', videoPath, timestampsMs, config, id ?? crypto.randomUUID()),
   cancelCompressionPreview: id => ipcRenderer.invoke('compress:cancelPreview', id),
+  releaseCompressionPreview: id => ipcRenderer.invoke('compress:releasePreview', id),
   probeHardwareEncoder: config => ipcRenderer.invoke('compress:probeEncoder', config),
 
   // 执行裁剪与后台引擎

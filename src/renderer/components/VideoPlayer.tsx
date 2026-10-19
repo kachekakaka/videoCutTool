@@ -68,14 +68,19 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     if (request.current) void window.electronAPI?.cancelPlayback(request.current).catch(() => {});
     request.current = null; setProgress(null);
   };
+  const previewLease = useRef<string | null>(null);
+  const releasePreview = () => {
+    if (previewLease.current) void window.electronAPI?.releasePlayback(previewLease.current).catch(() => {});
+    previewLease.current = null;
+  };
   const preparePreview = async (convert: boolean) => {
     if (!window.electronAPI || request.current || !isActive) return;
     const epoch = sourceEpoch.current, id = crypto.randomUUID();
     request.current = id; setProgress(0); pause();
     try {
       const result = await window.electronAPI.preparePlayback(videoPath, convert, id);
-      if (sourceEpoch.current !== epoch || request.current !== id) return;
-      if (result.path) { position.current = current(); setPreview({ source: videoPath, path: result.path, offset: result.timeOffsetMs || 0 }); setError(''); }
+      if (sourceEpoch.current !== epoch || request.current !== id) { void window.electronAPI.releasePlayback(id); return; }
+      if (result.path) { releasePreview(); previewLease.current = id; position.current = current(); setPreview({ source: videoPath, path: result.path, offset: result.timeOffsetMs || 0 }); setError(''); }
       else setError('此素材需要生成兼容预览后播放，处理时间取决于视频长度。剪辑仍使用原片。');
     } catch (error) { if (sourceEpoch.current === epoch && request.current === id) setError(`生成兼容预览失败：${String(error)}`); }
     finally { if (request.current === id) { request.current = null; setProgress(null); } }
@@ -83,7 +88,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
   useEffect(() => {
     sourceEpoch.current++; navigationEpoch.current++; position.current = 0; attemptedRemux.current = false;
     setPreview(null); setError(''); onPlayStateChange?.(false); cancelPreview();
-    return () => { sourceEpoch.current++; navigationEpoch.current++; cancelPreview(); };
+    return () => { sourceEpoch.current++; navigationEpoch.current++; cancelPreview(); releasePreview(); };
   }, [videoPath]);
   useEffect(() => { if (!isActive) { pause(); navigationEpoch.current++; cancelPreview(); } }, [isActive]);
   useEffect(() => window.electronAPI?.onPreviewProgress(event => { if (request.current === event.requestId) setProgress(event.percent); }), []);

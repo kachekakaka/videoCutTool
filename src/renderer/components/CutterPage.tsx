@@ -144,6 +144,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const [isAddingCompareSample, setIsAddingCompareSample] = useState(false);
   const compareEpochRef = useRef(0);
   const pendingCompareAdditionRef = useRef<{ id: string } | null>(null);
+  const compareLeasesRef = useRef(new Set<string>());
+  const releaseCompareLease = (id: string) => { compareLeasesRef.current.delete(id); void window.electronAPI?.releaseCompressionPreview(id).catch(() => {}); };
   const cancelCompareAddition = useCallback(() => {
     if (pendingCompareAdditionRef.current) void window.electronAPI?.cancelCompressionPreview(pendingCompareAdditionRef.current.id).catch(() => {});
     pendingCompareAdditionRef.current = null;
@@ -253,6 +255,10 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const currentCompareKeyRef = useRef(compareRequestKey);
   currentCompareKeyRef.current = compareRequestKey;
   const cachedCompareSamples = compareCache.key === compareRequestKey ? compareCache.samples : [];
+  useEffect(() => {
+    const used = new Set(cachedCompareSamples.map(sample => sample.cacheLeaseId).filter((id): id is string => Boolean(id)));
+    for (const id of compareLeasesRef.current) if (!used.has(id)) releaseCompareLease(id);
+  }, [compareCache, compareRequestKey]);
   const isLoadingCompareSamples = compareCache.key !== compareRequestKey;
 
   useEffect(() => {
@@ -264,6 +270,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     cancelCompareAddition();
     loadEpoch.current++;
     cancelScan();
+    for (const id of compareLeasesRef.current) releaseCompareLease(id);
   }, []);
 
   // 首批加载也由工作台持有；视图只呈现结果，不再与新增请求各自维护一套缓存。
@@ -278,7 +285,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       try {
         if (!window.electronAPI?.previewCompressionSamples) throw new Error('未检测到预览采样服务通道');
         const result = await window.electronAPI.previewCompressionSamples(metadata.filePath, effectiveSampleTimestamps, currentCompressConfig, requestId);
-        if (!isCurrent()) return;
+        if (!isCurrent()) { releaseCompareLease(requestId); return; }
+        compareLeasesRef.current.add(requestId);
         const samples = effectiveSampleTimestamps.flatMap((timestampMs) => {
           const sample = result.find((item) => item.timestampMs === timestampMs);
           return sample ? [sample] : [];
@@ -793,9 +801,10 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       try {
         if (!window.electronAPI?.previewCompressionSamples) throw new Error('未检测到预览采样服务通道');
         const result = await window.electronAPI.previewCompressionSamples(metadata.filePath, [timestampMs], currentCompressConfig, request.id);
-        if (!isCurrent()) return false;
+        if (!isCurrent()) { releaseCompareLease(request.id); return false; }
         const sample = result.find((item) => item.timestampMs === timestampMs);
         if (!sample) throw new Error('该位置未能抽取到有效画面，请换一个时间点重试');
+        compareLeasesRef.current.add(request.id);
 
         // 成功后一起提交时间点、图片与焦点；失败和过期请求不会占用名额。
         const nextTimestamps = [...baseList, timestampMs];
@@ -808,6 +817,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         setNotice(null);
         return true;
       } catch (err) {
+        releaseCompareLease(request.id);
         if (isCurrent()) setNotice({ type: 'error', message: err instanceof Error ? err.message : '新增对比场景失败，请重试' });
         return false;
       } finally {

@@ -1,10 +1,12 @@
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess, ChildProcessWithoutNullStreams } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { CompressionFile, MediaStreamInfo, MediaTime } from '../../shared/types';
 import { frameTime, secondsTime, timeMs } from '../../shared/mediaTime';
+import { registerMediaSpawn } from './CacheMaintenanceService';
 
 const children = new Set<ChildProcess>();
+export const hasActiveMediaProcesses = () => children.size > 0;
 let closing = false;
 export interface SharedJob<T> { promise: Promise<T>; controller: AbortController; consumers: Set<symbol> }
 export function consumeJob<T>(job: SharedJob<T>, signal?: AbortSignal): Promise<T> {
@@ -51,12 +53,21 @@ export async function stopMediaProcesses(): Promise<void> {
     child.kill();
   })));
 }
-export function runMediaTool(executable: string, args: string[], options: { signal?: AbortSignal; timeoutMs?: number; onOutput?: (text: string) => void; maxOutputBytes?: number; captureOutput?: boolean } = {}): Promise<string> {
+export async function runMediaTool(executable: string, args: string[], options: { signal?: AbortSignal; timeoutMs?: number; onOutput?: (text: string) => void; maxOutputBytes?: number; captureOutput?: boolean } = {}): Promise<string> {
+  if (closing || options.signal?.aborted) throw abortError();
+  const track = await registerMediaSpawn(args);
+  let proc: ChildProcessWithoutNullStreams;
+  try {
+    if (closing || options.signal?.aborted) throw abortError();
+    proc = spawn(executable, args, { windowsHide: true });
+  } catch (error) {
+    await track.cancel().catch(reason => console.warn('媒体启动登记撤销失败：', reason));
+    throw error;
+  }
   return new Promise((resolve, reject) => {
-    if (closing || options.signal?.aborted) return reject(abortError());
-    const proc = spawn(executable, args, { windowsHide: true });
     children.add(proc);
     let stdout = '', stderr = '', failure: Error | undefined;
+    const tracked = track.started(proc).catch(error => { failure = error instanceof Error ? error : new Error(String(error)); proc.kill(); });
     const cancel = () => { failure = abortError(); proc.kill(); };
     options.signal?.addEventListener('abort', cancel, { once: true });
     const timer = options.timeoutMs ? setTimeout(() => { failure = new Error('媒体处理超时'); proc.kill(); }, options.timeoutMs) : undefined;
@@ -67,10 +78,11 @@ export function runMediaTool(executable: string, args: string[], options: { sign
     });
     proc.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-24000); });
     proc.on('error', error => { failure = error; });
-    proc.on('close', code => {
+    proc.on('close', async code => {
       children.delete(proc);
       if (timer) clearTimeout(timer);
       options.signal?.removeEventListener('abort', cancel);
+      await tracked;
       if (failure) reject(failure);
       else if (code !== 0) reject(new Error(`媒体处理失败 (${code}): ${stderr.trim()}`));
       else resolve(stdout);
@@ -180,12 +192,6 @@ export async function needsTimestampRepair(file: string, info: ProbedFile, ffpro
   if (!result.packets?.length) throw new Error('素材没有可读取的视频包');
   return result.packets.some((packet: any) => !Number.isSafeInteger(packet.pts));
 }
-export async function removeOwnedDirectory(root: string, directory: string): Promise<void> {
-  const base = path.resolve(root), target = path.resolve(directory);
-  if (target === base || !target.startsWith(base + path.sep)) throw new Error('临时目录不在本次任务的受控范围内');
-  await fs.promises.rm(target, { recursive: true, force: true });
-}
-
 /** 只在有空闲名额时启动；取消等待项不会再派生子进程。 */
 export class MediaLimiter {
   private active = 0;

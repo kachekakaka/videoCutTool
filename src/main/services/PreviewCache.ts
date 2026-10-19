@@ -1,29 +1,40 @@
 import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
+import { CacheKind, CacheMaintenanceService } from './CacheMaintenanceService';
 
 export const cacheKey = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export const mediaUrl = (file: string) => `media://video?path=${encodeURIComponent(file)}`;
 
-/** 只清理本服务命名的缓存文件；最近显示的画格优先保留。 */
+export interface CacheUse { file: string; fresh: boolean; release: () => void }
+/** 新资产单独登记；容量维护不参与媒体生成的成功判定。 */
 export class PreviewCache {
-  constructor(readonly directory: string, private maxFiles = 128, private maxBytes = 512 * 1024 * 1024) { fs.mkdirSync(directory, { recursive: true }); }
-  file(key: string, extension = '.png') { return path.join(this.directory, `cache_${key}${extension}`); }
-  async hit(file: string) { try { const stat = await fs.promises.stat(file); if (!stat.size) return false; const now = new Date(); await fs.promises.utimes(file, now, now); return true; } catch { return false; } }
-  async trim(protectedFiles: string[] = []) {
-    const files = await fs.promises.readdir(this.directory);
-    const entries = (await Promise.all(files.filter(name => /^cache_[a-f0-9]+\.(png|mp4)$/.test(name)).map(async name => {
-      const file = path.join(this.directory, name); const stat = await fs.promises.stat(file).catch(() => null); return stat ? { file, size: stat.size, time: stat.mtimeMs } : null;
-    }))).filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)).sort((a, b) => b.time - a.time);
-    const current = entries.filter(entry => protectedFiles.includes(entry.file));
-    const oversized = current.length > this.maxFiles || current.reduce((sum, entry) => sum + entry.size, 0) > this.maxBytes;
-    if (oversized) protectedFiles = [];
-    let bytes = oversized ? 0 : current.reduce((sum, entry) => sum + entry.size, 0), count = oversized ? 0 : current.length;
-    for (const entry of entries) {
-      if (protectedFiles.includes(entry.file)) continue;
-      if (count >= this.maxFiles || bytes + entry.size > this.maxBytes || Date.now() - entry.time > 24 * 3600000) await fs.promises.unlink(entry.file).catch(() => {});
-      else { bytes += entry.size; count++; }
-    }
-    if (oversized) throw new Error('本次预览超出缓存容量，请减少对比场景或使用较短素材');
+  readonly directory: string;
+  readonly maintenance: CacheMaintenanceService;
+  readonly ready: Promise<void>;
+  constructor(directory: string, private kind: Exclude<CacheKind, 'task'> = 'picture', maintenance?: CacheMaintenanceService) {
+    this.directory = path.join(directory, 'managed');
+    this.maintenance = maintenance ?? new CacheMaintenanceService(path.join(path.dirname(directory), '.cache-maintenance'));
+    this.ready = this.maintenance.registerRoot(this.directory);
   }
+  async lookup(cacheId: string): Promise<CacheUse | undefined> {
+    await this.ready;
+    const name = await this.maintenance.find(this.directory, cacheId, this.kind);
+    if (name) {
+      const file = path.join(this.directory, name), release = await this.maintenance.pin(file);
+      try { if (await this.maintenance.valid(file) && (await fs.promises.stat(file)).size) { await this.maintenance.touch(file); return { file, release, fresh: false }; } }
+      catch { /* 无效命中不妨碍重新生成，未知内容留待人工判断。 */ }
+      release();
+    }
+  }
+  async acquire(cacheId: string, extension = '.png'): Promise<CacheUse> {
+    const hit = await this.lookup(cacheId); if (hit) return hit;
+    const file = await this.maintenance.create(this.directory, this.kind, extension, cacheId);
+    let released = false;
+    return { file, fresh: true, release: () => { if (!released) { released = true; this.maintenance.release(file); } } };
+  }
+  async publish(use: CacheUse, temporary: string) { await fs.promises.link(temporary, use.file); await this.maintenance.ready(use.file); }
+  async fail(use: CacheUse) { if (use.fresh) await this.maintenance.abandon(use.file); use.release(); }
+  async request() { await this.ready; return this.maintenance.create(this.directory, 'task', ''); }
+  async finish(directory: string) { try { await this.maintenance.abandon(directory); } catch (error) { console.warn('任务收尾登记失败：', error); } finally { this.maintenance.release(directory); await this.maintenance.sweep(); } }
 }

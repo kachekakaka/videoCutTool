@@ -25,6 +25,8 @@ export interface ElectronAPI {
   adjacentFrame: (file: string, time: number, direction: -1 | 1) => Promise<number>;
   preparePlayback: (file: string, convert: boolean, id: string) => Promise<{ path?: string; needsConversion?: boolean; timeOffsetMs?: number }>;
   cancelPlayback: (id: string) => Promise<void>;
+  releasePlayback: (id: string) => Promise<void>;
+  releaseCompressionPreview: (id: string) => Promise<void>;
   onPreviewProgress: (callback: (progress: PreviewProgress) => void) => () => void;
 
   // 降码与画质对比预览

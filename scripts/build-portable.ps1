@@ -4,6 +4,13 @@ $repoPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $tempRoot = [IO.Path]::GetFullPath((Join-Path $repoPath '../videoCutTool_tmp'))
 $candidatePath = Join-Path $tempRoot ('portable-' + [guid]::NewGuid().ToString('N'))
 $releasePath = Join-Path $repoPath 'release'
+. (Join-Path $PSScriptRoot 'portable-artifacts.ps1')
+$artifactId = $null
+$candidateCompleted = $false
+function Clear-OldArtifacts {
+  try { Invoke-PortableArtifactCleanup -Repository $repoPath -Apply | Out-Host }
+  catch { Write-Warning "暂缓产物自动清理：$($_.Exception.Message)" }
+}
 
 function Assert-Within([string]$Target, [string]$Root) {
   $absolute = [IO.Path]::GetFullPath($Target)
@@ -23,7 +30,8 @@ function Require-File([string]$File) { if (-not (Test-Path -LiteralPath $File -P
 Push-Location $repoPath
 try {
   Assert-Within $candidatePath $tempRoot
-  New-Item -ItemType Directory -Path $candidatePath -Force | Out-Null
+  Clear-OldArtifacts
+  $artifactId = Start-PortableArtifact -Repository $repoPath -Path $candidatePath
   Write-Host '检查媒体工具和构建环境...'
   & node -e "require('./scripts/electron-builder.cjs')"
   if ($LASTEXITCODE -ne 0) { throw '媒体工具验证失败，旧便携版本保持原状' }
@@ -46,7 +54,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "包内 $tool 不可运行" }
   }
   [IO.File]::WriteAllText((Join-Path $candidatePath 'candidate.json'), (@{ path = $candidatePath; builtAt = [DateTime]::UtcNow.ToString('o'); buildOnly = [bool]$BuildOnly } | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
-  if ($BuildOnly) { Write-Host "候选包验证通过，尚未替换发布目录：$candidatePath"; exit 0 }
+  Complete-PortableArtifact -Repository $repoPath -Id $artifactId -Succeeded $true
+  $candidateCompleted = $true
+  if ($BuildOnly) { Clear-OldArtifacts; Write-Host "候选包验证通过，尚未替换发布目录：$candidatePath"; exit 0 }
 
   $targetApp = Join-Path $releasePath 'app'
   $targetLauncher = Join-Path $releasePath 'VideoCutTool.exe'
@@ -77,6 +87,12 @@ try {
     if ($movedLauncher) { Move-Owned (Join-Path $backup 'VideoCutTool.exe') $targetLauncher }
     throw $publishError
   }
+  try { Register-CurrentPortable -Repository $repoPath -CandidateId $artifactId -PreviousPath $backup }
+  catch { Write-Warning "程序已更新，但维护登记失败，旧副本保留待核对：$($_.Exception.Message)" }
+  Clear-OldArtifacts
   Write-Host "便携包已更新：$targetLauncher。原工作区指针保持原状，上一版保留在 $backup"
-} catch { Write-Error $_ -ErrorAction Continue; exit 1 }
+} catch {
+  if ($artifactId -and -not $candidateCompleted) { try { Complete-PortableArtifact -Repository $repoPath -Id $artifactId -Succeeded $false } catch { Write-Warning "失败候选登记未闭环，保留目录：$($_.Exception.Message)" } }
+  Write-Error $_ -ErrorAction Continue; exit 1
+}
 finally { Pop-Location }
