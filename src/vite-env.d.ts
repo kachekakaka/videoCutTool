@@ -26,6 +26,10 @@ export interface ElectronAPI {
   preparePlayback: (file: string, convert: boolean, id: string) => Promise<{ path?: string; needsConversion?: boolean; timeOffsetMs?: number }>;
   cancelPlayback: (id: string) => Promise<void>;
   releasePlayback: (id: string) => Promise<void>;
+  openStream: (file: string, id: string) => Promise<import('./shared/streamPlayback').StreamPlaybackSnapshot | null>;
+  streamStatus: (id: string) => Promise<import('./shared/streamPlayback').StreamPlaybackSnapshot>;
+  streamFrame: (id: string, time: number, direction: -1 | 0 | 1) => Promise<import('./shared/streamPlayback').StreamFrameTarget>;
+  closeStream: (id: string) => Promise<void>;
   releaseCompressionPreview: (id: string) => Promise<void>;
   onPreviewProgress: (callback: (progress: PreviewProgress) => void) => () => void;
 

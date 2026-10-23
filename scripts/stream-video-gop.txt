@@ -1,0 +1,41 @@
+    _remuxVideo(videoTrack, force) {
+        if (!this._config.vctPreciseVideo) return this._remuxVideoBatch(videoTrack, force);
+        if (this._videoMeta == null) return;
+        // 一个完整解码组内按 PTS 确定展示区间，保持压缩负载和源 PTS。
+        this._vctVideoPending.push(...videoTrack.samples);
+        videoTrack.samples = [];
+        videoTrack.length = 0;
+        while (this._vctVideoPending.length) {
+            let end = this._vctVideoPending.findIndex((sample, i) => i > 0 && sample.isKeyframe);
+            if (end < 0 && !force) return;
+            if (end < 0) end = this._vctVideoPending.length;
+            const next = this._vctVideoPending[end];
+            const group = this._vctVideoPending.splice(0, end);
+            const ordered = group.slice().sort((a, b) => a.pts - b.pts);
+            const durations = new Map();
+            for (let i = 0; i < ordered.length; i++) {
+                const following = ordered[i + 1] || next;
+                // EOF 无后续 PTS 时，只按最后可观察的展示间隔延伸。
+                const tail = i > 0 ? ordered[i].pts - ordered[i - 1].pts : Math.round(this._videoMeta.refSampleDuration);
+                const duration = following ? following.pts - ordered[i].pts : tail;
+                if (!Number.isSafeInteger(duration) || duration <= 0 || duration > 0xffffffff) {
+                    throw new IllegalStateException('源视频展示时间不连续或解码组交叉，无法精确播放');
+                }
+                durations.set(ordered[i], duration);
+            }
+            let dts = this._vctVideoDecodeEnd == null ? group[0].dts : this._vctVideoDecodeEnd;
+            for (const sample of group) {
+                sample.dts = dts;
+                sample.cts = sample.pts - dts;
+                sample.vctPresentationDuration = durations.get(sample);
+                if (!Number.isSafeInteger(sample.cts) || sample.cts < -0x80000000 || sample.cts > 0x7fffffff) {
+                    throw new IllegalStateException('展示时间偏移超出可表示范围');
+                }
+                dts += sample.vctPresentationDuration;
+            }
+            this._vctVideoDecodeEnd = dts;
+            const batch = { ...videoTrack, samples: group, length: group.reduce((sum, sample) => sum + sample.length, 0) };
+            this._remuxVideoBatch(batch, true);
+            videoTrack.sequenceNumber = batch.sequenceNumber;
+        }
+    }

@@ -136,6 +136,6 @@ export class KeyframeProber {
     this.frameWindows.set(identity, { center: currentMs, points });
     if (this.frameWindows.size > 3) this.frameWindows.delete(this.frameWindows.keys().next().value!);
     if (!points.length) throw new Error('未能读取当前位置附近的展示帧');
-    return nextFrom(points) ?? (direction > 0 ? Math.max(currentMs, points[points.length - 1]) : 0);
+    return nextFrom(points) ?? (direction > 0 ? Math.max(currentMs, points[points.length - 1]) : points[0]);
   }
 }

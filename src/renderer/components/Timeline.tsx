@@ -44,6 +44,7 @@ interface TimelineProps {
   cuts: number[];
   segments: Segment[];
   videoPath?: string;
+  timeOriginMs?: number;
   isPlaying?: boolean;
   aspectRatioMode?: 'auto' | '16:9' | '1:1';
   onSeek: (timeMs: number) => void;
@@ -69,6 +70,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   cuts,
   segments,
   videoPath,
+  timeOriginMs = 0,
   isPlaying = false,
   aspectRatioMode = 'auto',
   onSeek,
@@ -1023,6 +1025,7 @@ export const Timeline: React.FC<TimelineProps> = ({
         {/* 悬浮微型画格小窗预览 (Scrub Thumbnail Preview) */}
         <TimelineThumbnailPreview
           videoPath={videoPath}
+          timeOriginMs={timeOriginMs}
           targetMs={cutDragState.currentTimeMs}
           anchorX={cutDragState.anchorX}
           containerWidth={trackWidth}

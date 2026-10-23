@@ -2,13 +2,15 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import electron from 'vite-plugin-electron';
 import renderer from 'vite-plugin-electron-renderer';
+import path from 'node:path';
 
 export default defineConfig({
+  resolve: { alias: { '@stream-player': path.resolve('node_modules/.cache/vct-mpegts/player.js') } },
   plugins: [
     {
       name: 'production-content-security-policy',
       apply: 'build',
-      transformIndexHtml: html => html.replace('<head>', `<head><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' media: data:; media-src 'self' media:; connect-src 'self' media:; object-src 'none'; frame-src 'none'; base-uri 'none'">`),
+      transformIndexHtml: html => html.replace('<head>', `<head><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' media: data:; media-src 'self' media: blob:; connect-src 'self' media:; object-src 'none'; frame-src 'none'; base-uri 'none'">`),
     },
     react(),
     electron([

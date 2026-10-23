@@ -531,7 +531,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
   // 插入切点
   const handleInsertCut = () => {
-    if (!draft || !metadata) return;
+    if (!draft || !metadata || playerRef.current?.isNavigating()) return;
     const timeMs = playerRef.current ? playerRef.current.getCurrentTimeMs() : currentTimeMs;
     let success = false;
     commitDraftChange((d) => {
@@ -1109,6 +1109,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               ref={playerRef}
               playbackRate={playbackRate}
               videoPath={metadata.filePath}
+              timeOriginMs={metadata.timeOrigin ? Number(metadata.timeOrigin.numerator) / Number(metadata.timeOrigin.denominator) * 1000 : 0}
               durationMs={metadata.durationMs}
               fps={metadata.fps}
               videoWidth={metadata.width}
@@ -1195,6 +1196,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             cuts={cuts as number[]}
             segments={segments}
             videoPath={metadata.filePath}
+            timeOriginMs={metadata.timeOrigin ? Number(metadata.timeOrigin.numerator) / Number(metadata.timeOrigin.denominator) * 1000 : 0}
             isPlaying={isPlaying}
             playbackRate={playbackRate}
             onPlaybackRateChange={setPlaybackRate}
@@ -1203,7 +1205,6 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             aspectRatioMode={aspectRatioMode}
             onSeek={(ms) => {
               setAuditionRange(null);
-              setCurrentTimeMs(ms);
               playerRef.current?.seekTo(ms);
             }}
             shortcutsEnabled={shortcutsEnabled}

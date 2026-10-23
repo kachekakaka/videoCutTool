@@ -3,6 +3,7 @@ import { PreviewProgress } from '../../shared/types';
 import { abortError, fileIdentity, MediaLimiter, presentationStart, probeFile, resolveTool, runMediaTool } from './MediaTools';
 import { cacheKey, CacheUse, PreviewCache } from './PreviewCache';
 import { CacheMaintenanceService } from './CacheMaintenanceService';
+import { timeMs } from '../../shared/mediaTime';
 
 export interface PlaybackPreview { path?: string; needsConversion?: boolean; timeOffsetMs?: number }
 export class PlaybackPreviewService {
@@ -52,7 +53,7 @@ export class PlaybackPreviewService {
         if (signal.aborted) throw abortError();
         this.release(id); this.leases.set(id, use.release); transferred = true;
         progress({ requestId: id, percent: 100, message: '兼容预览已就绪' });
-        return { path: output, timeOffsetMs: previewStart - sourceStart };
+        return { path: output, timeOffsetMs: timeMs(preview.origin) + previewStart - sourceStart };
       } catch (error) { if (!convert && !signal.aborted) return { needsConversion: true }; throw error; }
       finally { if (!transferred) await this.finishFailed(use); if (directory) await this.cache.finish(directory); this.cache.maintenance.schedule(); }
     }, signal);

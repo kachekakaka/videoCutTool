@@ -35,6 +35,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   preparePlayback: (file, convert, id) => ipcRenderer.invoke('media:preparePlayback', file, convert, id),
   cancelPlayback: id => ipcRenderer.invoke('media:cancelPlayback', id),
   releasePlayback: id => ipcRenderer.invoke('media:releasePlayback', id),
+  openStream: (file, id) => ipcRenderer.invoke('media:openStream', file, id),
+  streamStatus: id => ipcRenderer.invoke('media:streamStatus', id),
+  streamFrame: (id, time, direction) => ipcRenderer.invoke('media:streamFrame', id, time, direction),
+  closeStream: id => ipcRenderer.invoke('media:closeStream', id),
   onPreviewProgress: callback => subscribe('media:previewProgress', callback),
 
   // 降码与画质对比预览

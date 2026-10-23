@@ -3,6 +3,7 @@ import { formatTimecode } from './VideoPlayer';
 
 interface TimelineThumbnailPreviewProps {
   videoPath?: string;
+  timeOriginMs?: number;
   targetMs: number;
   anchorX: number;
   containerWidth: number;
@@ -13,6 +14,7 @@ interface TimelineThumbnailPreviewProps {
 
 export const TimelineThumbnailPreview: React.FC<TimelineThumbnailPreviewProps> = ({
   videoPath,
+  timeOriginMs = 0,
   targetMs,
   anchorX,
   containerWidth,
@@ -28,12 +30,12 @@ export const TimelineThumbnailPreview: React.FC<TimelineThumbnailPreviewProps> =
     const video = videoRef.current;
     if (!video || !visible || isNaN(targetMs)) return;
 
-    const targetSec = Math.max(0, targetMs / 1000);
+    const targetSec = Math.max(0, (targetMs + timeOriginMs) / 1000);
     // 只有在差值超过 20ms 时才执行 seek，提升 60FPS 拖拽流畅度
     if (video.readyState && Math.abs(video.currentTime - targetSec) > 0.001) {
       video.currentTime = targetSec;
     }
-  }, [targetMs, visible, videoPath]);
+  }, [targetMs, visible, videoPath, timeOriginMs]);
 
   if (!visible || !videoPath) return null;
 
@@ -59,7 +61,7 @@ export const TimelineThumbnailPreview: React.FC<TimelineThumbnailPreviewProps> =
           <video
             ref={videoRef}
             src={mediaUrl}
-            onLoadedMetadata={() => { if (videoRef.current) videoRef.current.currentTime = Math.max(0, targetMs / 1000); }}
+            onLoadedMetadata={() => { if (videoRef.current) videoRef.current.currentTime = Math.max(0, (targetMs + timeOriginMs) / 1000); }}
             onError={() => setFailed(true)}
             preload="auto"
             muted

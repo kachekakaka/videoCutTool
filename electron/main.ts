@@ -10,6 +10,8 @@ import { PlanManager } from '../src/main/services/PlanManager';
 import { BatchCompressionService } from '../src/main/services/BatchCompressionService';
 import { CompressionPreviewService } from '../src/main/services/CompressionPreviewService';
 import { PlaybackPreviewService } from '../src/main/services/PlaybackPreviewService';
+import { StreamPlaybackIndexService } from '../src/main/services/StreamPlaybackIndexService';
+import { StreamPlaybackSessionService } from '../src/main/services/StreamPlaybackSessionService';
 import { CacheMaintenanceService, externalTemporaryDirectory as getExternalTmpDir } from '../src/main/services/CacheMaintenanceService';
 import { MediaLimiter, stopMediaProcesses, clearProbeCache, hasActiveMediaProcesses } from '../src/main/services/MediaTools';
 import { FileAccessRegistry, localPath, requestId, textValue, validateCompress, validateConfigPatch, validateRecord } from '../src/main/services/IpcSecurity';
@@ -39,6 +41,8 @@ protocol.registerSchemesAsPrivileged([
 app.commandLine.appendSwitch('disable-gpu-cache');
 app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 app.commandLine.appendSwitch('disable-http-cache');
+// 异常录像的损坏包会令部分硬件解码器终止播放；软件视频解码可容错，界面 GPU 加速保持启用。
+app.commandLine.appendSwitch('disable-accelerated-video-decode');
 app.enableSandbox();
 
 // 强制原生深色沉浸主题
@@ -75,6 +79,7 @@ let planManager: PlanManager;
 let batchCompression: BatchCompressionService;
 let previewService: CompressionPreviewService;
 let playbackService: PlaybackPreviewService;
+let streamPlayback: StreamPlaybackSessionService;
 let maintenance: CacheMaintenanceService;
 
 let mainWindow: BrowserWindow | null = null;
@@ -146,7 +151,7 @@ function createWindow() {
   mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
     const dev = process.env.VITE_DEV_SERVER_URL ? new URL(process.env.VITE_DEV_SERVER_URL).origin : '';
     const connect = dev ? `${dev} ${dev.replace(/^http/, 'ws')}` : '';
-    callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [`default-src 'self'; script-src 'self' ${dev ? "'unsafe-inline' " + dev : ''}; style-src 'self' 'unsafe-inline'; img-src 'self' media: data:; media-src 'self' media:; connect-src 'self' media: ${connect}; object-src 'none'; frame-src 'none'; base-uri 'none'`] } });
+    callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [`default-src 'self'; script-src 'self' ${dev ? "'unsafe-inline' " + dev : ''}; style-src 'self' 'unsafe-inline'; img-src 'self' media: data:; media-src 'self' media: blob:; connect-src 'self' media: ${connect}; object-src 'none'; frame-src 'none'; base-uri 'none'`] } });
   });
 
   const htmlPath = path.join(__dirname, '../dist/index.html');
@@ -177,7 +182,8 @@ function createWindow() {
     console.error('[Window Error] 页面加载失败:', errorCode, errorDescription);
   });
   const ownerPrefix = `${mainWindow.webContents.id}:`;
-  const releaseWindowCaches = () => { void previewService?.releaseOwner(ownerPrefix); void playbackService?.releaseOwner(ownerPrefix); };
+  const owner = mainWindow.webContents.id;
+  const releaseWindowCaches = () => { void previewService?.releaseOwner(ownerPrefix); void playbackService?.releaseOwner(ownerPrefix); streamPlayback?.closeOwner(owner); };
   mainWindow.webContents.on('render-process-gone', releaseWindowCaches);
   mainWindow.webContents.on('destroyed', releaseWindowCaches);
 
@@ -232,6 +238,7 @@ handle('config:save', async (_event, patch: Partial<AppConfig>) => {
       cuttingEngine.updateTools(config.ffmpegPath, config.ffprobePath);
       previewService.updateTools(config.ffmpegPath, config.ffprobePath);
       playbackService.updateTools(config.ffmpegPath, config.ffprobePath);
+      streamPlayback.indexes.updateTool(config.ffprobePath);
     }
     mainWindow?.webContents.send('config:changed', config); return config;
   });
@@ -270,6 +277,10 @@ handle('media:preparePlayback', async (event, file: string, convert: boolean, id
 });
 handle('media:cancelPlayback', async (event, id: string) => { requestId(id); markCanceled(`play:${event.sender.id}:${id}`); return playbackService.cancel(`${event.sender.id}:${id}`); });
 handle('media:releasePlayback', async (event, id: string) => { requestId(id); playbackService.release(`${event.sender.id}:${id}`); });
+handle('media:openStream', async (event, file: string, id: string) => { requestId(id); await files.check(file); checkCanceled(`stream:${event.sender.id}:${id}`); return streamPlayback.open(event.sender.id, file, id); });
+handle('media:streamStatus', async (event, id: string) => { requestId(id); return streamPlayback.status(event.sender.id, id); });
+handle('media:streamFrame', async (event, id: string, time: number, direction: -1 | 0 | 1) => { requestId(id); return streamPlayback.frame(event.sender.id, id, time, direction); });
+handle('media:closeStream', async (event, id: string) => { requestId(id); markCanceled(`stream:${event.sender.id}:${id}`); streamPlayback.close(event.sender.id, id); });
 
 // 降码画质抽样对比与硬件探测
 handle('compress:previewSamples', async (event, videoPath: string, timestampsMs: number[], config: CompressConfig, id: string) => {
@@ -432,6 +443,7 @@ app.whenReady().then(async () => {
   previewService = new CompressionPreviewService(currentConfig.ffmpegPath, tempPreviewDir, (config, signal) => cuttingEngine.probeEncoderSupport(config, signal), previewLimiter, maintenance);
   previewService.updateTools(currentConfig.ffmpegPath, currentConfig.ffprobePath);
   playbackService = new PlaybackPreviewService(path.resolve(getExternalTmpDir(exeDir), 'playback_cache'), currentConfig.ffmpegPath, currentConfig.ffprobePath, previewLimiter, maintenance);
+  streamPlayback = new StreamPlaybackSessionService(new StreamPlaybackIndexService(path.join(getExternalTmpDir(exeDir), 'stream_indexes'), currentConfig.ffprobePath, maintenance));
   planManager.setChangeListener(change => { if (change.record) rememberPlanOutputs([change.record]); mainWindow?.webContents.send('plan:changed', change); });
   cuttingEngine.setStateListener(state => mainWindow?.webContents.send('engine:stateChanged', state));
   await planManager.ready;
@@ -450,6 +462,11 @@ app.whenReady().then(async () => {
   protocol.handle('media', async (request) => {
     try {
       const parsed = new URL(request.url);
+      if (parsed.hostname === 'stream') {
+        // 媒体协议没有 senderFrame，绑定当前可信窗口及其随机会话；子框架已由 CSP 禁止。
+        if (!mainWindow || mainWindow.webContents.isDestroyed()) return new Response(null, { status: 403 });
+        return streamPlayback.respond(mainWindow.webContents.id, request);
+      }
       let filePath = parsed.searchParams.get('path');
 
       if (!filePath) {
@@ -546,7 +563,7 @@ app.on('before-quit', event => {
   void (async () => {
     scanRequests.forEach(request => request.controller.abort());
     compressionChecks.forEach(controller => controller.abort());
-    await Promise.allSettled([previewService?.shutdown(), playbackService?.shutdown(), prober?.shutdown(), cuttingEngine?.shutdown(), stopMediaProcesses()]);
+    await Promise.allSettled([previewService?.shutdown(), playbackService?.shutdown(), streamPlayback?.shutdown(), prober?.shutdown(), cuttingEngine?.shutdown(), stopMediaProcesses()]);
     await stopMediaProcesses();
     await maintenance?.close();
     app.quit();

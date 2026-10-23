@@ -12,6 +12,7 @@ import { abortError, fileIdentityAsync, needsTimestampRepair, presentationStart,
 import { resolveFormats, resolveNormalizationExtension, retainedStreams } from './MediaFormatResolver';
 import { resolveOutputBatch, resolveOutputDirectory } from './OutputPathResolver';
 import { buildSpatialFiltergraph, hasSpatialEffects, spatialOutputSize, validateSpatial, Dimension } from '../../shared/spatialFiltergraph';
+import { removeMp4Preroll } from './Mp4TimelineRepair';
 
 type Encoder = 'cpu' | 'nvenc' | 'qsv';
 type Job = { record: PlanRecord; prober: KeyframeProber; prepared?: { identity: string; info: ProbedFile } };
@@ -214,12 +215,23 @@ export class MediaCuttingEngine {
     const info = prepared || await probeFile(input, this.ffprobePath, signal);
     await this.runStep(progressKey, buildCompressArgs(input, output, config, encoder, { streams: retainedStreams(info.streams, stripCover), stripCover: false, spatialFilterArgs }), info.durationMs, signal, cpuRetry);
   }
-  private async cut(source: string, segment: PlanSegment, output: string, streams: MediaStreamInfo[], signal?: AbortSignal, offset = millisecondsTime(0), progressKey?: string) {
+  private async cut(source: string, segment: PlanSegment, output: string, streams: MediaStreamInfo[], signal?: AbortSignal, offset = millisecondsTime(0), progressKey?: string, prepared?: ProbedFile) {
     let startUs = ceilMicroseconds(addTime(segment.seekTime || millisecondsTime(segment.safeRange.startMs), offset));
     if (startUs < 0n) startUs = 0n;
     const endUs = ceilMicroseconds(addTime(millisecondsTime(segment.safeRange.endMs), offset));
     if (endUs <= startUs) throw new Error('保留区间没有有效时长');
-    await this.runStep(progressKey, ['-n', '-ss', formatMicroseconds(startUs), '-i', source, '-t', formatMicroseconds(endUs - startUs), '-c', 'copy', '-avoid_negative_ts', 'make_zero', ...streams.flatMap(stream => ['-map', `0:${stream.index}`]), ...this.audioDispositions(streams), output], Number(endUs - startUs) / 1000, signal);
+    const info = prepared || await probeFile(source, this.ffprobePath, signal);
+    const originUs = ceilMicroseconds(info.origin), targetUs = startUs + originUs;
+    // 只在执行裁剪时读取切点附近的包；用关键帧 DTS 定位，避免 B 帧导致退到前一个 GOP。
+    const packets = JSON.parse(await runMediaTool(this.ffprobePath, ['-v', 'error', '-select_streams', String(info.videoIndex), '-read_intervals', `${formatMicroseconds(targetUs > 1000000n ? targetUs - 1000000n : 0n)}%${formatMicroseconds(targetUs + 1000000n)}`, '-show_packets', '-show_data_hash', 'crc32', '-show_entries', 'packet=pts_time,dts_time,flags,data_hash', '-of', 'json', source], { signal, timeoutMs: 30000 })).packets || [];
+    const key = packets.find((p: any) => p.flags?.includes('K') && Number.isFinite(Number(p.dts_time)) && Math.abs(Number(p.pts_time) * 1e6 - Number(targetUs)) <= 2);
+    if (!key) throw new Error('未找到方案指定的关键帧，已停止导出，请重新分析素材');
+    const decodeUs = BigInt(Math.round(Number(key.dts_time) * 1e6));
+    const durationUs = endUs + originUs - decodeUs;
+    const mp4 = ['.mp4', '.mov', '.m4v'].includes(path.extname(output).toLowerCase());
+    await this.runStep(progressKey, ['-n', '-seek2any', '1', '-seek_timestamp', '1', '-ss', formatMicroseconds(decodeUs), '-i', source, '-t', formatMicroseconds(durationUs), '-c', 'copy', '-avoid_negative_ts', 'make_zero', ...(mp4 ? ['-movie_timescale', '720000'] : []), ...streams.flatMap(stream => ['-map', `0:${stream.index}`]), ...this.audioDispositions(streams), output], Number(durationUs) / 1000, signal);
+    const first = JSON.parse(await runMediaTool(this.ffprobePath, ['-v', 'error', '-select_streams', 'V:0', '-read_intervals', '%+#1', '-show_packets', '-show_data_hash', 'crc32', '-show_entries', 'packet=pts_time,flags,data_hash', '-of', 'json', output], { signal, timeoutMs: 30000 })).packets?.[0];
+    if (!first?.flags?.includes('K') || first.data_hash !== key.data_hash) throw new Error('导出首帧与方案关键帧不符，已停止发布输出');
   }
   private async concat(files: string[], output: string, directory: string, signal?: AbortSignal, progressKey?: string) {
     const list = path.join(directory, 'concat.txt');
@@ -364,7 +376,7 @@ export class MediaCuttingEngine {
         const pieces: string[] = compressionOnly ? [source] : [];
         for (let j = 0; j < filePlan.planSegments.length; j++) {
           const piece = path.join(directory, `segment_${i}_${j}${formats.intermediateExtension}`);
-          await this.cut(source, filePlan.planSegments[j], piece, sourceStreams, signal, seekOffset, `cut:${i}:${j}`);
+          await this.cut(source, filePlan.planSegments[j], piece, sourceStreams, signal, seekOffset, `cut:${i}:${j}`, sourceInfo);
           pieces.push(piece);
         }
         let input = pieces[0];
@@ -381,6 +393,13 @@ export class MediaCuttingEngine {
         } else if (needCompress) {
           output = path.join(directory, `encoded_${i}${formats.outputExtension}`);
           await encode(output, (selected, retry) => this.compressFile(input, output, effectiveCompressConfig, selected, signal, undefined, `encode:${i}`, retry, compressionOnly && plan.stripOriginalCover, compressionOnly ? sourceInfo : undefined));
+        }
+        // 完成拼接后才统一移动展示起点；修改中间片会使跨段解码时间重叠。
+        if (!needCompress && ['.mp4', '.mov', '.m4v'].includes(path.extname(output).toLowerCase())) {
+          const packet = JSON.parse(await runMediaTool(this.ffprobePath, ['-v', 'error', '-select_streams', 'V:0', '-read_intervals', '%+#1', '-show_packets', '-show_entries', 'packet=pts_time', '-of', 'json', output], { signal, timeoutMs: 30000 })).packets?.[0];
+          if (!Number.isFinite(Number(packet?.pts_time))) throw new Error('无法校准导出展示起点');
+          const file = await fs.promises.open(output, 'r+');
+          try { await removeMp4Preroll(file, BigInt(Math.round(Number(packet.pts_time) * 1e6))); } finally { await file.close(); }
         }
         this.tracker?.stage('verifying', i + 1, outputCount);
         await this.verify(output, streams, signal); finalFiles.push(output);
