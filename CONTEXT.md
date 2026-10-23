@@ -23,7 +23,7 @@ The editable, in-progress state of an ongoing timeline session, containing the s
 _Avoid_: Workspace state, project, draft file
 
 **Retention Plan**:
-The immutable, keyframe-aligned execution specification computed from a draft, containing exact physical slice boundaries, destinations, and concatenation rules.
+The immutable execution specification computed from a draft, containing the export precision, physical slice boundaries, destinations, and concatenation rules. Keyframe mode expands ranges for stream copy; frame mode uses the selected display-frame ranges for re-encoding.
 _Avoid_: Export config, cut recipe, job
 
 **Output File Group**:
@@ -36,6 +36,9 @@ _Avoid_: Plan name, job label, tag name
 **Safe Range**:
 The keyframe-aligned time interval computed outward from a user range, strictly adhering to the safety principle: expanding boundaries outward to previous/following keyframes so that no kept content is truncated.
 _Avoid_: Keyframe range, expanded slice, snapped boundary
+
+**Export Precision（导出精度）**:
+裁剪方案的边界策略：`keyframe` 使用关键帧保全范围；`frame` 对应“精确导出”，按起点包含、终点不包含的显示帧区间重新编码视频及音频。它与输出文件组合方式独立；智能降码继续使用关键帧保全范围。
 
 **Cut Point Mutation & Snapping**:
 The operator-driven relocation of an existing cut point via 300ms long-press drag or direct timecode editing, strictly bounded by neighboring cut points (>=200ms collision barrier) and optionally magnetizing to adjacent physical keyframes.
@@ -83,7 +86,7 @@ _Avoid_: Default all, global override, segment-first
 ### Management & Execution Concepts
 
 **Media Cutting Engine**:
-The dedicated background processing subsystem responsible for asynchronously executing retention plans, orchestrating FFmpeg lossless stream copies, collision-free output naming, temporary slice lifecycle, and plan execution state updates.
+The dedicated background processing subsystem responsible for asynchronously executing retention plans, orchestrating FFmpeg stream copies or precise re-encoding, collision-free output naming, temporary slice lifecycle, and plan execution state updates.
 _Avoid_: Export queue, worker thread, task runner, ffmpeg wrapper
 
 **Plan Manager**:

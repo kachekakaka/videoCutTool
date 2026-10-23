@@ -18,7 +18,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveConfig: (config: Partial<AppConfig>): Promise<AppConfig> => ipcRenderer.invoke('config:save', config),
   onConfigChanged: callback => subscribe('config:changed', callback),
   getConfigPath: (): Promise<string> => ipcRenderer.invoke('config:getPath'),
-  resolveOutputPath: (videoPath, isConcat, planTitle, compress, stripCover, streams) => ipcRenderer.invoke('config:resolveOutputPath', videoPath, isConcat, planTitle, compress, stripCover, streams),
+  resolveOutputPath: (videoPath, isConcat, planTitle, compress, stripCover, streams, precision) => ipcRenderer.invoke('config:resolveOutputPath', videoPath, isConcat, planTitle, compress, stripCover, streams, precision),
 
   // 媒体探测与对话框
   openVideoDialog: (): Promise<string | null> => ipcRenderer.invoke('dialog:openVideo'),

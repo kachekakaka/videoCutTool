@@ -314,7 +314,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                       <div className="flex items-center gap-1.5 shrink-0">
                         {plan.compressionOnly && <span className="text-[10px] text-purple-300">整片压缩</span>}
                         {/* 导出模式属性徽章 */}
-                        {plan.compress?.enabled ? (
+                        {plan.exportPrecision === 'frame' ? <span className="text-[11px] text-blue-200 px-2 py-0.5 rounded-full bg-blue-500/15" title="按画面范围导出；视频与音频重新编码">精确导出</span> : plan.compress?.enabled ? (
                           <span className="text-[11px] bg-purple-500/15 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full flex items-center gap-1 font-mono font-medium" title={plan.compress.preset === 'custom' ? '自定义 CRF 压缩' : COMPRESS_PRESETS[plan.compress.preset]?.summary}>
                             <span>📦</span>
                             <span>
@@ -324,9 +324,9 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                             </span>
                           </span>
                         ) : (
-                          <span className="text-[11px] bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 px-2 py-0.5 rounded-full flex items-center gap-1 font-mono font-medium" title="无损流复制秒级导出">
+                          <span className="text-[11px] bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 px-2 py-0.5 rounded-full flex items-center gap-1 font-mono font-medium" title="起点向前取关键帧，片尾可能扩出；配置画面处理时会转码，仍沿用扩展范围">
                             <Zap className="w-3 h-3 text-cyan-400" />
-                            <span>无损秒切</span>
+                            <span>快速无损</span>
                           </span>
                         )}
 

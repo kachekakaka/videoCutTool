@@ -38,6 +38,8 @@ export function validateRecord(record: PlanRecord) {
   if (Object.keys(record.decisions).length > record.cuts.length + 1 || Object.entries(record.decisions).some(([id, value]) => !validId(id) || !['keep', 'discard'].includes(value))) throw new Error('方案保留决策无效');
   if (record.stripOriginalCover !== undefined && typeof record.stripOriginalCover !== 'boolean') throw new Error('方案选项无效');
   validateCompress(record.compress); validateSpatial(record.spatialConfig);
+  if (record.exportPrecision !== undefined && !['keyframe', 'frame'].includes(record.exportPrecision)) throw new Error('导出精度无效');
+  if (record.exportPrecision === 'frame' && (record.compressionOnly || record.compress?.enabled)) throw new Error('精确导出不能同时使用智能降码或整片压缩');
   if (record.compressionOnly !== undefined) {
     localPath(record.outputDirectory);
     if (record.outputPath !== null) localPath(record.outputPath);

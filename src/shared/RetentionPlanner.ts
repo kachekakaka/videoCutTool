@@ -1,4 +1,4 @@
-import { Segment, MediaRetentionPlan, PlanSegment, KeyframePoint, OutputMode, SegmentOutputGroups, OutputGroup } from './types';
+import { Segment, MediaRetentionPlan, PlanSegment, KeyframePoint, OutputMode, SegmentOutputGroups, OutputGroup, ExportPrecision } from './types';
 import { compareTime, millisecondsTime } from './mediaTime';
 
 /** 同一份逻辑清单用于页面、保存摘要及实际执行，编号按最早成员排序。 */
@@ -40,9 +40,11 @@ export function planRetention(
   outputMode: OutputMode = 'single',
   stripOriginalCover: boolean = true,
   keyframePoints?: KeyframePoint[],
-  membership: SegmentOutputGroups = {}
+  membership: SegmentOutputGroups = {},
+  exportPrecision: ExportPrecision = 'keyframe'
 ): MediaRetentionPlan {
   validateOutputGroups(segments, outputMode, membership);
+  if (!['keyframe', 'frame'].includes(exportPrecision)) throw new Error('导出精度无效');
   const sortedKeyframes = [...keyframes].sort((a, b) => a - b);
   // 确保关键帧列表中至少包含 0
   if (sortedKeyframes.length === 0 || sortedKeyframes[0] > 0) {
@@ -53,6 +55,10 @@ export function planRetention(
   const planSegments: PlanSegment[] = [];
 
   for (const seg of keptSegments) {
+    if (exportPrecision === 'frame') {
+      planSegments.push({ segmentId: seg.id, userRange: { startMs: seg.startMs, endMs: seg.endMs }, safeRange: { startMs: seg.startMs, endMs: seg.endMs }, sourceKeyframeMs: seg.startMs });
+      continue;
+    }
     // 1. 向左吸附关键帧：查找满足 K_i <= startMs 的最大关键帧
     let safeStart = 0;
     for (let i = sortedKeyframes.length - 1; i >= 0; i--) {
@@ -111,6 +117,7 @@ export function planRetention(
 
   return {
     version: '1.0',
+    exportPrecision,
     sourcePath,
     durationMs: totalDurationMs,
     stripOriginalCover,

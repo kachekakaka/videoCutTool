@@ -1,8 +1,9 @@
-import { Segment, RetentionDecision, MediaRetentionPlan, PlanRecord, CompressConfig, KeyframePoint, SpatialConfig, SpatialCropBox, SpatialMaskItem, OutputMode, SegmentOutputGroups } from './types';
+import { Segment, RetentionDecision, MediaRetentionPlan, PlanRecord, CompressConfig, KeyframePoint, SpatialConfig, SpatialCropBox, SpatialMaskItem, OutputMode, SegmentOutputGroups, ExportPrecision } from './types';
 import { planRetention, resolveOutputGroups, validateOutputGroups } from './RetentionPlanner';
 import { hasSpatialEffects } from './spatialFiltergraph';
 
 export interface DraftSnapshot {
+  exportPrecision?: ExportPrecision;
   cuts: number[];
   decisions: Record<string, RetentionDecision>;
   outputMode: OutputMode;
@@ -24,6 +25,7 @@ export class RetentionDraft {
   // 维护内部区间及其保留决策列表：每项代表一个物理连续区间
   private intervals: Array<{ startMs: number; endMs: number; decision: RetentionDecision; outputGroup?: string }> = [];
   public outputMode: OutputMode = 'single';
+  public exportPrecision: ExportPrecision = 'keyframe';
   public stripOriginalCover: boolean = true;
   public compress?: CompressConfig;
   public spatialConfig?: SpatialConfig;
@@ -320,7 +322,8 @@ export class RetentionDraft {
       this.outputMode,
       stripCover,
       options.keyframePoints,
-      this.getOutputGroups()
+      this.getOutputGroups(),
+      this.exportPrecision
     );
     if (options.title) {
       plan.title = options.title;
@@ -365,6 +368,7 @@ export class RetentionDraft {
       cuts: [...this.cuts],
       decisions,
       outputMode: this.outputMode,
+      exportPrecision: this.exportPrecision,
       outputGroups: this.getOutputGroups(),
       stripOriginalCover: this.stripOriginalCover,
       compress: compress ? { ...compress } : undefined,
@@ -379,6 +383,7 @@ export class RetentionDraft {
   public static fromRecord(record: PlanRecord, totalDurationMs: number): RetentionDraft {
     if (record.compressionOnly) throw new Error('整片压缩方案不能载入裁剪草稿');
     const draft = new RetentionDraft(record.sourcePath, totalDurationMs);
+    draft.exportPrecision = record.exportPrecision ?? 'keyframe';
     draft.stripOriginalCover = record.stripOriginalCover ?? true;
     if (record.compress) {
       draft.compress = { ...record.compress };
@@ -407,6 +412,7 @@ export class RetentionDraft {
       cuts: [...this.cuts],
       decisions,
       outputMode: this.outputMode,
+      exportPrecision: this.exportPrecision,
       outputGroups: this.getOutputGroups(),
       stripOriginalCover: this.stripOriginalCover,
       compress: this.compress ? { ...this.compress } : undefined,
@@ -419,6 +425,7 @@ export class RetentionDraft {
    * 从快照原子化恢复
    */
   public restore(snapshot: DraftSnapshot): void {
+    this.exportPrecision = snapshot.exportPrecision ?? 'keyframe';
     this.stripOriginalCover = snapshot.stripOriginalCover;
     this.compress = snapshot.compress ? { ...snapshot.compress } : undefined;
     this.spatialConfig = snapshot.spatialConfig ? structuredClone(snapshot.spatialConfig) : undefined;

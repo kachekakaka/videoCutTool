@@ -13,6 +13,7 @@ import { resolveFormats, resolveNormalizationExtension, retainedStreams } from '
 import { resolveOutputBatch, resolveOutputDirectory } from './OutputPathResolver';
 import { buildSpatialFiltergraph, hasSpatialEffects, spatialOutputSize, validateSpatial, Dimension } from '../../shared/spatialFiltergraph';
 import { removeMp4Preroll } from './Mp4TimelineRepair';
+import { exportPreciseFile } from './PreciseExport';
 
 type Encoder = 'cpu' | 'nvenc' | 'qsv';
 type Job = { record: PlanRecord; prober: KeyframeProber; prepared?: { identity: string; info: ProbedFile } };
@@ -44,12 +45,14 @@ export class MediaCuttingEngine {
   private tracker?: ExecutionProgressTracker;
 
   private maintenance: CacheMaintenanceService;
+  private ownsMaintenance: boolean;
   private tempReady: Promise<void>;
   constructor(preferredPath?: string, customSlicesDir?: string, saver?: (record: PlanRecord) => any, listener?: PlanStatusListener, maintenance?: CacheMaintenanceService) {
     this.ffmpegPath = resolveTool('ffmpeg', preferredPath);
     this.ffprobePath = resolveTool('ffprobe', preferredPath ? path.join(path.dirname(preferredPath), 'ffprobe.exe') : undefined);
     const base = process.cwd();
     this.tmpDir = customSlicesDir || path.join(externalTemporaryDirectory(base), 'slices');
+    this.ownsMaintenance = !maintenance;
     this.maintenance = maintenance ?? new CacheMaintenanceService(path.join(path.dirname(this.tmpDir), '.cache-maintenance'));
     this.tmpDir = path.join(this.tmpDir, 'managed');
     this.tempReady = this.maintenance.registerRoot(this.tmpDir);
@@ -168,6 +171,7 @@ export class MediaCuttingEngine {
     this.closing = true; this.controller?.abort();
     const probes = [...this.encoderJobs.values()].map(job => { job.controller.abort(); return job.promise.catch(() => {}); });
     await this.submissionChain; await this.drainPromise; await this.retryTask?.catch(() => {}); await Promise.all(probes);
+    if (this.ownsMaintenance) await this.maintenance.close();
   }
 
   async probeEncoderSupport(config: CompressConfig = { enabled: true, preset: 'balanced' }, signal?: AbortSignal): Promise<Encoder> {
@@ -244,10 +248,10 @@ export class MediaCuttingEngine {
     await this.runStep(progressKey, ['-n', '-f', 'concat', '-safe', '0', '-i', list, '-map', '0', '-c', 'copy', ...this.audioDispositions(info.streams), output], durationMs, signal);
   }
   private audioDispositions(streams: MediaStreamInfo[]) { return streams.filter(stream => stream.type === 'audio').flatMap((stream, index) => [`-disposition:a:${index}`, stream.default ? 'default' : '0']); }
-  private async verify(file: string, expected: MediaStreamInfo[], signal?: AbortSignal) {
+  private async verify(file: string, expected: MediaStreamInfo[], signal?: AbortSignal, precise = false) {
     const info = await probeFile(file, this.ffprobePath, signal);
     const original = expected.filter(stream => stream.type === 'audio'), actual = info.streams.filter(stream => stream.type === 'audio');
-    if (original.length !== actual.length || original.some((stream, index) => stream.codec !== actual[index].codec || (stream.language && stream.language !== actual[index].language))) throw new Error('导出音轨数量、编码或语言与原片不一致，产物未发布');
+    if (original.length !== actual.length || original.some((stream, index) => (precise ? actual[index].codec !== 'aac' : stream.codec !== actual[index].codec) || (stream.language && stream.language !== actual[index].language) || (precise && stream.default !== actual[index].default))) throw new Error('导出音轨数量、编码、语言或默认轨与预期不一致，产物未发布');
     if (expected.filter(stream => stream.type === 'video' && !stream.attachedPicture).length !== info.streams.filter(stream => stream.type === 'video' && !stream.attachedPicture).length) throw new Error('导出视频流数量不一致，产物未发布');
   }
   /** 同卷用排他硬链接避免再次复制；跨卷持有排他创建的文件句柄完成发布。 */
@@ -265,7 +269,8 @@ export class MediaCuttingEngine {
     try { const current = await fs.promises.lstat(file); if (current.ino === identity.ino && current.dev === identity.dev) await fs.promises.unlink(file); } catch {}
   }
   private executionSnapshot(): MediaCuttingEngine {
-    const worker = new MediaCuttingEngine(this.ffmpegPath, this.tmpDir);
+    // 快照只冻结工具配置；任务必须共享原登记根及维护实例，不能重复嵌套 managed 或争抢目录锁。
+    const worker = new MediaCuttingEngine(this.ffmpegPath, path.dirname(this.tmpDir), undefined, undefined, this.maintenance);
     worker.updateTools(this.ffmpegPath, this.ffprobePath);
     worker.cachedEncoders = this.cachedEncoders; worker.encoderJobs = this.encoderJobs;
     return worker;
@@ -326,16 +331,18 @@ export class MediaCuttingEngine {
       const destination = resolveOutputDirectory(plan.sourcePath, plan.title, compressionOnly);
       const info = prepared || await probeFile(plan.sourcePath, this.ffprobePath, signal);
       const streams = retainedStreams(info.streams, plan.stripOriginalCover !== false);
+      const precise = plan.exportPrecision === 'frame';
+      if (precise && (compressionOnly || plan.compress?.enabled)) throw new Error('精确导出不能同时使用智能降码或整片压缩');
       const sourceDim = { width: info.width, height: info.height };
       const configs = plan.outputs.flatMap(output => output.spatialSegments.map(segment => segment.spatialConfig));
       configs.forEach(config => validateSpatial(config, sourceDim));
       const hasSpatial = configs.some(config => hasSpatialEffects(config, sourceDim));
-      const needCompress = Boolean(plan.compress?.enabled) || hasSpatial;
+      const needCompress = !precise && (Boolean(plan.compress?.enabled) || hasSpatial);
       const effectiveCompressConfig: CompressConfig = (plan.compress && plan.compress.enabled)
         ? plan.compress
         : { enabled: true, preset: 'balanced', crf: 22 };
-      const formats = resolveFormats(plan.sourcePath, info.streams, needCompress ? effectiveCompressConfig : undefined, plan.stripOriginalCover !== false);
-      let encoder = needCompress ? await this.probeEncoderSupport(effectiveCompressConfig, signal) : undefined;
+      const formats = precise ? { intermediateExtension: '.nut', outputExtension: '.mp4' } : resolveFormats(plan.sourcePath, info.streams, needCompress ? effectiveCompressConfig : undefined, plan.stripOriginalCover !== false);
+      let encoder: Encoder | undefined = precise ? 'cpu' : needCompress ? await this.probeEncoderSupport(effectiveCompressConfig, signal) : undefined;
       const encode = async (output: string, work: (selected: Encoder, retry: boolean) => Promise<void>) => {
         try { await work(encoder!, false); }
         catch (error) {
@@ -349,12 +356,17 @@ export class MediaCuttingEngine {
         }
       };
       let source = plan.sourcePath, sourceStreams = streams, seekOffset: MediaTime = millisecondsTime(0), sourceInfo = info;
-      const repairTimestamps = await needsTimestampRepair(source, info, this.ffprobePath, signal);
+      const repairTimestamps = !precise && await needsTimestampRepair(source, info, this.ffprobePath, signal);
       const durations = plan.outputs.map(output => compressionOnly ? [info.durationMs] : output.planSegments.map(segment => segment.safeRange.endMs - Number(ceilMicroseconds(segment.seekTime || millisecondsTime(segment.safeRange.startMs))) / 1000));
       const outputCount = plan.outputs.length;
       const steps: ExecutionStep[] = [];
       if (repairTimestamps) steps.push({ key: 'normalize', stage: 'normalizing', durationMs: info.durationMs });
       durations.forEach((members, i) => {
+        if (precise) {
+          plan.outputs[i].spatialSegments.forEach((segment, j) => steps.push({ key: `exact:${i}:${j}`, stage: 'encoding', durationMs: segment.userRange.endMs - segment.userRange.startMs, current: i + 1, total: outputCount }));
+          steps.push({ key: `exact-final:${i}`, stage: 'merging', durationMs: members.reduce((a, b) => a + b, 0), current: i + 1, total: outputCount });
+          return;
+        }
         if (!compressionOnly) members.forEach((durationMs, j) => steps.push({ key: `cut:${i}:${j}`, stage: 'cutting', durationMs, current: i + 1, total: outputCount }));
         const durationMs = members.reduce((sum, duration) => sum + duration, 0);
         if (members.length > 1) steps.push({ key: `merge:${i}`, stage: 'merging', durationMs, current: i + 1, total: outputCount });
@@ -373,6 +385,14 @@ export class MediaCuttingEngine {
       const finalFiles: string[] = [];
       for (let i = 0; i < plan.outputs.length; i++) {
         const filePlan = plan.outputs[i];
+        if (precise) {
+          const output = await exportPreciseFile({ plan, filePlan, fileIndex: i, info, streams, directory, ffprobe: this.ffprobePath, signal,
+            run: (key, args, duration, abort) => this.runStep(key, args, duration, abort), allowFile: file => this.maintenance.allowTaskFile(directory, file) });
+          this.tracker?.stage('verifying', i + 1, outputCount);
+          await this.verify(output, streams, signal, true);
+          finalFiles.push(output); this.tracker?.finishOperation(`verify:${i}`);
+          continue;
+        }
         const pieces: string[] = compressionOnly ? [source] : [];
         for (let j = 0; j < filePlan.planSegments.length; j++) {
           const piece = path.join(directory, `segment_${i}_${j}${formats.intermediateExtension}`);

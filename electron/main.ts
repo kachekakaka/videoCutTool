@@ -100,7 +100,7 @@ function handle(channel: string, work: (event: IpcMainInvokeEvent, ...args: any[
       : url.protocol === 'file:' && path.resolve(fileURLToPath(url)) === path.resolve(__dirname, '../dist/index.html');
     if (!trusted || quitting) throw new Error('请求来源无效或应用正在关闭');
     const count = ipcActive.get(channel) ?? 0;
-    if (count >= 32 || args.length > 6) throw new Error('请求过于频繁，请稍后重试');
+    if (count >= 32 || args.length > (channel === 'config:resolveOutputPath' ? 7 : 6)) throw new Error('请求过于频繁，请稍后重试');
     ipcActive.set(channel, count + 1);
     try {
       if (/^(media:|compress:|engine:submitDraft)/.test(channel)) await configChanges;
@@ -245,11 +245,12 @@ handle('config:save', async (_event, patch: Partial<AppConfig>) => {
   configChanges = task.catch(() => {}); return task;
 });
 handle('config:getPath', async () => configService.getConfigPath());
-handle('config:resolveOutputPath', async (_event, videoPath: string, isConcat: boolean = true, planTitle?: string, compress?: CompressConfig, stripCover?: boolean, streams: import('../src/shared/types').MediaStreamInfo[] = []) => {
+handle('config:resolveOutputPath', async (_event, videoPath: string, isConcat: boolean = true, planTitle?: string, compress?: CompressConfig, stripCover?: boolean, streams: import('../src/shared/types').MediaStreamInfo[] = [], precision?: import('../src/shared/types').ExportPrecision) => {
   await files.check(videoPath); validateCompress(compress); if (planTitle) textValue(planTitle, '方案标题', 256);
   if (typeof isConcat !== 'boolean' || (stripCover !== undefined && typeof stripCover !== 'boolean')) throw new Error('输出选项无效');
   if (!Array.isArray(streams) || streams.length > 256 || streams.some(stream => !stream || typeof stream.type !== 'string' || typeof stream.codec !== 'string' || stream.type.length > 40 || stream.codec.length > 80 || typeof stream.attachedPicture !== 'boolean')) throw new Error('媒体流摘要无效');
-  const output = await configService.resolveSafeOutputPath(videoPath, isConcat, planTitle, compress, stripCover, streams); files.allowReveal(output); return output;
+  if (precision !== undefined && !['keyframe', 'frame'].includes(precision)) throw new Error('导出精度无效');
+  const output = await configService.resolveSafeOutputPath(videoPath, isConcat, planTitle, compress, stripCover, streams, precision); files.allowReveal(output); return output;
 });
 
 handle('media:registerDroppedFile', async (_event, file: string) => files.authorize(file));

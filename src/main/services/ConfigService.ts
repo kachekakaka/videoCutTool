@@ -180,10 +180,11 @@ export class ConfigService {
     planTitle?: string,
     compress?: CompressConfig,
     stripCover = true,
-    streams: import('../../shared/types').MediaStreamInfo[] = []
+    streams: import('../../shared/types').MediaStreamInfo[] = [],
+    precision?: import('../../shared/types').ExportPrecision
   ): Promise<string> {
     // 路径仅为预定摘要；复用已载入的流信息，准确媒体检查留在实际执行。
-    const extension = resolveFormats(videoSourcePath, streams, compress, stripCover).outputExtension;
+    const extension = precision === 'frame' ? '.mp4' : resolveFormats(videoSourcePath, streams, compress, stripCover).outputExtension;
     return resolveOutputBatch({ directory: resolveOutputDirectory(videoSourcePath, planTitle), source: videoSourcePath, extension, title: planTitle, segmented: !isConcat })[0];
   }
 

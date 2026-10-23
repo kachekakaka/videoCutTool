@@ -172,6 +172,20 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
   // 降码模式状态与当前配置派生
   const isCompressMode = Boolean(draft?.compress?.enabled);
+  const isPreciseMode = draft?.exportPrecision === 'frame';
+  const boundaryLeadMs = useMemo(() => {
+    if (!draft || !metadata || isPreciseMode) return 0;
+    return draft.getSegments().filter(segment => segment.decision === 'keep').reduce((max, segment) => {
+      let low = 0, high = metadata.keyframes.length;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (metadata.keyframes[middle] <= segment.startMs) low = middle + 1;
+        else high = middle;
+      }
+      const key = metadata.keyframes[low - 1] ?? 0;
+      return Math.max(max, segment.startMs - key);
+    }, 0);
+  }, [draft, draftVersion, metadata, isPreciseMode]);
   const currentCompressConfig = useMemo<CompressConfig>(() => {
     return draft?.compress ? { ...draft.compress } : {
       enabled: false,
@@ -199,7 +213,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const currentMasks = effectiveSpatial?.masks || [];
   const hasSpatialActive = Boolean(draft?.hasSpatialConfig(metadata ? { width: metadata.width, height: metadata.height } : undefined));
   const exportCompressConfig: CompressConfig = hasSpatialActive && !isCompressMode ? { enabled: true, preset: 'balanced', crf: 22 } : currentCompressConfig;
-  const outputPolicyKey = JSON.stringify([exportCompressConfig.enabled, exportCompressConfig.preset, appConfig.ffprobePath]);
+  const outputPolicyKey = JSON.stringify([exportCompressConfig.enabled, exportCompressConfig.preset, isPreciseMode, appConfig.ffprobePath]);
   useEffect(() => { setCropRatio(currentCropBox?.ratio ?? 'free'); setIsCropLocked(currentCropBox?.locked ?? false); }, [draft, draftVersion, targetSegmentId]);
 
   const segmentSpatialMap = useMemo(() => {
@@ -313,7 +327,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     let isCancelled = false;
     if (window.electronAPI?.resolveOutputPath) {
       window.electronAPI
-        .resolveOutputPath(metadata.filePath, singleOutput, currentPlanTitle, exportCompressConfig, stripOriginalCover, metadata.streams)
+        .resolveOutputPath(metadata.filePath, singleOutput, currentPlanTitle, exportCompressConfig, stripOriginalCover, metadata.streams, draft?.exportPrecision)
         .then((resolved) => {
           if (!isCancelled) {
             setSafeOutputPath(resolved);
@@ -623,9 +637,11 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   };
 
   // 切换导出模式 (无损秒切 vs 智能降码)
-  const handleToggleExportMode = (mode: 'lossless' | 'compress') => {
+  const handleToggleExportMode = (mode: 'lossless' | 'compress' | 'precise') => {
+    invalidateComparePreview();
     commitDraftChange((d) => {
-      if (mode === 'lossless') {
+      d.exportPrecision = mode === 'precise' ? 'frame' : 'keyframe';
+      if (mode !== 'compress') {
         d.compress = undefined;
         setShowCompressSettings(false);
         setMainViewportMode('player');
@@ -857,7 +873,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     if (!draft || !metadata || !window.electronAPI) return null;
     const title = currentPlanTitle || metadata.fileName.replace(/\.[^/.]+$/, '');
     if (!draft.getOutputs().length) throw new Error('请至少保留一个片段');
-    const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.getOutputs().length <= 1, title, exportCompressConfig, draft.stripOriginalCover, metadata.streams);
+    const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.getOutputs().length <= 1, title, exportCompressConfig, draft.stripOriginalCover, metadata.streams, draft?.exportPrecision);
     const planId = currentPlanId || `plan_${crypto.randomUUID()}`;
     return draft.toRecord({
       id: planId,
@@ -883,7 +899,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     const epoch = loadEpoch.current;
     try {
       if (!draft.getOutputs().length) throw new Error('请至少保留一个片段');
-      const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.getOutputs().length <= 1, trimmedTitle, exportCompressConfig, draft.stripOriginalCover, metadata.streams);
+      const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.getOutputs().length <= 1, trimmedTitle, exportCompressConfig, draft.stripOriginalCover, metadata.streams, draft?.exportPrecision);
       const isUpdating = saveMode === 'update' && Boolean(currentPlanId);
       const targetId = isUpdating && currentPlanId ? currentPlanId : `plan_${crypto.randomUUID()}`;
 
@@ -915,7 +931,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const handleExecuteCut = async (forceBypassNoCutCheck = false) => {
     if (submitLock.current || isLoading || boundPlanBusy) return;
     // 无损秒切防呆拦截：若未开启降码、未设置画面空间滤镜、且未设切点（只有 1 个保留分段），不处理并弹窗提醒
-    if (!forceBypassNoCutCheck && !isCompressMode && !hasSpatialActive && cuts.length === 0 && segments.length === 1 && segments[0].decision === 'keep') {
+    if (!forceBypassNoCutCheck && !isPreciseMode && !isCompressMode && !hasSpatialActive && cuts.length === 0 && segments.length === 1 && segments[0].decision === 'keep') {
       setShowNoCutWarningModal(true);
       return;
     }
@@ -955,7 +971,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     }
     if (metadata?.filePath) {
       try {
-        const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, singleOutput, currentPlanTitle, exportCompressConfig, stripOriginalCover, metadata.streams);
+        const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, singleOutput, currentPlanTitle, exportCompressConfig, stripOriginalCover, metadata.streams, draft?.exportPrecision);
         window.electronAPI.showItemInFolder(outPath);
       } catch {
         window.electronAPI.showItemInFolder(metadata.filePath);
@@ -1453,7 +1469,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             {/* 右侧动作按钮组 */}
             <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 ml-auto lg:ml-0 relative z-50">
               {/* 空间编辑转码升轨状态指示 */}
-              {hasSpatialActive && (
+              {hasSpatialActive && !isPreciseMode && (
                 <div
                   className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-purple-500/15 border border-purple-500/30 text-purple-300 text-xs font-mono font-medium"
                   title="检测到已配置画面空间修饰（裁切/遮罩），系统已自动升轨为智能转码，确保滤镜生效，同时保持无损原声音频"
@@ -1469,14 +1485,19 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                 <button
                   onClick={() => handleToggleExportMode('lossless')}
                   className={`px-2.5 py-1 rounded-lg flex items-center gap-1 transition-all ${
-                    !isCompressMode
+                    !isCompressMode && !isPreciseMode
                       ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/30 shadow-sm'
                       : 'text-zinc-400 hover:text-white'
                   }`}
-                  title="无损流复制秒级导出，100% 保持原始画质与原声"
+                  title="保持原始画质与原声；起点向前取关键帧，片尾可能扩出，非逐帧截断"
                 >
                   <Zap className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>无损秒切</span>
+                  <span>快速无损</span>
+                </button>
+                <button onClick={() => handleToggleExportMode('precise')} aria-pressed={isPreciseMode}
+                  className={`px-2.5 py-1 rounded-lg transition-all ${isPreciseMode ? 'bg-blue-500/20 text-blue-200 border border-blue-500/30' : 'text-zinc-400 hover:text-white'}`}
+                  title="按所选画面区间导出 MP4，视频和音频重新编码；更慢，非严格无损">
+                  精确导出
                 </button>
                 <button
                   onClick={() => handleToggleExportMode('compress')}
@@ -1561,7 +1582,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                     ? 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 shadow-purple-500/20 border border-purple-400/30 focus-visible:ring-purple-400'
                     : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-emerald-500/20 border border-emerald-400/30 focus-visible:ring-emerald-400'
                 }`}
-                title={isCompressMode ? "将保留片段合并后单次整体降码压制，完成后弹出通知" : "将当前方案移交后台异步引擎无损剪辑，完成后弹出通知"}
+                title={isPreciseMode ? '按所选画面范围重新编码视频与音频' : isCompressMode ? '按关键帧扩展范围裁剪后压缩，非逐帧截断' : '快速无损导出，边界可能扩出'}
               >
                 {executing ? (
                   <>
@@ -1576,12 +1597,17 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                 ) : (
                   <>
                     <Rocket className="w-3.5 h-3.5" />
-                    <span>立即剪辑</span>
+                    <span>{isPreciseMode ? '开始精确导出' : '立即剪辑'}</span>
                   </>
                 )}
               </button>
             </div>
           </div>
+          <p role="note" className="mt-2 text-xs text-zinc-300 leading-relaxed" data-testid="export-boundary-note">
+            {isPreciseMode
+              ? '精确导出：保留起点画面，不包含终点画面；手输时间落在帧间时对齐下一帧。视频与音频重新编码为 MP4，耗时更长、非严格无损。'
+              : `边界提示：${metadata.keyframes.length ? `按当前关键帧估算，起点最多提前 ${(boundaryLeadMs / 1000).toFixed(3)} 秒` : '关键帧索引就绪后显示起点提前量'}；片尾可能扩出，具体余量以产物为准，不保证固定上限。${isCompressMode || hasSpatialActive ? '转码仍沿用此范围。' : ''}需准确边界请选择精确导出。`}
+          </p>
         </div>
       </div>
 
@@ -1697,9 +1723,9 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                 <div className="mt-1.5 text-[11px] text-zinc-400 bg-white/5 px-3 py-1.5 rounded-xl flex items-center justify-between font-mono">
                   <span>导出模式:</span>
                   <span className={isCompressMode ? 'text-purple-300 font-bold' : 'text-cyan-300 font-bold'}>
-                    {isCompressMode
+                    {isPreciseMode ? '精确导出（视频与音频重新编码）' : isCompressMode
                       ? `📦 智能降码 (${currentCompressConfig.preset === 'custom' ? '自定义' : COMPRESS_PRESETS[currentCompressConfig.preset]?.title || '降码'} CRF ${currentCompressConfig.crf ?? 22})`
-                      : '⚡ 无损秒切'}
+                      : '⚡ 快速无损（边界可能扩出）'}
                   </span>
                 </div>
               </div>

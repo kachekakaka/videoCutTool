@@ -119,6 +119,7 @@ export interface SpatialConfig {
 }
 
 export type OutputMode = 'separate' | 'single' | 'custom';
+export type ExportPrecision = 'keyframe' | 'frame';
 export type SegmentOutputGroups = Record<string, string>;
 
 export interface OutputGroup {
@@ -131,6 +132,7 @@ export interface OutputFilePlan extends OutputGroup {
 }
 
 export interface MediaRetentionPlan {
+  exportPrecision?: ExportPrecision;
   version: '1.0';
   title?: string;
   sourcePath: string;
@@ -146,6 +148,7 @@ export interface MediaRetentionPlan {
 export type ExecutionStatus = 'ready' | 'queued' | 'processing' | 'completed' | 'failed';
 
 interface PlanRecordFields {
+  exportPrecision?: ExportPrecision;
   id: string;
   title: string;
   sourcePath: string;
