@@ -8,27 +8,37 @@ import { ProbedFile, runMediaTool } from './MediaTools';
 type Run = (key: string, args: string[], durationMs: number, signal?: AbortSignal) => Promise<void>;
 const seconds = (value: number) => (value / 1000).toFixed(6);
 
+/** FLV 等封装没有默认音轨标记；MP4 使用第一条音轨作为默认播放轨。 */
+export function preciseAudioDefaults(streams: MediaStreamInfo[]): MediaStreamInfo[] {
+  const audio = streams.filter(stream => stream.type === 'audio');
+  return audio.some(stream => stream.default) ? audio : audio.map((stream, index) => ({ ...stream, default: index === 0 }));
+}
+
 /** 切点保存为毫秒；半毫秒容差恢复逐帧操作保存的原始帧，其他时间向后一帧对齐。 */
 export function selectFrameBoundary(pointsMs: number[], requestedMs: number): number | undefined {
   return [...pointsMs].sort((a, b) => a - b).find(value => value >= requestedMs - 0.501);
 }
 
-async function frameBoundary(source: string, requestedMs: number, info: ProbedFile, ffprobe: string, signal?: AbortSignal): Promise<number> {
+async function frameBoundary(source: string, requestedMs: number, info: ProbedFile, ffprobe: string, signal?: AbortSignal): Promise<{ timeMs: number; readStartMs: number }> {
   const originMs = Number(ceilMicroseconds(info.origin)) / 1000;
-  if (requestedMs >= info.durationMs - 0.501) return originMs + info.durationMs;
+  if (requestedMs >= info.durationMs - 0.501) return { timeMs: originMs + info.durationMs, readStartMs: originMs };
   const target = originMs + requestedMs;
   // 普通素材只检查邻近两秒；稀疏帧按需扩大窗口，不把固定两秒误当成下一帧必然存在。
   const mediaEnd = originMs + info.durationMs;
   for (const windowMs of [2000, 8000, 32000, 128000]) {
     const end = Math.min(target + windowMs, mediaEnd + 1000);
-    const result = JSON.parse(await runMediaTool(ffprobe, ['-v', 'error', '-select_streams', String(info.videoIndex), '-read_intervals', `${seconds(Math.max(0, target - 1000))}%${seconds(end)}`, '-show_frames', '-show_entries', 'frame=best_effort_timestamp_time,duration_time,pkt_duration_time', '-of', 'json', source], { signal, timeoutMs: 30000 }));
+    const readStart = Math.max(originMs, target - windowMs);
+    const result = JSON.parse(await runMediaTool(ffprobe, ['-v', 'error', '-select_streams', String(info.videoIndex), '-read_intervals', `${readStart > originMs ? seconds(readStart) : ''}%${seconds(end)}`, '-show_frames', '-show_entries', 'frame=best_effort_timestamp_time,duration_time,pkt_duration_time', '-of', 'json', source], { signal, timeoutMs: 30000 }));
     const frames = (result.frames ?? []).map((frame: any) => ({ pts: Number(frame.best_effort_timestamp_time) * 1000, duration: Number(frame.duration_time ?? frame.pkt_duration_time) * 1000 })).filter((frame: { pts: number }) => Number.isFinite(frame.pts));
+    // TS 等容器可能从请求位置之后的关键帧开始解码。先看到目标之前的帧，
+    // 才能证明没有漏掉边界；否则扩大前读范围，不能把后一个 GOP 当作正确切点。
+    if (readStart > originMs && !frames.some((frame: { pts: number }) => frame.pts <= target + 0.501)) continue;
     const boundary = selectFrameBoundary(frames.map((frame: { pts: number }) => frame.pts), target);
-    if (boundary !== undefined) return boundary;
+    if (boundary !== undefined) return { timeMs: boundary, readStartMs: readStart };
     if (end >= mediaEnd) {
       const tail = frames.reduce((last: number, frame: { pts: number; duration: number }) => Number.isFinite(frame.duration) && frame.duration > 0 ? Math.max(last, frame.pts + frame.duration) : last, -Infinity);
       // 终点位于最后一帧的显示区间内时，向后对齐到视频末尾；起点落入此处会由空区间检查拒绝。
-      if (tail >= target - 0.501) return Math.min(tail, mediaEnd);
+      if (tail >= target - 0.501) return { timeMs: Math.min(tail, mediaEnd), readStartMs: readStart };
       break;
     }
   }
@@ -44,23 +54,26 @@ export async function exportPreciseFile(options: {
   const { plan, filePlan, fileIndex, info, streams, directory, ffprobe, signal, run } = options;
   const videos = streams.filter(stream => stream.type === 'video' && !stream.attachedPicture);
   if (videos.length !== 1 || streams.some(stream => !['video', 'audio'].includes(stream.type) || stream.attachedPicture)) throw new Error('精确导出支持一路视频及全部音轨；请剥离封面，含字幕或附加流的素材请使用快速无损导出');
-  const audio = streams.filter(stream => stream.type === 'audio');
+  const audio = preciseAudioDefaults(streams);
   const size = { width: info.width, height: info.height };
   const target = spatialOutputSize(size, filePlan.spatialSegments[0]?.spatialConfig);
   const pieces: Array<{ file: string; durationMs: number }> = [];
   for (const [index, segment] of filePlan.spatialSegments.entries()) {
     if (signal?.aborted) throw new Error('操作已取消');
-    const startMs = await frameBoundary(plan.sourcePath, segment.userRange.startMs, info, ffprobe, signal);
-    const endMs = await frameBoundary(plan.sourcePath, segment.userRange.endMs, info, ffprobe, signal);
+    const start = await frameBoundary(plan.sourcePath, segment.userRange.startMs, info, ffprobe, signal);
+    const startMs = start.timeMs;
+    const endMs = (await frameBoundary(plan.sourcePath, segment.userRange.endMs, info, ffprobe, signal)).timeMs;
     const durationMs = endMs - startMs;
     if (durationMs <= 0) throw new Error('保留区间内没有完整显示帧');
-    const seekMs = Math.max(0, startMs - 2000);
+    const seekMs = start.readStartMs;
     const spatial = buildSpatialFiltergraph(size, segment.spatialConfig, target, `exact${index}_`)[1];
     const graph = [`[0:${info.videoIndex}]trim=start=${seconds(startMs)}:end=${seconds(endMs)},setpts=PTS-${seconds(startMs)}/TB${spatial ? ',' + spatial : ''},setsar=${(info.displayAspectRatio / (info.width / info.height)).toFixed(9)}[v]`];
     audio.forEach((stream, i) => graph.push(`[0:${stream.index}]atrim=start=${seconds(startMs)}:end=${seconds(endMs)},asetpts=PTS-${seconds(startMs)}/TB,aresample=48000:async=1:first_pts=0,apad,atrim=duration=${seconds(durationMs)}[a${i}]`));
     const file = path.join(directory, `precise_${fileIndex}_${index}.nut`);
-    // 关闭输入自动裁剪，避免非零起始素材再次叠加起点；实际边界由绝对 PTS 滤镜控制。
-    await run(`exact:${fileIndex}:${index}`, ['-n', '-copyts', '-noaccurate_seek', '-seek_timestamp', '1', '-ss', seconds(seekMs), '-i', plan.sourcePath,
+    // 片头直接顺序读取；部分 FLV 在原点之前显式寻址会跳过首个 GOP。
+    // 其他位置关闭输入自动裁剪，实际边界仍由绝对 PTS 滤镜控制。
+    const originMs = Number(ceilMicroseconds(info.origin)) / 1000;
+    await run(`exact:${fileIndex}:${index}`, ['-n', '-copyts', '-noaccurate_seek', ...(seekMs > originMs ? ['-seek_timestamp', '1', '-ss', seconds(seekMs)] : []), '-i', plan.sourcePath,
       '-filter_complex', graph.join(';'), '-map', '[v]', ...audio.flatMap((_, i) => ['-map', `[a${i}]`]),
       '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-bf', '0', '-pix_fmt', 'yuv420p', '-fps_mode:v', 'vfr', '-enc_time_base:v', '1:720000',
       '-c:a', 'pcm_s32le', '-t', seconds(durationMs), '-map_metadata', '-1', file], durationMs, signal);

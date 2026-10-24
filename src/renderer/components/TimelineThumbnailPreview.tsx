@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { formatTimecode } from './VideoPlayer';
+import { useStreamPlayback } from '../media/useStreamPlayback';
 
 interface TimelineThumbnailPreviewProps {
   videoPath?: string;
@@ -24,18 +25,25 @@ export const TimelineThumbnailPreview: React.FC<TimelineThumbnailPreviewProps> =
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [failed, setFailed] = useState(false);
+  const target = useRef(targetMs); target.current = targetMs;
+  const stream = useStreamPlayback(videoRef, videoPath || '', visible, { current: () => target.current, time: () => {}, busy: () => {}, error: () => setFailed(true) });
   useEffect(() => setFailed(false), [videoPath, visible]);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !visible || isNaN(targetMs)) return;
 
+    if (stream.route !== 'native') {
+      const timer = setTimeout(() => { void stream.controller.current?.seek(targetMs).catch(() => setFailed(true)); }, 60);
+      return () => clearTimeout(timer);
+    }
+
     const targetSec = Math.max(0, (targetMs + timeOriginMs) / 1000);
     // 只有在差值超过 20ms 时才执行 seek，提升 60FPS 拖拽流畅度
     if (video.readyState && Math.abs(video.currentTime - targetSec) > 0.001) {
       video.currentTime = targetSec;
     }
-  }, [targetMs, visible, videoPath, timeOriginMs]);
+  }, [targetMs, visible, videoPath, timeOriginMs, stream.route]);
 
   if (!visible || !videoPath) return null;
 
@@ -60,8 +68,8 @@ export const TimelineThumbnailPreview: React.FC<TimelineThumbnailPreviewProps> =
         <div className="w-full h-[90px] bg-black relative flex items-center justify-center overflow-hidden">
           <video
             ref={videoRef}
-            src={mediaUrl}
-            onLoadedMetadata={() => { if (videoRef.current) videoRef.current.currentTime = Math.max(0, (targetMs + timeOriginMs) / 1000); }}
+            src={stream.route === 'native' ? mediaUrl : undefined}
+            onLoadedMetadata={() => { if (videoRef.current && stream.route === 'native') videoRef.current.currentTime = Math.max(0, (target.current + timeOriginMs) / 1000); }}
             onError={() => setFailed(true)}
             preload="auto"
             muted

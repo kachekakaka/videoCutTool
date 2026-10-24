@@ -141,7 +141,7 @@ export class CacheMaintenanceService {
       try {
         const pointer = path.join(this.registryDirectory, name); await this.safePath(pointer);
         const item = JSON.parse(await fs.promises.readFile(pointer, 'utf8'));
-        if (item.version !== 1 || name !== `${item.id}.json` || !path.isAbsolute(item.directory) || path.basename(item.directory) !== 'managed' || !['playback_cache', 'preview_cache', 'cache', 'slices'].includes(path.basename(path.dirname(item.directory)))) throw new Error('历史根登记不合法');
+        if (item.version !== 1 || name !== `${item.id}.json` || !path.isAbsolute(item.directory) || path.basename(item.directory) !== 'managed' || !['playback_cache', 'preview_cache', 'cache', 'slices', 'stream_indexes'].includes(path.basename(path.dirname(item.directory)))) throw new Error('历史根登记不合法');
         await this.serial(async () => { if (!this.roots.has(key(item.directory))) { const root = await this.claim(item.directory, item.id); if (root.owned) this.roots.set(key(item.directory), root); } });
       } catch (e) { this.report(name, e); }
     }

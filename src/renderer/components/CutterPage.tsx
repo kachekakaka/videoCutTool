@@ -56,10 +56,15 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const { config: appConfig, plans } = useAppData();
   const loadEpoch = useRef(0);
   const scanId = useRef<string | null>(null);
+  const streamPreparation = useRef<string | null>(null);
+  const pendingSelection = useRef<{ file: string; record?: PlanRecord | null } | null>(null);
+  const previousActive = useRef(isActive);
+  const cancelStreamPreparation = () => { if (streamPreparation.current) void window.electronAPI?.closeStream(streamPreparation.current).catch(() => {}); streamPreparation.current = null; };
   const cancelScan = () => { if (scanId.current) void window.electronAPI?.cancelKeyframes(scanId.current).catch(() => {}); scanId.current = null; };
   const submitLock = useRef(false);
   const [metadata, setMetadata] = useState<MediaMetadata | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isPreparingStream, setIsPreparingStream] = useState(false);
   const [isKeyframeScanning, setIsKeyframeScanning] = useState(false);
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
@@ -284,6 +289,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     cancelCompareAddition();
     loadEpoch.current++;
     cancelScan();
+    cancelStreamPreparation();
     for (const id of compareLeasesRef.current) releaseCompareLease(id);
   }, []);
 
@@ -458,28 +464,46 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     e.target.value = '';
   };
 
-  // 载入视频并探测关键帧 (两阶段秒开机制：300ms 快速出图，后台静默扫描关键帧并落盘缓存)
+  // 流式素材先准备播放，精确时长与草稿等后台索引完成后再建立。
   const loadAndProbeVideo = async (filePath: string, recordToLoad?: PlanRecord | null) => {
     cancelScan();
+    cancelStreamPreparation();
+    pendingSelection.current = { file: filePath, record: recordToLoad };
     const epoch = ++loadEpoch.current;
     const isCurrent = () => loadEpoch.current === epoch;
     playerRef.current?.pause();
     invalidateComparePreview();
     setIsLoading(true);
+    setIsPreparingStream(false);
+    setDraft(null);
+    setMetadata(null);
     setIsKeyframeScanning(false);
     setNotice(null);
-        try {
+    try {
       if (window.electronAPI) {
-        // 第一阶段：极速读取基本元数据 (<300ms 秒开)
-        const basicMeta = window.electronAPI.probeBasic
-          ? await window.electronAPI.probeBasic(filePath)
-          : await window.electronAPI.probeMedia(filePath);
+        const id = crypto.randomUUID(); streamPreparation.current = id;
+        let snapshot = await window.electronAPI.openStream(filePath, id);
+        if (!isCurrent()) { void window.electronAPI.closeStream(id); return; }
+        const streaming = Boolean(snapshot);
+        if (snapshot && !snapshot.complete) {
+          // 时长为未知状态；不据此建立草稿或覆盖已保存方案。
+          setMetadata({ ...snapshot.preview, durationMs: 0, keyframes: [] });
+          setCurrentTimeMs(0); setMainViewportMode('player'); setIsPreparingStream(true);
+          while (!snapshot.complete) {
+            if (snapshot.error) throw new Error(snapshot.error);
+            await new Promise(resolve => setTimeout(resolve, 300));
+            if (!isCurrent()) return;
+            snapshot = await window.electronAPI.streamStatus(id);
+          }
+        }
+        if (snapshot?.error) throw new Error(snapshot.error);
+        const basicMeta = snapshot?.metadata ?? await window.electronAPI.probeBasic(filePath);
 
         if (!isCurrent()) return;
         setMetadata(basicMeta);
-        playerRef.current?.seekTo(0);
+        if (!streaming) playerRef.current?.seekTo(0);
         onVideoLoaded(filePath);
-        setCurrentTimeMs(0);
+        if (!streaming) setCurrentTimeMs(0);
         setHistory([]);
         setFuture([]);
         setCurrentCompareSampleIndex(0);
@@ -509,9 +533,12 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
         // 瞬间解除整屏加载遮罩，播放器立即挂载并可播放
         setIsLoading(false);
+        setIsPreparingStream(false);
+        cancelStreamPreparation();
+        pendingSelection.current = null;
 
         // 第二阶段：若未命中本地关键帧缓存，后台异步静默提取物理关键帧
-        if (basicMeta.keyframes.length <= 1 && window.electronAPI.probeKeyframes) {
+        if (!streaming && basicMeta.keyframes.length <= 1 && window.electronAPI.probeKeyframes) {
           setIsKeyframeScanning(true);
           const id = crypto.randomUUID(); scanId.current = id;
           window.electronAPI
@@ -534,6 +561,10 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       console.error('探测视频失败:', err);
       setNotice({ type: 'error', message: err.message || '探测视频元数据失败' });
       setIsLoading(false);
+      setIsPreparingStream(false);
+      cancelStreamPreparation();
+      pendingSelection.current = null;
+      setMetadata(null);
     }
   };
 
@@ -542,6 +573,13 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       loadAndProbeVideo(initialVideoPath, loadedPlanRecord);
     }
   }, [initialVideoPath, loadedPlanRecord, loadGeneration]);
+
+  useEffect(() => {
+    if (previousActive.current === isActive) return;
+    previousActive.current = isActive;
+    if (!isActive && streamPreparation.current) { loadEpoch.current++; cancelStreamPreparation(); }
+    if (isActive && pendingSelection.current) void loadAndProbeVideo(pendingSelection.current.file, pendingSelection.current.record);
+  }, [isActive]);
 
   // 插入切点
   const handleInsertCut = () => {
@@ -1063,7 +1101,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             </div>
             <h3 className="text-base font-bold text-white mb-1.5">
               {isLoading
-                ? '正在秒级解析全片关键帧索引...'
+                ? '正在读取视频信息...'
                 : isDraggingOver
                 ? '松开鼠标即可立即载入视频！'
                 : '点击或直接拖入待裁剪视频'}
@@ -1131,7 +1169,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               videoWidth={metadata.width}
               videoHeight={metadata.height}
               displayAspectRatio={metadata.displayAspectRatio}
-              isActive={isActive && !isLoading && mainViewportMode === 'player'}
+              isActive={isActive && (!isLoading || isPreparingStream) && mainViewportMode === 'player'}
               shortcutsEnabled={shortcutsEnabled && mainViewportMode === 'player'}
               onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
               onPlayStateChange={(playing) => setIsPlaying(playing)}

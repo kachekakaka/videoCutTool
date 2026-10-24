@@ -150,7 +150,8 @@ export class StreamPlaybackIndexService {
   }
   snapshot(lease: StreamIndexLease) {
     const job = lease.job, d = job.data!;
-    return { container: d.container, originUs: d.originUs, baseMs: d.baseMs, frames: job.complete ? d.frames : undefined, offsetMs: d.originUs / 1000 - d.baseMs, durationMs: d.durationMs, indexedUntilMs: job.complete ? d.durationMs : Math.max(0, ((d.keys.at(-1)?.pts ?? d.originUs) - d.originUs) / 1000), progress: job.progress, complete: job.complete, error: job.error, index: { times: d.keys.map(k => Math.floor(k.pts / 1000) - d.baseMs), filepositions: d.keys.map(k => k.position) }, metadata: job.complete ? this.metadata(job) : undefined };
+    const { durationMs: _duration, keyframes: _keys, keyframePoints: _points, ...preview } = this.metadata(job);
+    return { container: d.container, preview, originUs: d.originUs, baseMs: d.baseMs, frames: job.complete ? d.frames : undefined, offsetMs: d.originUs / 1000 - d.baseMs, durationMs: d.durationMs, indexedUntilMs: job.complete ? d.durationMs : Math.max(0, ((d.keys.at(-1)?.pts ?? d.originUs) - d.originUs) / 1000), progress: job.progress, complete: job.complete, error: job.error, index: { times: d.keys.map(k => Math.floor(k.pts / 1000) - d.baseMs), filepositions: d.keys.map(k => k.position) }, metadata: job.complete ? this.metadata(job) : undefined };
   }
   metadata(job: IndexJob): MediaMetadata {
     const d = job.data!;
@@ -161,7 +162,7 @@ export class StreamPlaybackIndexService {
     const job = lease.job, d = job.data!;
     if (job.error) throw new Error(job.error);
     if (!Number.isFinite(timeMs) || timeMs < 0 || ![-1, 0, 1].includes(direction)) throw new Error('定位参数无效');
-    const known = this.snapshot(lease).indexedUntilMs;
+    const known = job.complete ? d.durationMs : Math.max(0, ((d.keys.at(-1)?.pts ?? d.originUs) - d.originUs) / 1000);
     if (!d.frames.length || !job.complete && timeMs + 1 >= known) throw new Error('正在建立该位置的定位索引，请稍后重试');
     if (job.sortedRevision !== job.revision) { job.sortedFrames = job.complete ? d.frames : [...d.frames].sort((a, b) => a - b); job.sortedRevision = job.revision; }
     const frames = job.sortedFrames;

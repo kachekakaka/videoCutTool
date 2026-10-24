@@ -13,7 +13,7 @@ import { resolveFormats, resolveNormalizationExtension, retainedStreams } from '
 import { resolveOutputBatch, resolveOutputDirectory } from './OutputPathResolver';
 import { buildSpatialFiltergraph, hasSpatialEffects, spatialOutputSize, validateSpatial, Dimension } from '../../shared/spatialFiltergraph';
 import { removeMp4Preroll } from './Mp4TimelineRepair';
-import { exportPreciseFile } from './PreciseExport';
+import { exportPreciseFile, preciseAudioDefaults } from './PreciseExport';
 
 type Encoder = 'cpu' | 'nvenc' | 'qsv';
 type Job = { record: PlanRecord; prober: KeyframeProber; prepared?: { identity: string; info: ProbedFile } };
@@ -250,7 +250,7 @@ export class MediaCuttingEngine {
   private audioDispositions(streams: MediaStreamInfo[]) { return streams.filter(stream => stream.type === 'audio').flatMap((stream, index) => [`-disposition:a:${index}`, stream.default ? 'default' : '0']); }
   private async verify(file: string, expected: MediaStreamInfo[], signal?: AbortSignal, precise = false) {
     const info = await probeFile(file, this.ffprobePath, signal);
-    const original = expected.filter(stream => stream.type === 'audio'), actual = info.streams.filter(stream => stream.type === 'audio');
+    const original = precise ? preciseAudioDefaults(expected) : expected.filter(stream => stream.type === 'audio'), actual = info.streams.filter(stream => stream.type === 'audio');
     if (original.length !== actual.length || original.some((stream, index) => (precise ? actual[index].codec !== 'aac' : stream.codec !== actual[index].codec) || (stream.language && stream.language !== actual[index].language) || (precise && stream.default !== actual[index].default))) throw new Error('导出音轨数量、编码、语言或默认轨与预期不一致，产物未发布');
     if (expected.filter(stream => stream.type === 'video' && !stream.attachedPicture).length !== info.streams.filter(stream => stream.type === 'video' && !stream.attachedPicture).length) throw new Error('导出视频流数量不一致，产物未发布');
   }

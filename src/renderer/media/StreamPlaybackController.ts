@@ -20,11 +20,17 @@ export class StreamPlaybackController {
   private seeking = false;
   private desiredPlaying = false;
   private announcedMetadata = false;
+  private failure?: string;
+  private initial?: () => void;
+  private initialized = false;
+  hasNavigation() { return this.epoch > 0; }
   constructor(private video: HTMLVideoElement, snapshot: StreamPlaybackSnapshot, private observer: Observer) { this.snapshot = snapshot; }
   private adopt(snapshot: StreamPlaybackSnapshot) {
     this.snapshot = snapshot;
-    this.externalIndex.times.splice(0, this.externalIndex.times.length, ...snapshot.index.times);
-    this.externalIndex.filepositions.splice(0, this.externalIndex.filepositions.length, ...snapshot.index.filepositions);
+    // 保持库持有的数组引用；全关键帧长片不能用展开参数触发调用栈上限。
+    this.externalIndex.times.length = 0; this.externalIndex.filepositions.length = 0;
+    for (const value of snapshot.index.times) this.externalIndex.times.push(value);
+    for (const value of snapshot.index.filepositions) this.externalIndex.filepositions.push(value);
     if (snapshot.error) throw new Error(snapshot.error);
     this.observer.status(snapshot.complete ? '' : `正在建立定位索引 ${Math.floor(snapshot.progress)}%`);
     if (snapshot.metadata && !this.announcedMetadata) { this.announcedMetadata = true; this.observer.metadata?.(snapshot.metadata); }
@@ -36,19 +42,26 @@ export class StreamPlaybackController {
     if (!mpegts.isSupported()) throw new Error('当前环境不支持流式视频解码');
     const config = { enableWorker: false, enableWorkerForMSE: false, accurateSeek: true, lazyLoad: true, lazyLoadMaxDuration: 30, lazyLoadRecoverDuration: 10, autoCleanupSourceBuffer: true, autoCleanupMaxBackwardDuration: 20, autoCleanupMinBackwardDuration: 10, enableStashBuffer: false, fixAudioTimestampGap: false, vctExternalIndex: this.externalIndex, vctPreciseVideo: true };
     this.player = mpegts.createPlayer({ type: this.snapshot.container, isLive: false, url: this.snapshot.url, ...(this.snapshot.complete ? { duration: this.snapshot.durationMs + this.snapshot.offsetMs } : {}) }, config);
-    this.player.on(mpegts.Events.ERROR, (_type: string, _detail: string, info: unknown) => { if (!this.closed) { this.pause(); this.observer.error(`流式播放失败：${typeof info === 'object' ? JSON.stringify(info) : String(info)}`); } });
+    this.player.on(mpegts.Events.ERROR, (_type: string, _detail: string, info: unknown) => { if (!this.closed) { this.failure = `流式播放失败：${typeof info === 'object' ? JSON.stringify(info) : String(info)}`; this.pause(); this.observer.error(this.failure); } });
     this.frameCallback = this.video.requestVideoFrameCallback(this.onFrame);
     this.player.attachMediaElement(this.video); this.player.load();
     // 首帧只由暂停定位解码，不通过播放数帧模拟确认。
     const first = this.snapshot.index.times[0];
-    const initial = () => { if (!this.closed && !this.presented) this.player!.currentTime = Math.max(0, first + 0.5) / 1000; };
-    this.video.addEventListener('loadedmetadata', initial, { once: true });
+    this.initial = () => { if (!this.closed && !this.presented) this.player!.currentTime = Math.max(0, first + 0.5) / 1000; };
+    this.video.addEventListener('loadedmetadata', this.initial, { once: true });
     if (!this.snapshot.complete) void this.poll();
+    const began = performance.now();
+    while (!this.closed && !this.presented) {
+      if (this.failure) throw new Error(this.failure);
+      if (performance.now() - began > 15000) throw new Error('等待流式首帧超时');
+      await delay(20);
+    }
+    this.initialized = !this.closed;
   }
   private async poll() {
     try {
       while (!this.closed && !this.snapshot.complete) { await delay(500); if (!this.closed) this.adopt(await window.electronAPI!.streamStatus(this.snapshot.id)); }
-    } catch (error) { if (!this.closed) { this.pause(); this.observer.error(String(error)); } }
+    } catch (error) { if (!this.closed) { this.failure = String(error); this.pause(); this.observer.error(this.failure); } }
   }
   private onFrame = (now: number, metadata: VideoFrameCallbackMetadata) => {
     if (this.closed) return;
@@ -62,36 +75,65 @@ export class StreamPlaybackController {
     this.frameCallback = this.video.requestVideoFrameCallback(this.onFrame);
   };
   current() { return this.position; }
-  play() { this.desiredPlaying = true; if (!this.seeking && !this.closed) void this.video.play().catch(error => this.observer.error(String(error))); }
+  play() {
+    if (this.closed) return;
+    this.desiredPlaying = true;
+    // 播放只改变播放意图，不能取消尚未确认的定位或提前解除切点保护。
+    if (this.seeking || !this.initialized) return;
+    this.observer.busy(false);
+    void this.video.play().catch(error => { if (!this.closed && this.desiredPlaying) this.observer.error(String(error)); });
+  }
   pause() { this.desiredPlaying = false; this.video.pause(); }
-  suspend() { this.pause(); this.epoch++; this.player?.unload(); this.seeking = false; this.observer.busy(false); }
   async seek(sourceMs: number, direction: -1 | 0 | 1 = 0): Promise<boolean> {
+    if (this.closed) return false;
     const epoch = ++this.epoch;
     this.seeking = true; this.observer.busy(true); this.video.pause();
     const valid = () => !this.closed && epoch === this.epoch;
     try {
-      while (valid() && !this.snapshot.complete && sourceMs + 1 >= this.snapshot.indexedUntilMs) { this.observer.status('正在建立该位置的定位索引'); await delay(100); }
+      const readyAt = performance.now();
+      while (valid() && !this.initialized) {
+        if (this.failure) throw new Error(this.failure);
+        if (performance.now() - readyAt > 15000) throw new Error('等待流式首帧超时');
+        await delay(20);
+      }
+      while (valid() && !this.snapshot.complete && sourceMs + 1 >= this.snapshot.indexedUntilMs) { if (this.failure) throw new Error(this.failure); this.observer.status('正在建立该位置的定位索引'); await delay(100); }
       if (!valid()) return false;
       const target = await window.electronAPI!.streamFrame(this.snapshot.id, Math.max(0, sourceMs), direction);
       if (!valid()) return false;
-      if (target.atBoundary && this.presented && Math.abs(this.presented.pts - target.presentationMs) < 0.2) return true;
+      if (this.presented && !this.video.seeking && Math.abs(this.presented.pts - target.presentationMs) < 0.2) { this.position = target.sourceMs; this.observer.time(this.position); return true; }
       const start = performance.now();
-      this.player!.currentTime = Math.max(0, target.presentationMs + Math.min(1, (target.nextPresentationMs - target.presentationMs) / 2)) / 1000;
+      let retried = false;
+      this.player!.currentTime = Math.max(0, (target.presentationMs + target.nextPresentationMs) / 2) / 1000;
       while (valid()) {
         if (!this.video.seeking && this.presented && this.presented.at >= start && Math.abs(this.presented.pts - target.presentationMs) < 0.2) {
           this.position = target.sourceMs; this.observer.time(this.position); return true;
+        }
+        // 远距离跳转时 MSE 的旧缓冲删除与新数据追加异步进行；浏览器可能先报
+        // seeked 却仍显示旧画面；TS 初始时长还可能把远端目标截到旧缓冲尾部。
+        // 目标已缓冲后只重试一次，仍必须收到目标帧回调。
+        const buffered = this.video.buffered;
+        const targetBuffered = Array.from({ length: buffered.length }, (_, i) => i).some(i => buffered.start(i) * 1000 <= target.presentationMs && buffered.end(i) * 1000 > target.presentationMs);
+        const outsideTarget = this.video.currentTime * 1000 < target.presentationMs || this.video.currentTime * 1000 >= target.nextPresentationMs;
+        if (!retried && performance.now() - start > 500 && targetBuffered && (outsideTarget || !this.video.seeking && this.video.readyState >= 2)) {
+          retried = true;
+          this.player!.currentTime = Math.max(0, target.presentationMs + (target.nextPresentationMs - target.presentationMs) / 4) / 1000;
         }
         if (performance.now() - start > 10000) throw new Error('定位超时，尚未确认目标画面，请重试');
         await delay(10);
       }
       return false;
+    } catch (error) {
+      if (!valid()) return false;
+      this.desiredPlaying = false;
+      throw error;
     } finally {
-      if (valid()) { this.seeking = false; this.observer.busy(false); if (this.desiredPlaying) this.play(); }
+      if (valid()) { this.seeking = false; this.observer.busy(false); this.observer.status(this.snapshot.complete ? '' : '正在建立定位索引'); if (this.desiredPlaying) this.play(); }
     }
   }
   destroy() {
     if (this.closed) return;
     this.closed = true; this.epoch++; this.video.cancelVideoFrameCallback(this.frameCallback);
+    if (this.initial) this.video.removeEventListener('loadedmetadata', this.initial);
     this.player?.destroy(); this.player = undefined; this.video.removeAttribute('src'); this.video.load();
     void window.electronAPI!.closeStream(this.snapshot.id).catch(() => {});
   }

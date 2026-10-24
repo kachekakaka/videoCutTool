@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState, forwardRef, useImperativeHandle } from 'react';
+import { useStreamPlayback } from '../media/useStreamPlayback';
 
 export interface VideoPlayerRef {
   seekTo: (timeMs: number) => void; play: () => void; pause: () => void; togglePlay: () => void;
@@ -37,14 +38,33 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
   const [navigationError, setNavigationError] = useState('');
   const request = useRef<string | null>(null), sourceEpoch = useRef(0), attemptedRemux = useRef(false);
   const currentPreview = preview?.source === videoPath ? preview : null;
+  const streamAnnouncedAt = useRef(0);
+  const finishedAudition = useRef<typeof auditionRange>(null);
   const playbackPath = currentPreview?.path || videoPath, offset = currentPreview?.offset ?? timeOriginMs;
+  const stream = useStreamPlayback(videoRef, videoPath, isActive, {
+    current: () => position.current,
+    busy: value => { navigating.current = value; },
+    error: message => { wantsPlayback.current = false; setError(message); },
+    time: ms => {
+      position.current = ms;
+      const now = performance.now();
+      if (videoRef.current?.paused || now - streamAnnouncedAt.current >= 100) { callbacks.current.onTimeUpdate(ms); streamAnnouncedAt.current = now; }
+      const audition = callbacks.current.auditionRange;
+      if (audition && audition !== finishedAudition.current && ms >= audition.endMs) {
+        finishedAudition.current = audition;
+        wantsPlayback.current = false; stream.controller.current?.pause(); callbacks.current.onAuditionEnd?.();
+        // 主线程繁忙时画面回调可能跳帧；试听停下后仍要回到准确终点。
+        if (ms > audition.endMs + 0.5) void seek(audition.endMs);
+      }
+    },
+  });
   const applyPlaybackRate = () => {
     const video = videoRef.current;
     if (video) { video.defaultPlaybackRate = playbackRate; video.playbackRate = playbackRate; video.preservesPitch = true; }
   };
   useEffect(applyPlaybackRate, [playbackRate, playbackPath]);
   useEffect(() => {
-    const video = videoRef.current; if (!video) return;
+    const video = videoRef.current; if (!video || stream.route !== 'native') return;
     let id = 0, stopped = false, announcedAt = 0;
     const frame = (at: number, data: VideoFrameCallbackMetadata) => {
       if (stopped) return;
@@ -59,7 +79,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     };
     id = video.requestVideoFrameCallback(frame);
     return () => { stopped = true; video.cancelVideoFrameCallback(id); };
-  }, [playbackPath, offset]);
+  }, [playbackPath, offset, stream.route]);
   const current = () => position.current;
   const seekConfirmed = async (ms: number, epoch: number, expected?: number): Promise<boolean> => {
     const video = videoRef.current; if (!video?.readyState) { if (epoch === navigationEpoch.current) navigating.current = false; return false; }
@@ -81,12 +101,17 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     } finally { if (valid()) navigating.current = false; }
   };
   const seek = (ms: number) => {
+    if (stream.route !== 'native') {
+      const epoch = ++navigationEpoch.current;
+      setNavigationError('');
+      return stream.controller.current?.seek(ms).catch(error => { if (navigationEpoch.current === epoch) { wantsPlayback.current = false; setNavigationError(String(error)); } return false; }) ?? Promise.resolve(false);
+    }
     const epoch = ++navigationEpoch.current;
     setNavigationError(''); videoRef.current?.pause();
     return seekConfirmed(ms, epoch).then(ok => { if (ok && epoch === navigationEpoch.current && wantsPlayback.current) void videoRef.current?.play().catch(error => setError(String(error))); return ok; }).catch(error => { if (epoch === navigationEpoch.current) setNavigationError(String(error)); return false; });
   };
-  const play = () => { if (isActive && !error) { wantsPlayback.current = true; navigationEpoch.current++; navigating.current = false; void videoRef.current?.play().catch(error => setError(`播放失败：${error.message}`)); } };
-  const pause = () => { wantsPlayback.current = false; videoRef.current?.pause(); };
+  const play = () => { if (isActive && !error) { wantsPlayback.current = true; navigationEpoch.current++; if (stream.route !== 'native') { stream.controller.current?.play(); return; } navigating.current = false; void videoRef.current?.play().catch(error => setError(`播放失败：${error.message}`)); } };
+  const pause = () => { wantsPlayback.current = false; stream.controller.current?.pause(); videoRef.current?.pause(); };
   const togglePlay = () => { if (wantsPlayback.current) pause(); else play(); };
   const stepSeconds = (seconds: number) => { if (isActive) seek(current() + seconds * 1000); };
   const stepFrame = (delta: number) => {
@@ -98,6 +123,10 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
         if (navigationEpoch.current !== epoch) return;
         navigating.current = true;
         const time = current();
+        if (stream.route !== 'native') {
+          if (!await stream.controller.current?.seek(time, delta < 0 ? -1 : 1)) return;
+          continue;
+        }
         const next = window.electronAPI?.adjacentFrame ? await window.electronAPI.adjacentFrame(videoPath, time, delta < 0 ? -1 : 1) : time + Math.sign(delta) * 1000 / fps;
         if (navigationEpoch.current !== epoch) return;
         const following = window.electronAPI?.adjacentFrame ? await window.electronAPI.adjacentFrame(videoPath, next, 1) : next + 1000 / fps;
@@ -117,7 +146,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     previewLease.current = null;
   };
   const preparePreview = async (convert: boolean) => {
-    if (!window.electronAPI || request.current || !isActive) return;
+    if (!window.electronAPI || request.current || !isActive || stream.route !== 'native') return;
     const epoch = sourceEpoch.current, id = crypto.randomUUID();
     request.current = id; setProgress(0); pause();
     try {
@@ -129,7 +158,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     finally { if (request.current === id) { request.current = null; setProgress(null); } }
   };
   useEffect(() => {
-    sourceEpoch.current++; navigationEpoch.current++; position.current = 0; presented.current = null; navigating.current = false; attemptedRemux.current = false;
+    sourceEpoch.current++; navigationEpoch.current++; position.current = 0; presented.current = null; navigating.current = true; attemptedRemux.current = false;
     wantsPlayback.current = false; setNavigationError(''); setPreview(null); setError(''); onPlayStateChange?.(false); cancelPreview();
     return () => { sourceEpoch.current++; navigationEpoch.current++; navigating.current = false; cancelPreview(); releasePreview(); };
   }, [videoPath]);
@@ -146,14 +175,15 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     };
     window.addEventListener('keydown', handle); return () => window.removeEventListener('keydown', handle);
   });
-  const source = /^(https?:|media:)/.test(playbackPath) ? playbackPath : `media://video?path=${encodeURIComponent(playbackPath)}`;
+  const source = stream.route === 'native' ? (/^(https?:|media:)/.test(playbackPath) ? playbackPath : `media://video?path=${encodeURIComponent(playbackPath)}`) : undefined;
   return <div className="w-full flex-1 min-h-[240px] flex flex-col rounded-2xl overflow-hidden bg-[#161b22]/90 border border-white/10 shadow-2xl">
     <div ref={viewport} className="relative flex-1 min-h-0 w-full bg-black/95 flex items-center justify-center overflow-hidden select-none">
       <div
         style={{ width: contentWidth, height: contentWidth / ratio }}
         className="relative flex-none flex items-center justify-center max-h-full max-w-full"
       >
-        <video ref={videoRef} src={source} onLoadedMetadata={() => { applyPlaybackRate(); void seek(position.current); }} onPlay={() => onPlayStateChange?.(true)} onPause={() => onPlayStateChange?.(false)} onEnded={() => { wantsPlayback.current = false; }} onClick={togglePlay} onError={() => {
+        <video ref={videoRef} src={source} onLoadedMetadata={() => { applyPlaybackRate(); if (stream.route === 'native') void seek(position.current); }} onPlay={() => onPlayStateChange?.(true)} onPause={() => onPlayStateChange?.(false)} onEnded={() => { wantsPlayback.current = false; stream.controller.current?.pause(); }} onClick={togglePlay} onError={() => {
+          if (stream.route !== 'native') return;
           setError('当前素材无法直接播放，可生成兼容预览；剪辑仍使用原片。');
           onPlayStateChange?.(false);
           if (!attemptedRemux.current && isActive) { attemptedRemux.current = true; void preparePreview(false); }
@@ -162,10 +192,11 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
       </div>
       {(error || progress !== null) && <div className="absolute inset-0 flex items-center justify-center bg-black/85 p-6"><div className="max-w-lg text-center text-sm text-zinc-200 space-y-3">
         <p className="break-words">{progress !== null ? `正在生成播放预览 ${Math.round(progress)}%` : error}</p>
-        {progress !== null ? <button onClick={cancelPreview} className="px-3 py-2 rounded-lg bg-white/10">取消生成</button> : <div className="flex justify-center gap-3"><button onClick={() => { setError(''); videoRef.current?.load(); }} className="px-3 py-2 rounded-lg bg-white/10">重试播放</button><button onClick={() => void preparePreview(true)} className="px-3 py-2 rounded-lg bg-blue-600">生成兼容预览</button></div>}
+        {progress !== null ? <button onClick={cancelPreview} className="px-3 py-2 rounded-lg bg-white/10">取消生成</button> : <div className="flex justify-center gap-3"><button onClick={() => { setError(''); if (stream.route === 'native') videoRef.current?.load(); else stream.retry(); }} className="px-3 py-2 rounded-lg bg-white/10">重试播放</button>{stream.route === 'native' && <button onClick={() => void preparePreview(true)} className="px-3 py-2 rounded-lg bg-blue-600">生成兼容预览</button>}</div>}
       </div></div>}
       {currentPreview && !error && progress === null && <span className="absolute bottom-2 left-3 text-[10px] text-zinc-400 bg-black/60 px-2 py-1 rounded">兼容预览 · 导出使用原片</span>}
       {navigationError && <span role="status" className="absolute bottom-2 left-3 text-xs text-amber-200 bg-black/80 px-2 py-1 rounded">{navigationError}</span>}
+      {stream.status && !error && !navigationError && <span role="status" className="absolute bottom-2 left-3 text-xs text-zinc-200 bg-black/80 px-2 py-1 rounded">{stream.status}</span>}
     </div>
   </div>;
 });

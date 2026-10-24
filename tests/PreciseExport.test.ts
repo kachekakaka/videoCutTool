@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { RetentionDraft } from '../src/shared/RetentionDraft';
-import { selectFrameBoundary } from '../src/main/services/PreciseExport';
+import { preciseAudioDefaults, selectFrameBoundary } from '../src/main/services/PreciseExport';
 import { validateRecord } from '../src/main/services/IpcSecurity';
 
 describe('精确导出边界与方案持久化', () => {
@@ -38,5 +38,13 @@ describe('精确导出边界与方案持久化', () => {
     expect(selectFrameBoundary(points, 1067)).toBe(points[2]);
     expect(selectFrameBoundary(points, 1040)).toBe(points[2]);
     expect(selectFrameBoundary(points, 1200)).toBeUndefined();
+  });
+  it('缺省音轨标记按 MP4 规则补齐，保留原有默认轨且不修改来源数据', () => {
+    const streams = [{ index: 0, type: 'video', codec: 'h264', default: false }, { index: 1, type: 'audio', codec: 'aac', default: false }, { index: 2, type: 'audio', codec: 'aac', default: false }].map(stream => ({ ...stream, attachedPicture: false }));
+    expect(preciseAudioDefaults(streams).map(s => s.default)).toEqual([true, false]);
+    expect(streams[1].default).toBe(false);
+    streams[2].default = true;
+    expect(preciseAudioDefaults(streams).map(s => s.default)).toEqual([false, true]);
+    expect(preciseAudioDefaults([streams[0]])).toEqual([]);
   });
 });

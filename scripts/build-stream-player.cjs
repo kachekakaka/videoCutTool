@@ -18,6 +18,20 @@ esbuild.build({ entryPoints: [path.join(source, 'index.js')], outfile: path.join
   });
   build.onLoad({ filter: /ts-demuxer\.ts$/ }, args => {
     let s = fs.readFileSync(args.path, 'utf8');
+    s = replace(s, '    public destroy() {', `    public flushPendingPackets() {
+        // 长度为零的 PES 以后一包起点分界；文件末尾没有后一包，必须显式提交。
+        for (const [key, queue] of Object.entries(this.pes_slice_queues_)) {
+            if (!queue.total_length) continue;
+            if (queue.expected_length !== 0 && queue.expected_length !== queue.total_length) {
+                this.onError(DemuxErrors.FORMAT_ERROR, 'MPEG-TS 末尾媒体包不完整');
+                return;
+            }
+            const pid = Number(key);
+            this.emitPESSlices(queue, { pid, stream_type: this.pmt_.pid_stream_type[pid] });
+        }
+        this.dispatchAudioVideoMediaSegment();
+    }
+    public destroy() {`, '提交 TS 最后一个媒体包');
     s = replace(s, '    public resetMediaInfo() {', `    public resetPendingSamples() {
         this.video_track_.samples = []; this.video_track_.length = 0;
         this.audio_track_.samples = []; this.audio_track_.length = 0;
@@ -31,6 +45,7 @@ esbuild.build({ entryPoints: [path.join(source, 'index.js')], outfile: path.join
   });
   build.onLoad({ filter: /transmuxing-controller\.js$/ }, args => {
     let s = fs.readFileSync(args.path, 'utf8');
+    s = replace(s, '    _onIOComplete(extraData) {', '    _onIOComplete(extraData) {\n        this._demuxer?.flushPendingPackets?.();', 'EOF 先提交解复用余包');
     s = replace(s, '        let targetSegmentIndex = this._searchSegmentIndexContains(milliseconds);', '        this._demuxer.resetPendingSamples();\n        let targetSegmentIndex = this._searchSegmentIndexContains(milliseconds);', '字节寻址前清空');
     // 两种封装在同一公开配置入口使用受校验索引，数组引用允许后台追加。
     s = replace(s, '    _onMediaInfo(mediaInfo) {', `    _onMediaInfo(mediaInfo) {
@@ -63,6 +78,8 @@ esbuild.build({ entryPoints: [path.join(source, 'index.js')], outfile: path.join
   build.onLoad({ filter: /player-engine-(main|dedicated)-thread\.ts$/ }, args => {
     let s = fs.readFileSync(args.path, 'utf8').replace("import * as EventEmitter from 'events';", "import EventEmitter from 'events';").replace("import * as work from '../utils/webworkify-webpack';", "import work from '../utils/webworkify-webpack';");
     if (args.path.endsWith('player-engine-main-thread.ts')) {
+      // 精确模式由控制器负责首帧与目标帧确认，禁止库在异步换缓冲时跳到临时首点。
+      s = replace(s, '        this._startup_stall_jumper = new StartupStallJumper(', '        this._startup_stall_jumper = this._config.vctPreciseVideo ? null : new StartupStallJumper(', '禁用精确模式自动跳点');
       s = replace(s, '    private _onRequiredUnbufferedSeek(milliseconds: number): void {', '    private _onRequiredUnbufferedSeek(milliseconds: number): void {\n        this._loading_controller.resetForSeek();', '寻址后恢复预读');
       s = replace(s, '            this._loading_controller.notifyBufferedPositionChanged(ms.info.endDts / 1000);', '            this._loading_controller.notifyBufferedPositionChanged();', '按可播放区间控制预读');
     }

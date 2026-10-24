@@ -93,6 +93,15 @@ describe('缓存回收的使用保护与所有权边界', () => {
     const file=await cache(200);manager.release(file);await manager.sweep();await fs.promises.writeFile(path.join(root,'cache_old.mp4'),'未知');await manager.close();
     clock+=2000;manager=make();await manager.discover();await manager.sweep();expect(fs.existsSync(file)).toBe(false);expect(fs.existsSync(path.join(root,'cache_old.mp4'))).toBe(true);
   });
+  it('重启能发现流式索引根，回收过期索引并保留验收附件', async () => {
+    const indexes=path.join(directory,'stream_indexes','managed');await manager.registerRoot(indexes);
+    const file=await manager.create(indexes,'index','.json','stream-test');await fs.promises.writeFile(file,'索引');await manager.ready(file);
+    const attachment=path.join(indexes,'evidence','capture.json');await fs.promises.mkdir(path.dirname(attachment));await fs.promises.writeFile(attachment,'验收附件');
+    manager.release(file);await manager.sweep();await manager.close();clock+=2000;
+    manager=make();await manager.discover();await manager.sweep();
+    expect(fs.existsSync(file)).toBe(false);expect(await fs.promises.readFile(attachment,'utf8')).toBe('验收附件');
+    expect(manager.issues).toEqual([]);
+  });
   it('登记损坏或路径逃逸不删除任何外部数据', async () => {
     const file=await cache(200);manager.release(file);await manager.sweep();const entry=(await fs.promises.readdir(root)).find(name=>name.startsWith('.vct-entry-'))!;
     const record=JSON.parse(await fs.promises.readFile(path.join(root,entry),'utf8'));record.name='../config.json';await fs.promises.writeFile(path.join(root,entry),JSON.stringify(record));await manager.close();

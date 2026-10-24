@@ -6,6 +6,7 @@ export interface StreamPlaybackSnapshot {
   offsetMs: number; durationMs: number; indexedUntilMs: number; progress: number;
   complete: boolean; error?: string; metadata?: MediaMetadata;
   originUs: number; baseMs: number; frames?: number[];
+  preview: Pick<MediaMetadata, 'filePath' | 'fileName' | 'width' | 'height' | 'displayAspectRatio' | 'fps' | 'streams' | 'timeOrigin'>;
   index: { times: number[]; filepositions: number[] };
 }
 export interface StreamFrameTarget {

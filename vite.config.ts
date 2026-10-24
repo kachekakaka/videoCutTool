@@ -6,6 +6,8 @@ import path from 'node:path';
 
 export default defineConfig({
   resolve: { alias: { '@stream-player': path.resolve('node_modules/.cache/vct-mpegts/player.js') } },
+  // 补丁模块已由 predev 打成 ESM，避免依赖预构建缓存继续使用旧补丁。
+  optimizeDeps: { exclude: ['@stream-player'] },
   plugins: [
     {
       name: 'production-content-security-policy',

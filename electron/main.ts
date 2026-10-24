@@ -90,6 +90,7 @@ function markCanceled(key: string) { canceledRequests.add(key); if (canceledRequ
 function checkCanceled(key: string) { if (canceledRequests.delete(key)) throw new Error('操作已取消'); }
 let configChanges: Promise<unknown> = Promise.resolve();
 const ipcActive = new Map<string, number>();
+const streamWindowGeneration = new WeakMap<IpcMainInvokeEvent['sender'], number>();
 function handle(channel: string, work: (event: IpcMainInvokeEvent, ...args: any[]) => any) {
   ipcMain.handle(channel, async (event, ...args) => {
     const frame = event.senderFrame;
@@ -102,8 +103,10 @@ function handle(channel: string, work: (event: IpcMainInvokeEvent, ...args: any[
     const count = ipcActive.get(channel) ?? 0;
     if (count >= 32 || args.length > (channel === 'config:resolveOutputPath' ? 7 : 6)) throw new Error('请求过于频繁，请稍后重试');
     ipcActive.set(channel, count + 1);
+    const generation = streamWindowGeneration.get(event.sender) ?? 0;
     try {
       if (/^(media:|compress:|engine:submitDraft)/.test(channel)) await configChanges;
+      if (channel === 'media:openStream' && generation !== (streamWindowGeneration.get(event.sender) ?? 0)) throw new Error('播放窗口已失效');
       return await work(event, ...args);
     } finally { ipcActive.set(channel, Math.max(0, (ipcActive.get(channel) ?? 1) - 1)); }
   });
@@ -183,9 +186,14 @@ function createWindow() {
   });
   const ownerPrefix = `${mainWindow.webContents.id}:`;
   const owner = mainWindow.webContents.id;
-  const releaseWindowCaches = () => { void previewService?.releaseOwner(ownerPrefix); void playbackService?.releaseOwner(ownerPrefix); streamPlayback?.closeOwner(owner); };
+  const contents = mainWindow.webContents;
+  const releaseWindowCaches = () => {
+    streamWindowGeneration.set(contents, (streamWindowGeneration.get(contents) ?? 0) + 1);
+    void previewService?.releaseOwner(ownerPrefix); void playbackService?.releaseOwner(ownerPrefix); streamPlayback?.closeOwner(owner);
+  };
   mainWindow.webContents.on('render-process-gone', releaseWindowCaches);
   mainWindow.webContents.on('destroyed', releaseWindowCaches);
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => { if (isMainFrame && !isInPlace) releaseWindowCaches(); });
 
   mainWindow.on('closed', () => {
     files.clear();
@@ -278,7 +286,17 @@ handle('media:preparePlayback', async (event, file: string, convert: boolean, id
 });
 handle('media:cancelPlayback', async (event, id: string) => { requestId(id); markCanceled(`play:${event.sender.id}:${id}`); return playbackService.cancel(`${event.sender.id}:${id}`); });
 handle('media:releasePlayback', async (event, id: string) => { requestId(id); playbackService.release(`${event.sender.id}:${id}`); });
-handle('media:openStream', async (event, file: string, id: string) => { requestId(id); await files.check(file); checkCanceled(`stream:${event.sender.id}:${id}`); return streamPlayback.open(event.sender.id, file, id); });
+handle('media:openStream', async (event, file: string, id: string) => {
+  requestId(id);
+  const frame = event.senderFrame;
+  const generation = streamWindowGeneration.get(event.sender) ?? 0;
+  await files.check(file);
+  // 文件检查期间窗口可能已经崩溃或换页；此时 closeOwner 尚无会话可释放。
+  // 必须在取得索引引用前拒绝迟到请求，不能在退出事件之后重新创建会话。
+  if (generation !== (streamWindowGeneration.get(event.sender) ?? 0) || !frame || frame.isDestroyed() || event.sender.isDestroyed() || event.sender.isCrashed() || event.sender.mainFrame !== frame) throw new Error('播放窗口已失效');
+  checkCanceled(`stream:${event.sender.id}:${id}`);
+  return streamPlayback.open(event.sender.id, file, id);
+});
 handle('media:streamStatus', async (event, id: string) => { requestId(id); return streamPlayback.status(event.sender.id, id); });
 handle('media:streamFrame', async (event, id: string, time: number, direction: -1 | 0 | 1) => { requestId(id); return streamPlayback.frame(event.sender.id, id, time, direction); });
 handle('media:closeStream', async (event, id: string) => { requestId(id); markCanceled(`stream:${event.sender.id}:${id}`); streamPlayback.close(event.sender.id, id); });
