@@ -146,7 +146,8 @@ function Start-PortableArtifact([string]$Repository,[string]$Path) {
     $electron=Join-Path $ctx.Repository 'node_modules/electron/dist'
     foreach($prefix in @('app','win-unpacked')){
       if(Test-Path -LiteralPath $electron){foreach($file in @(Get-ChildItem -LiteralPath $electron -Recurse -File)){$expected[(Join-Path $prefix ([IO.Path]::GetRelativePath($electron,$file.FullName)))]=$true}}
-      foreach($name in @('resources/app.asar','resources/bin/ffmpeg.exe','resources/bin/ffprobe.exe','VideoCutTool.exe')){$expected[(Join-Path $prefix $name)]=$true}
+      # electron-builder 将 Electron 原始 LICENSE 重命名后随包分发。
+      foreach($name in @('LICENSE.electron.txt','resources/app.asar','resources/bin/ffmpeg.exe','resources/bin/ffprobe.exe','VideoCutTool.exe')){$expected[(Join-Path $prefix $name)]=$true}
     }
     $record=@{version=1;id=[guid]::NewGuid().ToString();root=$target;kind='candidate';state='building';owner=$PID;created=[DateTime]::UtcNow.Ticks;files=@{};expected=$expected;pinned=$false}
     Save-ArtifactRecord $ctx $record
