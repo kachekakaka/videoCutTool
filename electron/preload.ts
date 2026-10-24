@@ -41,6 +41,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   closeStream: id => ipcRenderer.invoke('media:closeStream', id),
   repairTimeline: (file, id) => ipcRenderer.invoke('media:repairTimeline', file, id),
   cancelRepair: id => ipcRenderer.invoke('media:cancelRepair', id),
+  confirmRepair: (id, approved) => ipcRenderer.invoke('media:confirmRepair', id, approved),
+  onRepairConfirmation: callback => subscribe('media:repairConfirmation', callback),
   onRepairProgress: callback => subscribe('media:repairProgress', callback),
   onPreviewProgress: callback => subscribe('media:previewProgress', callback),
 

@@ -88,6 +88,7 @@ let mainWindow: BrowserWindow | null = null;
 const files = new FileAccessRegistry();
 const scanRequests = new Map<string, { controller: AbortController; promise: Promise<unknown> }>();
 const repairRequests = new Map<string, { owner: number; controller: AbortController; promise: Promise<TimelineRepairResult> }>();
+const repairConfirmations = new Map<string, (approved: boolean) => void>();
 const canceledRequests = new Set<string>();
 function markCanceled(key: string) { canceledRequests.add(key); if (canceledRequests.size > 256) canceledRequests.delete(canceledRequests.values().next().value!); }
 function checkCanceled(key: string) { if (canceledRequests.delete(key)) throw new Error('操作已取消'); }
@@ -331,15 +332,37 @@ handle('media:repairTimeline', (event, file: string, id: string) => {
     const output = selected.filePath;
     if (path.extname(output).toLowerCase() !== '.mp4') throw new Error('请选择新的 MP4 文件名');
     try { await fs.promises.lstat(output); throw new Error('目标文件已经存在，请另选文件名；不会覆盖原片或其他文件'); } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
-    const confirmation = await dialog.showMessageBox(mainWindow!, { type: 'question', title: '确认修复时间轴', message: '无损保存为新 MP4 后继续编辑', detail: `原片（保留）：${source}\n新文件：${output}\n\n将读取完整录像并占用额外磁盘空间。仅调整时间轴和封装，不重新编码。原片和已保存方案不变，不迁移切点。跨盘保存会先在目标盘的受管临时目录完成复制。`, buttons: ['取消', '开始修复'], defaultId: 0, cancelId: 0 });
-    check(); if (confirmation.response !== 1) return { canceled: true };
+    check();
+    // 路径留在主进程；界面只回答当前请求，确认后接续同一次修复，取消或窗口失效均解除等待。
+    const approved = await new Promise<boolean>((resolve, reject) => {
+      const clear = () => {
+        repairConfirmations.delete(key);
+        controller.signal.removeEventListener('abort', cancel);
+      };
+      const finish = (value: boolean) => { clear(); resolve(value); };
+      const cancel = () => finish(false);
+      repairConfirmations.set(key, finish);
+      controller.signal.addEventListener('abort', cancel, { once: true });
+      try {
+        progress({ stage: 'confirming' });
+        event.sender.send('media:repairConfirmation', { requestId: id, source, output });
+      } catch (error) { clear(); reject(error); }
+    });
+    check(); if (!approved) return { canceled: true };
     const result = await repairToMp4({ source, output, temporaryRoot: getExternalTmpDir(hostDir), ffmpeg, ffprobe, signal: controller.signal, maintenance, indexes: streamPlayback.indexes, progress });
     await files.authorize(result.output);
     return { output: result.output };
-  })().catch(error => { if (controller.signal.aborted || error.name === 'AbortError') return { canceled: true }; throw error; }).finally(() => repairRequests.delete(key));
+  })().catch(error => { if (controller.signal.aborted || error.name === 'AbortError') return { canceled: true }; throw error; }).finally(() => { repairConfirmations.delete(key); repairRequests.delete(key); });
   repairRequests.set(key, { owner: event.sender.id, controller, promise }); return promise;
 });
 handle('media:cancelRepair', (event, id: string) => { requestId(id); const key = `${event.sender.id}:${id}`; markCanceled(`repair:${key}`); repairRequests.get(key)?.controller.abort(); });
+handle('media:confirmRepair', (event, id: string, approved: boolean) => {
+  requestId(id);
+  if (typeof approved !== 'boolean') throw new Error('修复确认选项无效');
+  const confirm = repairConfirmations.get(`${event.sender.id}:${id}`);
+  if (!confirm) throw new Error('修复确认已失效，请重新开始');
+  confirm(approved);
+});
 
 // 降码画质抽样对比与硬件探测
 handle('compress:previewSamples', async (event, videoPath: string, timestampsMs: number[], config: CompressConfig, id: string) => {

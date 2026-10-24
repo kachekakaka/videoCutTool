@@ -32,6 +32,8 @@ export interface ElectronAPI {
   closeStream: (id: string) => Promise<void>;
   repairTimeline: (file: string, id: string) => Promise<import('./shared/timelineRepair').TimelineRepairResult>;
   cancelRepair: (id: string) => Promise<void>;
+  confirmRepair: (id: string, approved: boolean) => Promise<void>;
+  onRepairConfirmation: (callback: (confirmation: import('./shared/timelineRepair').TimelineRepairConfirmation) => void) => () => void;
   onRepairProgress: (callback: (progress: import('./shared/timelineRepair').TimelineRepairProgress) => void) => () => void;
   releaseCompressionPreview: (id: string) => Promise<void>;
   onPreviewProgress: (callback: (progress: PreviewProgress) => void) => () => void;

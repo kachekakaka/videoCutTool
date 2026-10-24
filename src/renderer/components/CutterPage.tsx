@@ -11,7 +11,8 @@ import { SpatialOverlay } from './SpatialOverlay';
 import { RetentionDraft, DraftSnapshot } from '../../shared/RetentionDraft';
 import { makeEven, hasSpatialEffects } from '../../shared/spatialFiltergraph';
 import { useAppData } from '../AppDataContext';
-import { TimelineRepairProgress } from '../../shared/timelineRepair';
+import { TimelineRepairConfirmation, TimelineRepairProgress } from '../../shared/timelineRepair';
+import { TimelineRepairDialog } from './TimelineRepairDialog';
 import {
   Film,
   Scissors,
@@ -62,6 +63,9 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const previousActive = useRef(isActive);
   const activeRef = useRef(isActive); activeRef.current = isActive;
   const repairRequest = useRef<string | null>(null);
+  const repairCanceled = useRef(false);
+  const repairConfirmationAnswered = useRef(false);
+  const [repairConfirmation, setRepairConfirmation] = useState<TimelineRepairConfirmation | null>(null);
   const [repairSource, setRepairSource] = useState<string | null>(null);
   const [sourceConfirmation, setSourceConfirmation] = useState<{ record: PlanRecord; token: string; fileInfo?: { size: number; modifiedAt: string } } | null>(null);
   const loadedRevision = useRef<string | undefined>(undefined);
@@ -69,23 +73,43 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const [repairMessage, setRepairMessage] = useState('');
   const [repairedOutput, setRepairedOutput] = useState<string | null>(null);
   const [cancelingRepair, setCancelingRepair] = useState(false);
-  const cancelRepair = () => { if (repairRequest.current) { setCancelingRepair(true); void window.electronAPI?.cancelRepair(repairRequest.current).catch(() => {}); } };
+  const cancelRepair = () => { repairConfirmationAnswered.current = true; setRepairConfirmation(null); if (repairRequest.current) { repairCanceled.current = true; setCancelingRepair(true); void window.electronAPI?.cancelRepair(repairRequest.current).catch(() => {}); } };
   useEffect(() => window.electronAPI?.onRepairProgress(progress => { if (repairRequest.current === progress.requestId) setRepairProgress(progress); }), []);
+  useEffect(() => window.electronAPI?.onRepairConfirmation(confirmation => {
+    if (repairRequest.current !== confirmation.requestId) return;
+    if (repairCanceled.current || !activeRef.current) { void window.electronAPI?.cancelRepair(confirmation.requestId).catch(() => {}); return; }
+    repairConfirmationAnswered.current = false; setRepairConfirmation(confirmation);
+  }), []);
+  useEffect(() => { if (!isActive && repairConfirmation) cancelRepair(); }, [isActive, repairConfirmation]);
+  const confirmRepair = () => {
+    if (!repairConfirmation || repairCanceled.current || repairConfirmationAnswered.current) return;
+    repairConfirmationAnswered.current = true;
+    const id = repairConfirmation.requestId;
+    setRepairConfirmation(null);
+    void window.electronAPI?.confirmRepair(id, true).catch(error => {
+      if (repairRequest.current !== id) return;
+      cancelRepair(); setRepairMessage(`修复确认未完成：${String(error)}`);
+    });
+  };
   const startRepair = async () => {
     const api = window.electronAPI;
     if (!api || !repairSource || repairRequest.current) return;
     const id = crypto.randomUUID(), epoch = loadEpoch.current;
-    repairRequest.current = id; setRepairMessage(''); setRepairedOutput(null); setCancelingRepair(false); setRepairProgress({ requestId: id, stage: 'checking' });
+    repairRequest.current = id; repairCanceled.current = false; setRepairConfirmation(null); setRepairMessage(''); setRepairedOutput(null); setCancelingRepair(false); setRepairProgress({ requestId: id, stage: 'checking' });
     try {
       const result = await api.repairTimeline(repairSource, id);
       if (result.output) {
-        setRepairedOutput(result.output); setRepairSource(null);
-        setRepairMessage('已无损保存修复后的 MP4。原片和已保存方案保留；新草稿不继承原方案切点。');
-        // 已切换素材或离开工作台时，保留完成提示，由用户决定何时打开。
-        if (loadEpoch.current === epoch && activeRef.current) onRequestVideo(result.output);
+        const currentSource = loadEpoch.current === epoch;
+        setRepairedOutput(result.output);
+        // 发布完成与取消/切换素材可能交错；保留成品，但旧结果不能清掉新素材入口或强制打开。
+        if (currentSource && !repairCanceled.current) setRepairSource(null);
+        setRepairMessage(currentSource && repairCanceled.current
+          ? '取消时修复文件已保存，已保留成品，可手动打开。原片和已保存方案不变，不迁移切点。'
+          : '已无损保存修复后的 MP4。原片和已保存方案保留；新草稿不继承原方案切点。');
+        if (currentSource && !repairCanceled.current && activeRef.current) onRequestVideo(result.output);
       } else setRepairMessage('已取消修复，原片和已保存方案保持不变。');
     } catch (error) { setRepairMessage(`修复未完成：${String(error)}`); }
-    finally { if (repairRequest.current === id) { repairRequest.current = null; setRepairProgress(null); setCancelingRepair(false); } }
+    finally { if (repairRequest.current === id) { repairRequest.current = null; setRepairConfirmation(null); setRepairProgress(null); setCancelingRepair(false); } }
   };
   const cancelStreamPreparation = () => { if (streamPreparation.current) void window.electronAPI?.closeStream(streamPreparation.current).catch(() => {}); streamPreparation.current = null; };
   const cancelScan = () => { if (scanId.current) void window.electronAPI?.cancelKeyframes(scanId.current).catch(() => {}); scanId.current = null; };
@@ -381,7 +405,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
   const playerRef = useRef<VideoPlayerRef | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const shortcutsEnabled = isActive && !isLoading && !showSaveModal && !showNoCutWarningModal && !showCompressSettings && workbenchMode === 'temporal';
+  const shortcutsEnabled = isActive && !repairConfirmation && !isLoading && !showSaveModal && !showNoCutWarningModal && !showCompressSettings && workbenchMode === 'temporal';
   useEffect(() => { if (!isActive || mainViewportMode !== 'player') { playerRef.current?.pause(); setAuditionRange(null); } }, [isActive, mainViewportMode]);
 
   // 提交草稿操作变更至撤销栈
@@ -1087,9 +1111,10 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     }
   };
 
-  const repairStages: Record<TimelineRepairProgress['stage'], string> = { checking: '检查修复条件', choosing: '选择新文件并确认', scanning: '分析时间轴断点', remuxing: '无损封装 MP4', validating: '检查修复结果', copying: '复制到目标磁盘', publishing: '保存完整 MP4' };
+  const repairStages: Record<TimelineRepairProgress['stage'], string> = { checking: '检查修复条件', choosing: '选择新文件', confirming: '等待确认修复', scanning: '分析时间轴断点', remuxing: '无损封装 MP4', validating: '检查修复结果', copying: '复制到目标磁盘', publishing: '保存完整 MP4' };
   const repairPanel = (repairSource || repairProgress || repairMessage) && (
     <div role="status" className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/10 text-sm text-amber-100 space-y-2 shrink-0">
+      {isActive && repairConfirmation && <TimelineRepairDialog confirmation={repairConfirmation} onCancel={cancelRepair} onConfirm={confirmRepair} />}
       {repairSource && <><p className="font-semibold">素材时间轴异常，可尝试修复后继续编辑</p><p className="text-xs break-all">原片：{repairSource}</p><p className="text-xs leading-relaxed">修复会读取整段录像，无损保存为新的 MP4，需要额外磁盘空间。原片和已保存方案都保留，不自动迁移切点。无法可靠修复的素材会停止处理。</p></>}
       {repairProgress && <p>{cancelingRepair ? '正在取消并回收临时文件…' : repairStages[repairProgress.stage]}{!cancelingRepair && repairProgress.percent !== undefined ? ` ${Math.floor(repairProgress.percent)}%` : ''}</p>}
       {repairMessage && <p className="text-xs whitespace-pre-wrap break-words">{repairMessage}</p>}
