@@ -10,10 +10,12 @@ import { PlanManager } from '../src/main/services/PlanManager';
 import { BatchCompressionService } from '../src/main/services/BatchCompressionService';
 import { CompressionPreviewService } from '../src/main/services/CompressionPreviewService';
 import { PlaybackPreviewService } from '../src/main/services/PlaybackPreviewService';
-import { StreamPlaybackIndexService } from '../src/main/services/StreamPlaybackIndexService';
 import { StreamPlaybackSessionService } from '../src/main/services/StreamPlaybackSessionService';
 import { CacheMaintenanceService, externalTemporaryDirectory as getExternalTmpDir } from '../src/main/services/CacheMaintenanceService';
-import { MediaLimiter, stopMediaProcesses, clearProbeCache, hasActiveMediaProcesses } from '../src/main/services/MediaTools';
+import { MediaLimiter, stopMediaProcesses, clearProbeCache, hasActiveMediaProcesses, resolveTool, abortError } from '../src/main/services/MediaTools';
+import { inspectRepairSource, repairToMp4 } from '../src/main/services/TimelineRepairService';
+import { MediaIndexService } from '../src/main/services/MediaIndexService';
+import { TimelineRepairProgress, TimelineRepairResult } from '../src/shared/timelineRepair';
 import { FileAccessRegistry, localPath, requestId, textValue, validateCompress, validateConfigPatch, validateRecord } from '../src/main/services/IpcSecurity';
 import { AppConfig, PlanRecord, CompressConfig, CompressionSaveRequest, SelectedVideo } from '../src/shared/types';
 
@@ -85,6 +87,7 @@ let maintenance: CacheMaintenanceService;
 let mainWindow: BrowserWindow | null = null;
 const files = new FileAccessRegistry();
 const scanRequests = new Map<string, { controller: AbortController; promise: Promise<unknown> }>();
+const repairRequests = new Map<string, { owner: number; controller: AbortController; promise: Promise<TimelineRepairResult> }>();
 const canceledRequests = new Set<string>();
 function markCanceled(key: string) { canceledRequests.add(key); if (canceledRequests.size > 256) canceledRequests.delete(canceledRequests.values().next().value!); }
 function checkCanceled(key: string) { if (canceledRequests.delete(key)) throw new Error('操作已取消'); }
@@ -106,7 +109,7 @@ function handle(channel: string, work: (event: IpcMainInvokeEvent, ...args: any[
     const generation = streamWindowGeneration.get(event.sender) ?? 0;
     try {
       if (/^(media:|compress:|engine:submitDraft)/.test(channel)) await configChanges;
-      if (channel === 'media:openStream' && generation !== (streamWindowGeneration.get(event.sender) ?? 0)) throw new Error('播放窗口已失效');
+      if (['media:openStream', 'media:repairTimeline'].includes(channel) && generation !== (streamWindowGeneration.get(event.sender) ?? 0)) throw new Error('播放窗口已失效');
       return await work(event, ...args);
     } finally { ipcActive.set(channel, Math.max(0, (ipcActive.get(channel) ?? 1) - 1)); }
   });
@@ -190,6 +193,7 @@ function createWindow() {
   const releaseWindowCaches = () => {
     streamWindowGeneration.set(contents, (streamWindowGeneration.get(contents) ?? 0) + 1);
     void previewService?.releaseOwner(ownerPrefix); void playbackService?.releaseOwner(ownerPrefix); streamPlayback?.closeOwner(owner);
+    for (const request of repairRequests.values()) if (request.owner === owner) request.controller.abort();
   };
   mainWindow.webContents.on('render-process-gone', releaseWindowCaches);
   mainWindow.webContents.on('destroyed', releaseWindowCaches);
@@ -202,6 +206,10 @@ function createWindow() {
     mainWindow = null;
   });
   mainWindow.on('close', (event) => {
+    if (!quitting && repairRequests.size) {
+      const answer = dialog.showMessageBoxSync(mainWindow!, { type: 'question', title: '退出应用', message: '正在修复视频，退出会中断修复并回收临时文件。原片和已保存方案保持不变。', buttons: ['继续修复', '中断并退出'], defaultId: 0, cancelId: 0 });
+      if (answer === 0) { event.preventDefault(); return; }
+    }
     if (!quitting && cuttingEngine?.getState().activePlanId) {
       const answer = dialog.showMessageBoxSync(mainWindow!, { type: 'question', title: '退出应用', message: '正在导出视频，退出会中断当前任务。下次启动可在方案中心重试。', buttons: ['继续导出', '中断并退出'], defaultId: 0, cancelId: 0 });
       if (answer === 0) event.preventDefault();
@@ -301,6 +309,38 @@ handle('media:streamStatus', async (event, id: string) => { requestId(id); retur
 handle('media:streamFrame', async (event, id: string, time: number, direction: -1 | 0 | 1) => { requestId(id); return streamPlayback.frame(event.sender.id, id, time, direction); });
 handle('media:closeStream', async (event, id: string) => { requestId(id); markCanceled(`stream:${event.sender.id}:${id}`); streamPlayback.close(event.sender.id, id); });
 
+handle('media:repairTimeline', (event, file: string, id: string) => {
+  requestId(id);
+  const key = `${event.sender.id}:${id}`;
+  if (repairRequests.has(key)) return repairRequests.get(key)!.promise;
+  if (repairRequests.size) throw new Error('已有时间轴修复任务，请等待完成或先取消');
+  const controller = new AbortController(), generation = streamWindowGeneration.get(event.sender) ?? 0;
+  const check = () => {
+    if (controller.signal.aborted || quitting || event.sender.isDestroyed() || event.sender.isCrashed() || generation !== (streamWindowGeneration.get(event.sender) ?? 0)) throw abortError();
+  };
+  const progress = (value: Omit<TimelineRepairProgress, 'requestId'>) => { if (!event.sender.isDestroyed()) event.sender.send('media:repairProgress', { ...value, requestId: id }); };
+  const promise = (async (): Promise<TimelineRepairResult> => {
+    checkCanceled(`repair:${key}`); check();
+    const source = await files.check(file); check();
+    const config = configService.getConfig(), ffprobe = resolveTool('ffprobe', config.ffprobePath), ffmpeg = resolveTool('ffmpeg', config.ffmpegPath);
+    progress({ stage: 'checking' });
+    await inspectRepairSource(source, ffprobe, controller.signal); check();
+    progress({ stage: 'choosing' });
+    const selected = await dialog.showSaveDialog(mainWindow!, { title: '修复时间轴并另存为 MP4（不覆盖原片）', defaultPath: path.join(path.dirname(source), `${path.parse(source).name}_时间轴修复.mp4`), filters: [{ name: 'MP4 视频', extensions: ['mp4'] }] });
+    check(); if (selected.canceled || !selected.filePath) return { canceled: true };
+    const output = selected.filePath;
+    if (path.extname(output).toLowerCase() !== '.mp4') throw new Error('请选择新的 MP4 文件名');
+    try { await fs.promises.lstat(output); throw new Error('目标文件已经存在，请另选文件名；不会覆盖原片或其他文件'); } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
+    const confirmation = await dialog.showMessageBox(mainWindow!, { type: 'question', title: '确认修复时间轴', message: '无损保存为新 MP4 后继续编辑', detail: `原片（保留）：${source}\n新文件：${output}\n\n将读取完整录像并占用额外磁盘空间。仅调整时间轴和封装，不重新编码。原片和已保存方案不变，不迁移切点。跨盘保存会先在目标盘的受管临时目录完成复制。`, buttons: ['取消', '开始修复'], defaultId: 0, cancelId: 0 });
+    check(); if (confirmation.response !== 1) return { canceled: true };
+    const result = await repairToMp4({ source, output, temporaryRoot: getExternalTmpDir(hostDir), ffmpeg, ffprobe, signal: controller.signal, maintenance, indexes: streamPlayback.indexes, progress });
+    await files.authorize(result.output);
+    return { output: result.output };
+  })().catch(error => { if (controller.signal.aborted || error.name === 'AbortError') return { canceled: true }; throw error; }).finally(() => repairRequests.delete(key));
+  repairRequests.set(key, { owner: event.sender.id, controller, promise }); return promise;
+});
+handle('media:cancelRepair', (event, id: string) => { requestId(id); const key = `${event.sender.id}:${id}`; markCanceled(`repair:${key}`); repairRequests.get(key)?.controller.abort(); });
+
 // 降码画质抽样对比与硬件探测
 handle('compress:previewSamples', async (event, videoPath: string, timestampsMs: number[], config: CompressConfig, id: string) => {
   requestId(id); validateCompress(config); await files.check(videoPath);
@@ -325,6 +365,8 @@ handle('plan:list', async () => { const records = await planManager.listPlans();
 handle('plan:details', async () => { const result = await planManager.details(); rememberPlanOutputs(result.records); return result; });
 handle('plan:refresh', async () => { const result = await planManager.refreshPlans(); rememberPlanOutputs(result.records); return result; });
 handle('plan:load', async (_event, id: string) => { requestId(id); const record = await planManager.getPlan(id); if (!record) throw new Error('方案不存在'); await files.authorize(record.sourcePath); return record; });
+handle('plan:sourceBinding', async (_event, id: string) => { requestId(id); const result = await planManager.sourceBinding(id); await files.authorize(result.record.sourcePath); return result; });
+handle('plan:confirmSource', async (_event, id: string, token: string) => { requestId(id); requestId(token); return planManager.confirmSource(id, token); });
 handle('engine:state', async () => cuttingEngine.getState());
 handle('engine:retryPendingWrites', async () => cuttingEngine.retryPendingWrites());
 handle('plan:save', async (_event, record: PlanRecord) => { validateRecord(record); await files.check(record.sourcePath); return planManager.savePlan(record); });
@@ -453,16 +495,18 @@ app.whenReady().then(async () => {
   const tempPreviewDir = path.resolve(getExternalTmpDir(exeDir), 'preview_cache');
   maintenance = new CacheMaintenanceService(path.join(getExternalTmpDir(exeDir), '.cache-maintenance'), { busy: () => Boolean(cuttingEngine?.getActivePlanId()) || hasActiveMediaProcesses() });
   maintenance.protect(configService.getConfigPath(), path.join(configService.getDataDirectory(), 'plans'), path.join(exeDir, 'workspace.json'));
-  prober = new KeyframeProber(currentConfig.ffprobePath, exeDir, maintenance);
+  const mediaIndexes = new MediaIndexService(configService.getDataDirectory(), maintenance, currentConfig.ffprobePath);
+  prober = mediaIndexes.prober;
   cuttingEngine = new MediaCuttingEngine(currentConfig.ffmpegPath, tempSlicesDir, undefined, undefined, maintenance);
   cuttingEngine.updateTools(currentConfig.ffmpegPath, currentConfig.ffprobePath);
+  cuttingEngine.setInputProvider((file, signal) => prober.input(file, signal));
   planManager = new PlanManager(configService.getDataDirectory(), cuttingEngine, prober);
   batchCompression = new BatchCompressionService(configService, planManager, files);
   const previewLimiter = new MediaLimiter(() => cuttingEngine.getActivePlanId() ? 1 : 2);
   previewService = new CompressionPreviewService(currentConfig.ffmpegPath, tempPreviewDir, (config, signal) => cuttingEngine.probeEncoderSupport(config, signal), previewLimiter, maintenance);
   previewService.updateTools(currentConfig.ffmpegPath, currentConfig.ffprobePath);
   playbackService = new PlaybackPreviewService(path.resolve(getExternalTmpDir(exeDir), 'playback_cache'), currentConfig.ffmpegPath, currentConfig.ffprobePath, previewLimiter, maintenance);
-  streamPlayback = new StreamPlaybackSessionService(new StreamPlaybackIndexService(path.join(getExternalTmpDir(exeDir), 'stream_indexes'), currentConfig.ffprobePath, maintenance));
+  streamPlayback = new StreamPlaybackSessionService(mediaIndexes.streams);
   planManager.setChangeListener(change => { if (change.record) rememberPlanOutputs([change.record]); mainWindow?.webContents.send('plan:changed', change); });
   cuttingEngine.setStateListener(state => mainWindow?.webContents.send('engine:stateChanged', state));
   await planManager.ready;
@@ -582,6 +626,8 @@ app.on('before-quit', event => {
   void (async () => {
     scanRequests.forEach(request => request.controller.abort());
     compressionChecks.forEach(controller => controller.abort());
+    repairRequests.forEach(request => request.controller.abort());
+    await Promise.allSettled([...repairRequests.values()].map(request => request.promise));
     await Promise.allSettled([previewService?.shutdown(), playbackService?.shutdown(), streamPlayback?.shutdown(), prober?.shutdown(), cuttingEngine?.shutdown(), stopMediaProcesses()]);
     await stopMediaProcesses();
     await maintenance?.close();

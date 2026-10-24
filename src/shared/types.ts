@@ -43,6 +43,7 @@ export interface Segment {
 }
 
 export interface MediaMetadata {
+  sourceIdentity?: string;
   filePath: string;
   fileName: string;
   durationMs: number;
@@ -148,6 +149,9 @@ export interface MediaRetentionPlan {
 export type ExecutionStatus = 'ready' | 'queued' | 'processing' | 'completed' | 'failed';
 
 interface PlanRecordFields {
+  sourceIdentity?: string;
+  contentRevision?: string;
+  mediaIndexId?: string;
   exportPrecision?: ExportPrecision;
   id: string;
   title: string;

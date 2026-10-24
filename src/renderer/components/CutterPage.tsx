@@ -11,6 +11,7 @@ import { SpatialOverlay } from './SpatialOverlay';
 import { RetentionDraft, DraftSnapshot } from '../../shared/RetentionDraft';
 import { makeEven, hasSpatialEffects } from '../../shared/spatialFiltergraph';
 import { useAppData } from '../AppDataContext';
+import { TimelineRepairProgress } from '../../shared/timelineRepair';
 import {
   Film,
   Scissors,
@@ -59,6 +60,33 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const streamPreparation = useRef<string | null>(null);
   const pendingSelection = useRef<{ file: string; record?: PlanRecord | null } | null>(null);
   const previousActive = useRef(isActive);
+  const activeRef = useRef(isActive); activeRef.current = isActive;
+  const repairRequest = useRef<string | null>(null);
+  const [repairSource, setRepairSource] = useState<string | null>(null);
+  const [sourceConfirmation, setSourceConfirmation] = useState<{ record: PlanRecord; token: string; fileInfo?: { size: number; modifiedAt: string } } | null>(null);
+  const loadedRevision = useRef<string | undefined>(undefined);
+  const [repairProgress, setRepairProgress] = useState<TimelineRepairProgress | null>(null);
+  const [repairMessage, setRepairMessage] = useState('');
+  const [repairedOutput, setRepairedOutput] = useState<string | null>(null);
+  const [cancelingRepair, setCancelingRepair] = useState(false);
+  const cancelRepair = () => { if (repairRequest.current) { setCancelingRepair(true); void window.electronAPI?.cancelRepair(repairRequest.current).catch(() => {}); } };
+  useEffect(() => window.electronAPI?.onRepairProgress(progress => { if (repairRequest.current === progress.requestId) setRepairProgress(progress); }), []);
+  const startRepair = async () => {
+    const api = window.electronAPI;
+    if (!api || !repairSource || repairRequest.current) return;
+    const id = crypto.randomUUID(), epoch = loadEpoch.current;
+    repairRequest.current = id; setRepairMessage(''); setRepairedOutput(null); setCancelingRepair(false); setRepairProgress({ requestId: id, stage: 'checking' });
+    try {
+      const result = await api.repairTimeline(repairSource, id);
+      if (result.output) {
+        setRepairedOutput(result.output); setRepairSource(null);
+        setRepairMessage('已无损保存修复后的 MP4。原片和已保存方案保留；新草稿不继承原方案切点。');
+        // 已切换素材或离开工作台时，保留完成提示，由用户决定何时打开。
+        if (loadEpoch.current === epoch && activeRef.current) onRequestVideo(result.output);
+      } else setRepairMessage('已取消修复，原片和已保存方案保持不变。');
+    } catch (error) { setRepairMessage(`修复未完成：${String(error)}`); }
+    finally { if (repairRequest.current === id) { repairRequest.current = null; setRepairProgress(null); setCancelingRepair(false); } }
+  };
   const cancelStreamPreparation = () => { if (streamPreparation.current) void window.electronAPI?.closeStream(streamPreparation.current).catch(() => {}); streamPreparation.current = null; };
   const cancelScan = () => { if (scanId.current) void window.electronAPI?.cancelKeyframes(scanId.current).catch(() => {}); scanId.current = null; };
   const submitLock = useRef(false);
@@ -290,6 +318,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     loadEpoch.current++;
     cancelScan();
     cancelStreamPreparation();
+    if (repairRequest.current) void window.electronAPI?.cancelRepair(repairRequest.current).catch(() => {});
     for (const id of compareLeasesRef.current) releaseCompareLease(id);
   }, []);
 
@@ -466,8 +495,10 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
   // 流式素材先准备播放，精确时长与草稿等后台索引完成后再建立。
   const loadAndProbeVideo = async (filePath: string, recordToLoad?: PlanRecord | null) => {
+    setSourceConfirmation(null);
     cancelScan();
     cancelStreamPreparation();
+    cancelRepair(); setRepairSource(null);
     pendingSelection.current = { file: filePath, record: recordToLoad };
     const epoch = ++loadEpoch.current;
     const isCurrent = () => loadEpoch.current === epoch;
@@ -481,6 +512,14 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     setNotice(null);
     try {
       if (window.electronAPI) {
+        if (recordToLoad) {
+          const binding = await window.electronAPI.sourceBinding(recordToLoad.id);
+          if (!isCurrent()) return;
+          if (binding.token) { setSourceConfirmation({ record: binding.record, token: binding.token, fileInfo: binding.fileInfo }); setIsLoading(false); return; }
+          recordToLoad = binding.record;
+          if (recordToLoad.sourcePath !== filePath) throw new Error('方案素材路径已变化，请重新回载');
+        }
+        loadedRevision.current = recordToLoad?.contentRevision;
         const id = crypto.randomUUID(); streamPreparation.current = id;
         let snapshot = await window.electronAPI.openStream(filePath, id);
         if (!isCurrent()) { void window.electronAPI.closeStream(id); return; }
@@ -490,13 +529,17 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           setMetadata({ ...snapshot.preview, durationMs: 0, keyframes: [] });
           setCurrentTimeMs(0); setMainViewportMode('player'); setIsPreparingStream(true);
           while (!snapshot.complete) {
-            if (snapshot.error) throw new Error(snapshot.error);
+            if (snapshot.error) {
+              if (snapshot.errorCode !== 'TIMELINE_DISCONTINUITY') throw new Error(snapshot.error);
+              setRepairSource(filePath); setMetadata(null); setIsLoading(false);
+              setNotice({ type: 'warning', message: `已发现时间轴异常，正在完成本次只读分析 ${Math.floor(snapshot.progress)}%，修复将复用结果。` });
+            }
             await new Promise(resolve => setTimeout(resolve, 300));
             if (!isCurrent()) return;
             snapshot = await window.electronAPI.streamStatus(id);
           }
         }
-        if (snapshot?.error) throw new Error(snapshot.error);
+        if (snapshot?.error) { if (snapshot.errorCode === 'TIMELINE_DISCONTINUITY') setRepairSource(filePath); throw new Error(snapshot.error); }
         const basicMeta = snapshot?.metadata ?? await window.electronAPI.probeBasic(filePath);
 
         if (!isCurrent()) return;
@@ -913,11 +956,11 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     if (!draft.getOutputs().length) throw new Error('请至少保留一个片段');
     const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.getOutputs().length <= 1, title, exportCompressConfig, draft.stripOriginalCover, metadata.streams, draft?.exportPrecision);
     const planId = currentPlanId || `plan_${crypto.randomUUID()}`;
-    return draft.toRecord({
+    return { ...draft.toRecord({
       id: planId,
       title: title,
       outputPath: outPath,
-    });
+    }), sourceIdentity: metadata.sourceIdentity, contentRevision: loadedRevision.current };
   };
 
   // 打开存为方案输入弹窗
@@ -941,15 +984,16 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       const isUpdating = saveMode === 'update' && Boolean(currentPlanId);
       const targetId = isUpdating && currentPlanId ? currentPlanId : `plan_${crypto.randomUUID()}`;
 
-      const record = draft.toRecord({
+      const record = { ...draft.toRecord({
         id: targetId,
         title: trimmedTitle,
         outputPath: outPath,
-      });
+      }), sourceIdentity: metadata.sourceIdentity, contentRevision: isUpdating ? loadedRevision.current : undefined };
 
-      await window.electronAPI.savePlan(record);
+      const saved = await window.electronAPI.savePlan(record);
       if (epoch !== loadEpoch.current) return;
       setCurrentPlanId(targetId);
+      loadedRevision.current = saved.contentRevision;
       setCurrentPlanTitle(trimmedTitle);
       setShowSaveModal(false);
 
@@ -984,6 +1028,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       if (!record || !window.electronAPI) return;
       const res = await window.electronAPI.submitDraft(record);
       if (epoch !== loadEpoch.current) return;
+      loadedRevision.current = res.contentRevision;
       setCurrentPlanId(record.id); setCurrentPlanTitle(record.title);
       if (onPlanSaved) onPlanSaved();
 
@@ -1042,11 +1087,40 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     }
   };
 
+  const repairStages: Record<TimelineRepairProgress['stage'], string> = { checking: '检查修复条件', choosing: '选择新文件并确认', scanning: '分析时间轴断点', remuxing: '无损封装 MP4', validating: '检查修复结果', copying: '复制到目标磁盘', publishing: '保存完整 MP4' };
+  const repairPanel = (repairSource || repairProgress || repairMessage) && (
+    <div role="status" className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/10 text-sm text-amber-100 space-y-2 shrink-0">
+      {repairSource && <><p className="font-semibold">素材时间轴异常，可尝试修复后继续编辑</p><p className="text-xs break-all">原片：{repairSource}</p><p className="text-xs leading-relaxed">修复会读取整段录像，无损保存为新的 MP4，需要额外磁盘空间。原片和已保存方案都保留，不自动迁移切点。无法可靠修复的素材会停止处理。</p></>}
+      {repairProgress && <p>{cancelingRepair ? '正在取消并回收临时文件…' : repairStages[repairProgress.stage]}{!cancelingRepair && repairProgress.percent !== undefined ? ` ${Math.floor(repairProgress.percent)}%` : ''}</p>}
+      {repairMessage && <p className="text-xs whitespace-pre-wrap break-words">{repairMessage}</p>}
+      {repairedOutput && <p className="text-xs break-all">修复后的文件：{repairedOutput}</p>}
+      <div className="flex flex-wrap gap-3">
+        {repairProgress ? <button disabled={cancelingRepair} onClick={cancelRepair} className="px-3 py-1.5 rounded bg-white/10 disabled:opacity-50">取消修复</button> : repairSource && <><button onClick={() => void startRepair()} className="px-3 py-1.5 rounded bg-blue-600 text-white">修复并继续编辑</button><button onClick={() => { loadEpoch.current++; cancelStreamPreparation(); setIsPreparingStream(false); setRepairSource(null); setNotice(null); }} className="px-3 py-1.5 rounded bg-white/10">停止分析／暂不处理</button></>}
+        {repairedOutput && <><button onClick={() => onRequestVideo(repairedOutput)} className="px-3 py-1.5 rounded bg-white/10">打开修复后的 MP4</button><button onClick={() => void window.electronAPI?.showItemInFolder(repairedOutput)} className="px-3 py-1.5 rounded bg-white/10">打开文件位置</button></>}
+        {!repairProgress && repairMessage && <button onClick={() => { setRepairMessage(''); setRepairedOutput(null); }} className="px-3 py-1.5 rounded bg-white/10">关闭提示</button>}
+      </div>
+    </div>
+  );
+
   // 空状态视图
   if (!metadata) {
+    if (sourceConfirmation) return (
+      <div className="m-6 rounded-xl border border-amber-500/40 bg-amber-950/20 p-5 space-y-3 text-slate-200">
+        <h3 className="font-semibold">确认方案对应的素材</h3>
+        <p>方案：{sourceConfirmation.record.title}</p>
+        <p className="break-all">{sourceConfirmation.record.sourcePath}</p>
+        <p>记录时长：{sourceConfirmation.record.totalDurationMs === null ? '待确认' : `${(sourceConfirmation.record.totalDurationMs / 1000).toFixed(3)} 秒`}</p>
+        {sourceConfirmation.fileInfo && <p>当前文件：{(sourceConfirmation.fileInfo.size / 1024 ** 3).toFixed(3)} GiB；修改时间：{new Date(sourceConfirmation.fileInfo.modifiedAt).toLocaleString()}</p>}
+        <p>这个方案没有记录创建时的文件身份，软件无法确认当前文件是否被替换。同名、同时长也不能证明是原片。请确认当前素材与方案对应，确认后才使用原切点。</p>
+        <button className="rounded bg-blue-600 px-4 py-2 mr-3" onClick={() => { const pending = sourceConfirmation, epoch = loadEpoch.current; void window.electronAPI!.confirmSource(pending.record.id, pending.token).then(record => { if (loadEpoch.current === epoch) void loadAndProbeVideo(record.sourcePath, record); }).catch(error => setNotice({ type: 'error', message: String(error) })); }}>确认对应并打开</button>
+        <button className="rounded bg-white/10 px-4 py-2" onClick={() => { loadEpoch.current++; setSourceConfirmation(null); }}>取消</button>
+        {notice && <p className="text-rose-300">{notice.message}</p>}
+      </div>
+    );
     return (
       <div className="flex-1 h-full overflow-y-auto px-8 py-6">
         <div className="max-w-[1360px] mx-auto space-y-6">
+          {repairPanel}
           <input
             type="file"
             ref={fileInputRef}
@@ -1137,6 +1211,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   return (
     <div className="flex-1 h-full overflow-hidden px-4 sm:px-6 xl:px-8 py-3 flex flex-col relative min-h-0">
       <div className="w-full max-w-[1360px] mx-auto space-y-2 flex-1 flex flex-col min-h-0">
+        {repairPanel}
         {/* 工作台顶栏双模式解耦控制栏 */}
         <WorkbenchModeBar
           mode={workbenchMode}

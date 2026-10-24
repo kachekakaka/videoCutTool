@@ -382,7 +382,7 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                         <div role="progressbar" aria-label={`${plan.title}导出进度`} aria-valuemin={0} aria-valuemax={100}
                           aria-valuenow={progress?.percent ?? undefined} aria-valuetext={progressText}
                           className="h-1.5 overflow-hidden rounded-full bg-white/10">
-                          <div className={`h-full rounded-full ${progress?.stage === 'failed' ? 'bg-rose-400' : 'bg-blue-400'} ${progress?.percent == null ? 'w-1/3 animate-pulse' : 'transition-[width] duration-150'}`}
+                          <div className={`h-full rounded-full ${progress?.stage === 'failed' ? 'bg-rose-400' : 'bg-blue-400'} ${progress?.percent == null ? 'w-full animate-pulse opacity-30' : 'transition-[width] duration-150'}`}
                             style={progress?.percent != null ? { width: `${progress.percent}%` } : undefined} />
                         </div>
                       </div>

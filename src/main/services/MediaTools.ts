@@ -97,8 +97,13 @@ export interface ProbedFile {
 }
 const basicJobs = new Map<string, SharedJob<ProbedFile>>();
 const basicCache = new Map<string, { time: number; value: ProbedFile }>();
+let indexLookup: ((file: string) => Promise<ProbedFile | undefined>) | undefined;
+export function setMediaIndexLookup(lookup: typeof indexLookup) { indexLookup = lookup; }
 export async function probeFile(file: string, ffprobe: string, signal?: AbortSignal): Promise<ProbedFile> {
   if (closing || signal?.aborted) throw abortError();
+  const indexed = await indexLookup?.(file);
+  if (closing || signal?.aborted) throw abortError();
+  if (indexed) return structuredClone(indexed);
   const key = `${ffprobe}:${await fileIdentityAsync(file)}`;
   if (signal?.aborted) throw abortError();
   const cached = basicCache.get(key);
@@ -170,12 +175,14 @@ async function probeUncached(file: string, ffprobe: string, signal?: AbortSignal
 }
 export function fileIdentity(file: string): string {
   const stat = fs.statSync(file);
-  return `${path.resolve(file)}:${stat.size}:${stat.mtimeMs}`;
+  const resolved = path.resolve(file);
+  return `${process.platform === 'win32' ? resolved.toLowerCase() : resolved}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
 }
 export async function fileIdentityAsync(file: string): Promise<string> {
   const stat = await fs.promises.stat(file);
   if (!stat.isFile()) throw new Error('素材路径不是普通文件');
-  return `${path.resolve(file)}:${stat.size}:${stat.mtimeMs}`;
+  const resolved = path.resolve(file);
+  return `${process.platform === 'win32' ? resolved.toLowerCase() : resolved}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
 }
 /** 用解码后的首个展示帧校准播放副本，兼容缺少包 PTS 的 AVI。 */
 export async function presentationStartTime(file: string, info: ProbedFile, ffprobe: string, signal?: AbortSignal): Promise<MediaTime> {

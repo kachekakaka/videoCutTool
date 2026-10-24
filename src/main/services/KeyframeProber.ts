@@ -1,42 +1,34 @@
 import path from 'path';
-import fs from 'fs';
-import { PreviewCache } from './PreviewCache';
-import { CacheMaintenanceService, externalTemporaryDirectory } from './CacheMaintenanceService';
+import { CacheMaintenanceService } from './CacheMaintenanceService';
 import { KeyframePoint, MediaMetadata, MediaTime } from '../../shared/types';
 import { ceilMicroseconds, compareTime, formatMicroseconds, frameTime, millisecondsTime, rational, timeMs } from '../../shared/mediaTime';
-import { abortError, consumeJob, fileIdentityAsync, MediaLimiter, probeFile, ProbedFile, resolveTool, runMediaTool, SharedJob } from './MediaTools';
+import { abortError, consumeJob, fileIdentity, fileIdentityAsync, MediaLimiter, probeFile, ProbedFile, resolveTool, runMediaTool, SharedJob } from './MediaTools';
+import { MediaIndexStore } from './MediaIndexStore';
+import { StreamPlaybackIndexService } from './StreamPlaybackIndexService';
+import { openIndexedFlv } from './IndexedFlvInput';
+import { readMp4Keyframes } from './Mp4Index';
 
 interface FrameIndex { version: 5; identity: string; points: KeyframePoint[] }
 export class KeyframeProber {
   private ffprobePath: string;
-  private cache: PreviewCache;
   private pending = new Map<string, SharedJob<FrameIndex>>();
   private limiter = new MediaLimiter(() => 1);
   private frameWindows = new Map<string, { points: number[]; center: number }>();
   private closing = false;
-  constructor(preferredPath?: string, baseDir = process.cwd(), maintenance?: CacheMaintenanceService) {
+  constructor(readonly store: MediaIndexStore, readonly streamIndexes: StreamPlaybackIndexService, private readonly maintenance: CacheMaintenanceService, preferredPath?: string) {
     this.ffprobePath = resolveTool('ffprobe', preferredPath);
-    const external = externalTemporaryDirectory(baseDir);
-    this.cache = new PreviewCache(path.join(external, 'cache'), 'index', maintenance);
   }
   updateTool(preferredPath?: string) { this.ffprobePath = resolveTool('ffprobe', preferredPath); this.frameWindows.clear(); }
   async shutdown() { this.closing = true; await Promise.all([...this.pending.values()].map(job => { job.controller.abort(); return job.promise.catch(() => {}); })); }
-  private async readIndex(identity: string): Promise<FrameIndex | null> {
-    const use = await this.cache.lookup(identity);
-    if (!use) return null;
-    try {
-      const file = use.file;
-      if ((await fs.promises.stat(file)).size > 64 * 1024 ** 2) return null;
-      const data = JSON.parse(await fs.promises.readFile(file, 'utf8')) as FrameIndex;
-      if (data.version !== 5 || data.identity !== identity || !data.points.length || data.points.length > 500000) return null;
-      for (const point of data.points) {
-        if (!Number.isFinite(point.timeMs) || BigInt(point.time.denominator) <= 0n || !Number.isFinite(timeMs(point.time)) || Math.abs(timeMs(point.time) - point.timeMs) > 0.000001) return null;
-      }
-      if (data.points.some((point, index) => index > 0 && compareTime(data.points[index - 1].time, point.time) >= 0)) return null;
-      return data;
-    } catch { return null; } finally { use.release(); }
+  private async savedIndex(file: string): Promise<FrameIndex | null> {
+    const saved = await this.store?.find(file); if (saved?.kind !== 'frames') return null;
+    return this.store!.read<FrameIndex>(saved, index => {
+      if (!saved.usable || index.version !== 5 || typeof index.identity !== 'string' || !index.identity.endsWith(`:${saved.identity}`) || !Array.isArray(index.points) || !index.points.length) throw new Error('关键帧索引记录无效');
+      if (index.points.some((point, i) => !Number.isFinite(point.timeMs) || !Number.isFinite(timeMs(point.time)) || BigInt(point.time.denominator) <= 0n || Math.abs(timeMs(point.time) - point.timeMs) > .000001 || point.timeMs > saved.info.durationMs + 1000 || (i > 0 && compareTime(index.points[i - 1].time, point.time) >= 0))) throw new Error('关键帧索引时间无效');
+      return true;
+    });
   }
-  private async scan(file: string, info: ProbedFile, tool: string, signal: AbortSignal, full = false): Promise<{ points: KeyframePoint[]; missing: boolean }> {
+  private async scan(file: string, info: ProbedFile, tool: string, signal: AbortSignal): Promise<{ points: KeyframePoint[]; missing: boolean }> {
     let tail = '', missing = false;
     const frames: Array<Record<string, string>> = [];
     const line = (text: string) => {
@@ -46,7 +38,7 @@ export class KeyframeProber {
       frames.push(frame);
       if (frames.length > 500000) throw new Error('关键帧数量超过安全上限，请使用较短素材');
     };
-    await runMediaTool(tool, ['-v', 'error', '-select_streams', String(info.videoIndex), ...(!full ? ['-skip_frame', 'nokey'] : []), '-show_frames', '-show_entries', 'frame=key_frame,best_effort_timestamp,pts', '-of', 'compact=p=0', file], {
+    await runMediaTool(tool, ['-v', 'error', '-select_streams', String(info.videoIndex), '-skip_frame', 'nokey', '-show_frames', '-show_entries', 'frame=key_frame,best_effort_timestamp,pts', '-of', 'compact=p=0', file], {
       signal, captureOutput: false, onOutput: chunk => {
         const lines = (tail + chunk).split(/\r?\n/); tail = lines.pop() || '';
         if (tail.length > 16384) throw new Error('媒体扫描输出格式异常');
@@ -59,7 +51,7 @@ export class KeyframeProber {
   private async getIndex(file: string, info: ProbedFile, tool: string, signal?: AbortSignal): Promise<FrameIndex> {
     if (this.closing || signal?.aborted) throw abortError();
     const sourceIdentity = await fileIdentityAsync(file), identity = `${tool}:${sourceIdentity}`;
-    const cached = await this.readIndex(identity);
+    const cached = await this.savedIndex(file);
     if (this.closing || signal?.aborted) throw abortError();
     if (cached) return cached;
     let job = this.pending.get(identity);
@@ -68,16 +60,15 @@ export class KeyframeProber {
       const created: SharedJob<FrameIndex> = { controller, consumers: new Set(), promise: Promise.resolve(null as any) };
       created.promise = this.limiter.run(async () => {
         if (this.closing) throw abortError();
-        let result = await this.scan(file, info, tool, controller.signal);
-        if (!result.points.length || result.missing) result = await this.scan(file, info, tool, controller.signal, true);
+        const published = await this.savedIndex(file); if (published) return published;
+        const table = await readMp4Keyframes(file, info, controller.signal);
+        const result = table ? { points: table, missing: false } : await this.scan(file, info, tool, controller.signal);
+        if (result.missing) throw new Error('关键帧时间戳不完整，不能可靠建立索引；未再次扫描原片');
         if (!result.points.length) throw new Error('没有取得有效关键帧时间戳，请检查素材或媒体工具后重试');
         if (await fileIdentityAsync(file) !== sourceIdentity) throw new Error('扫描期间源视频发生变化，请重新载入');
         const index: FrameIndex = { version: 5, identity, points: result.points };
         if (controller.signal.aborted || this.closing) throw abortError();
-        const use = await this.cache.acquire(identity, '.json');
-        try { if (use.fresh) { await fs.promises.writeFile(use.file, JSON.stringify(index), { flag: 'wx' }); await this.cache.maintenance.ready(use.file); } }
-        catch (error) { await this.cache.fail(use); throw error; }
-        finally { use.release(); this.cache.maintenance.schedule(); }
+        await this.store.publish(file, sourceIdentity, 'frames', info, index);
         return index;
       }, controller.signal).finally(() => { if (this.pending.get(identity) === created) this.pending.delete(identity); });
       job = created; this.pending.set(identity, job);
@@ -97,30 +88,40 @@ export class KeyframeProber {
     return [...unique.values()].sort((a, b) => compareTime(a.time, b.time));
   }
   async probeBasic(file: string, signal?: AbortSignal): Promise<MediaMetadata> {
-    this.cache.maintenance.protect(file);
+    this.maintenance.protect(file);
     if (this.closing) throw abortError();
-    const tool = this.ffprobePath, info = await probeFile(file, tool, signal);
-    const index = await this.readIndex(`${tool}:${await fileIdentityAsync(file)}`);
+    const identity = await fileIdentityAsync(file), tool = this.ffprobePath, info = await probeFile(file, tool, signal);
+    const index = await this.savedIndex(file);
     if (this.closing || signal?.aborted) throw abortError();
+    if (await fileIdentityAsync(file) !== identity) throw new Error('读取期间素材已变化，请重新打开');
     return this.toMetadata(file, info, index?.points);
   }
   async probeKeyframes(file: string, signal?: AbortSignal): Promise<number[]> {
-    this.cache.maintenance.protect(file);
-    if (this.closing || signal?.aborted) throw abortError();
-    const tool = this.ffprobePath, info = await probeFile(file, tool, signal);
-    return (await this.getIndex(file, info, tool, signal)).points.map(point => Math.max(0, point.timeMs));
+    return (await this.probe(file, signal)).keyframes;
   }
   async probe(file: string, signal?: AbortSignal): Promise<MediaMetadata> {
-    this.cache.maintenance.protect(file);
+    this.maintenance.protect(file);
     if (this.closing || signal?.aborted) throw abortError();
+    const identity = await fileIdentityAsync(file);
+    const streamed = await this.streamIndexes?.complete(file, signal);
+    if (streamed) { if (streamed.discontinuity) throw new Error(streamed.discontinuity); return this.streamIndexes!.metadataFor(file, streamed); }
     const tool = this.ffprobePath, info = await probeFile(file, tool, signal);
-    return this.toMetadata(file, info, (await this.getIndex(file, info, tool, signal)).points);
+    if (await fileIdentityAsync(file) !== identity) throw new Error('读取期间素材已变化，请重新打开');
+    const index = await this.getIndex(file, info, tool, signal);
+    if (await fileIdentityAsync(file) !== identity) throw new Error('读取期间素材已变化，请重新打开');
+    return this.toMetadata(file, info, index.points);
+  }
+  async input(file: string, signal?: AbortSignal): Promise<{ url: string; close: () => Promise<void> }> {
+    if (await this.streamIndexes?.identify(file) !== 'flv') return { url: file, close: async () => {} };
+    const data = await this.streamIndexes!.complete(file, signal);
+    if (!data || data.discontinuity || data.keys.some(k => k.dtsMs === undefined)) throw new Error('素材没有可用的 FLV 导出索引');
+    return openIndexedFlv(file, data.keys.map(k => ({ position: k.position, dtsMs: k.dtsMs! })), data.durationMs + data.originUs / 1000, signal);
   }
   private toMetadata(file: string, info: ProbedFile, points?: KeyframePoint[]): MediaMetadata {
-    return { filePath: file, fileName: path.basename(file), durationMs: info.durationMs, width: info.width, height: info.height, displayAspectRatio: info.displayAspectRatio, fps: info.fps, keyframes: points?.map(point => Math.max(0, point.timeMs)) || [0], keyframePoints: points, timeOrigin: info.origin, streams: info.streams };
+    return { sourceIdentity: fileIdentity(file), filePath: file, fileName: path.basename(file), durationMs: info.durationMs, width: info.width, height: info.height, displayAspectRatio: info.displayAspectRatio, fps: info.fps, keyframes: points?.map(point => Math.max(0, point.timeMs)) || [0], keyframePoints: points, timeOrigin: info.origin, streams: info.streams };
   }
   async adjacentFrame(file: string, currentMs: number, direction: number): Promise<number> {
-    this.cache.maintenance.protect(file);
+    this.maintenance.protect(file);
     if (this.closing || !Number.isFinite(currentMs) || currentMs < 0 || ![-1, 1].includes(direction)) throw new Error('逐帧参数无效');
     const tool = this.ffprobePath, identity = `${tool}:${await fileIdentityAsync(file)}`;
     const cached = this.frameWindows.get(identity);

@@ -94,8 +94,12 @@ The central repository and UI module for creating, viewing, updating, deleting (
 _Avoid_: Task queue, history list, plan store
 
 **Plan Record**:
-针对单个源视频持久化保存的方案记录，包含输出位置、保留决策、处理参数与最近执行状态。批量压缩创建的记录限定为整片压缩，允许准确时长尚未确认，独立编辑和执行，不与同次创建的其他记录保持参数联动；保存成功表示处理意图已持久化，不代表素材已通过完整媒体检查。
+针对单个源视频持久化保存的方案记录，包含输出位置、保留决策、处理参数与最近执行状态。裁剪记录还保存用户已确认的源文件版本、内容修订和共享索引引用；纯执行状态更新不改变内容修订，旧记录未确认对应关系前不能执行原切点。批量压缩创建的记录限定为整片压缩，允许准确时长尚未确认，独立编辑和执行，不与同次创建的其他记录保持参数联动；保存成功表示处理意图已持久化，不代表素材已通过完整媒体检查。
 _Avoid_: Task, job record, cut file
+
+**Media Index（媒体索引）**:
+与具体源文件版本绑定的定位与时间轴信息，不包含视频或音频内容；同一视频的多个 Plan Record 共享一份，完整索引持久保留，方案解除引用不会删除索引，也不按闲置媒体缓存自动淘汰。索引不替代原片，文件变化或索引失效后不能继续据此定位，失效不等于删除。
+_Avoid_: 视频副本, 整片播放缓存
 
 **Data Directory**:
 The user-designated persistent directory hosting the runtime application configuration (`config.json`), saved plan records (`plans/`), and localized user data, completely isolated from application source code.

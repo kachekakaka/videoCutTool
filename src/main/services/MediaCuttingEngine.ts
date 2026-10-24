@@ -43,6 +43,8 @@ export class MediaCuttingEngine {
   private progress: ExecutionProgress | null = null;
   private progressRun: symbol | null = null;
   private tracker?: ExecutionProgressTracker;
+  private inputProvider?: (file: string, signal?: AbortSignal) => Promise<{ url: string; close: () => Promise<void> }>;
+  setInputProvider(provider: NonNullable<MediaCuttingEngine['inputProvider']>) { this.inputProvider = provider; }
 
   private maintenance: CacheMaintenanceService;
   private ownsMaintenance: boolean;
@@ -117,6 +119,7 @@ export class MediaCuttingEngine {
       });
       let final: PlanRecord;
       try {
+        if (processing.sourceIdentity && processing.sourceIdentity !== await fileIdentityAsync(processing.sourcePath)) throw new Error('排队期间素材已变化，原方案切点未执行');
         const execution = this.executionSnapshot();
         execution.tracker = tracker;
         let plan: MediaRetentionPlan;
@@ -225,7 +228,9 @@ export class MediaCuttingEngine {
     const endUs = ceilMicroseconds(addTime(millisecondsTime(segment.safeRange.endMs), offset));
     if (endUs <= startUs) throw new Error('保留区间没有有效时长');
     const info = prepared || await probeFile(source, this.ffprobePath, signal);
-    const originUs = ceilMicroseconds(info.origin), targetUs = startUs + originUs;
+    const originUs = ceilMicroseconds(info.origin);
+    // 音频可能比首幅视频更早；保留片头时以首幅视频核验关键帧，不能把公共零点当作视频包。
+    const targetUs = originUs + (startUs === 0n && !segment.seekTime ? ceilMicroseconds(millisecondsTime(info.videoStartMs)) : startUs);
     // 只在执行裁剪时读取切点附近的包；用关键帧 DTS 定位，避免 B 帧导致退到前一个 GOP。
     const packets = JSON.parse(await runMediaTool(this.ffprobePath, ['-v', 'error', '-select_streams', String(info.videoIndex), '-read_intervals', `${formatMicroseconds(targetUs > 1000000n ? targetUs - 1000000n : 0n)}%${formatMicroseconds(targetUs + 1000000n)}`, '-show_packets', '-show_data_hash', 'crc32', '-show_entries', 'packet=pts_time,dts_time,flags,data_hash', '-of', 'json', source], { signal, timeoutMs: 30000 })).packets || [];
     const key = packets.find((p: any) => p.flags?.includes('K') && Number.isFinite(Number(p.dts_time)) && Math.abs(Number(p.pts_time) * 1e6 - Number(targetUs)) <= 2);
@@ -233,7 +238,10 @@ export class MediaCuttingEngine {
     const decodeUs = BigInt(Math.round(Number(key.dts_time) * 1e6));
     const durationUs = endUs + originUs - decodeUs;
     const mp4 = ['.mp4', '.mov', '.m4v'].includes(path.extname(output).toLowerCase());
-    await this.runStep(progressKey, ['-n', '-seek2any', '1', '-seek_timestamp', '1', '-ss', formatMicroseconds(decodeUs), '-i', source, '-t', formatMicroseconds(durationUs), '-c', 'copy', '-avoid_negative_ts', 'make_zero', ...(mp4 ? ['-movie_timescale', '720000'] : []), ...streams.flatMap(stream => ['-map', `0:${stream.index}`]), ...this.audioDispositions(streams), output], Number(durationUs) / 1000, signal);
+    // FLV 片头不作输入寻址；其他位置可能退回较早的 GOP，保留源时间戳后
+    // 再按目标 DTS 丢弃前置包，避免错误起帧。仍逐段流复制，不生成整片副本。
+    const inputSeek = decodeUs > originUs ? ['-seek2any', '1', '-seek_timestamp', '1', '-ss', formatMicroseconds(decodeUs)] : [];
+    await this.runStep(progressKey, ['-n', '-copyts', ...inputSeek, '-i', source, '-ss', formatMicroseconds(decodeUs), '-t', formatMicroseconds(durationUs), '-c', 'copy', '-avoid_negative_ts', 'make_zero', ...(mp4 ? ['-movie_timescale', '720000'] : []), ...streams.flatMap(stream => ['-map', `0:${stream.index}`]), ...this.audioDispositions(streams), output], Number(durationUs) / 1000, signal);
     const first = JSON.parse(await runMediaTool(this.ffprobePath, ['-v', 'error', '-select_streams', 'V:0', '-read_intervals', '%+#1', '-show_packets', '-show_data_hash', 'crc32', '-show_entries', 'packet=pts_time,flags,data_hash', '-of', 'json', output], { signal, timeoutMs: 30000 })).packets?.[0];
     if (!first?.flags?.includes('K') || first.data_hash !== key.data_hash) throw new Error('导出首帧与方案关键帧不符，已停止发布输出');
   }
@@ -273,6 +281,7 @@ export class MediaCuttingEngine {
     const worker = new MediaCuttingEngine(this.ffmpegPath, path.dirname(this.tmpDir), undefined, undefined, this.maintenance);
     worker.updateTools(this.ffmpegPath, this.ffprobePath);
     worker.cachedEncoders = this.cachedEncoders; worker.encoderJobs = this.encoderJobs;
+    worker.inputProvider = this.inputProvider;
     return worker;
   }
   executeRawPlan(plan: MediaRetentionPlan, signal?: AbortSignal): Promise<CutResult> { return this.executionSnapshot().executeSnapshot(plan, signal); }
@@ -326,10 +335,13 @@ export class MediaCuttingEngine {
     await this.tempReady;
     const directory = await this.maintenance.create(this.tmpDir, 'task', '');
     return this.maintenance.task(directory, async () => {
+    let indexedInput: { url: string; close: () => Promise<void> } | undefined;
     try {
       if (!plan.outputs.length || (!compressionOnly && plan.outputs.some(output => !output.planSegments.length))) throw new Error('未选择任何保留片段');
       const destination = resolveOutputDirectory(plan.sourcePath, plan.title, compressionOnly);
+      const sourceIdentity = await fileIdentityAsync(plan.sourcePath);
       const info = prepared || await probeFile(plan.sourcePath, this.ffprobePath, signal);
+      if (!compressionOnly) indexedInput = await this.inputProvider?.(plan.sourcePath, signal);
       const streams = retainedStreams(info.streams, plan.stripOriginalCover !== false);
       const precise = plan.exportPrecision === 'frame';
       if (precise && (compressionOnly || plan.compress?.enabled)) throw new Error('精确导出不能同时使用智能降码或整片压缩');
@@ -355,7 +367,7 @@ export class MediaCuttingEngine {
           encoder = 'cpu'; await work(encoder, true);
         }
       };
-      let source = plan.sourcePath, sourceStreams = streams, seekOffset: MediaTime = millisecondsTime(0), sourceInfo = info;
+      let source = indexedInput?.url || plan.sourcePath, sourceStreams = streams, seekOffset: MediaTime = millisecondsTime(0), sourceInfo = info;
       const repairTimestamps = !precise && await needsTimestampRepair(source, info, this.ffprobePath, signal);
       const durations = plan.outputs.map(output => compressionOnly ? [info.durationMs] : output.planSegments.map(segment => segment.safeRange.endMs - Number(ceilMicroseconds(segment.seekTime || millisecondsTime(segment.safeRange.startMs))) / 1000));
       const outputCount = plan.outputs.length;
@@ -386,7 +398,7 @@ export class MediaCuttingEngine {
       for (let i = 0; i < plan.outputs.length; i++) {
         const filePlan = plan.outputs[i];
         if (precise) {
-          const output = await exportPreciseFile({ plan, filePlan, fileIndex: i, info, streams, directory, ffprobe: this.ffprobePath, signal,
+          const output = await exportPreciseFile({ plan: { ...plan, sourcePath: source }, filePlan, fileIndex: i, info, streams, directory, ffprobe: this.ffprobePath, signal,
             run: (key, args, duration, abort) => this.runStep(key, args, duration, abort), allowFile: file => this.maintenance.allowTaskFile(directory, file) });
           this.tracker?.stage('verifying', i + 1, outputCount);
           await this.verify(output, streams, signal, true);
@@ -426,6 +438,7 @@ export class MediaCuttingEngine {
         this.tracker?.finishOperation(`verify:${i}`);
       }
       await fs.promises.mkdir(destination, { recursive: true });
+      if (await fileIdentityAsync(plan.sourcePath) !== sourceIdentity) throw new Error('导出期间原片发生变化，未发布结果');
       const timestamp = formatTaskTimestamp();
       for (let attempt = 0; attempt < 10; attempt++) {
         if (signal?.aborted) throw new Error('操作已取消');
@@ -446,6 +459,7 @@ export class MediaCuttingEngine {
       throw new Error('输出目录持续出现同名文件，未覆盖已有文件，请重试');
     } catch (error) { return { success: false, outputPath: plan.outputPath, error: error instanceof Error ? error.message : String(error) }; }
     finally {
+      await indexedInput?.close().catch(error => console.warn('索引输入关闭失败：', error));
       await this.maintenance.abandon(directory).catch(error => console.warn('本次切片缓存收尾失败：', error));
     this.maintenance.release(directory); await this.maintenance.sweep();
     }

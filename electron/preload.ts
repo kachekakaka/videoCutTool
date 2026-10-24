@@ -39,6 +39,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   streamStatus: id => ipcRenderer.invoke('media:streamStatus', id),
   streamFrame: (id, time, direction) => ipcRenderer.invoke('media:streamFrame', id, time, direction),
   closeStream: id => ipcRenderer.invoke('media:closeStream', id),
+  repairTimeline: (file, id) => ipcRenderer.invoke('media:repairTimeline', file, id),
+  cancelRepair: id => ipcRenderer.invoke('media:cancelRepair', id),
+  onRepairProgress: callback => subscribe('media:repairProgress', callback),
   onPreviewProgress: callback => subscribe('media:previewProgress', callback),
 
   // 降码与画质对比预览
@@ -68,6 +71,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 方案管理
   listPlans: (): Promise<PlanRecord[]> => ipcRenderer.invoke('plan:list'),
   loadPlan: id => ipcRenderer.invoke('plan:load', id),
+  sourceBinding: id => ipcRenderer.invoke('plan:sourceBinding', id),
+  confirmSource: (id, token) => ipcRenderer.invoke('plan:confirmSource', id, token),
   getPlanDetails: () => ipcRenderer.invoke('plan:details'),
   refreshPlans: () => ipcRenderer.invoke('plan:refresh'),
   onPlanChanged: callback => subscribe('plan:changed', callback),

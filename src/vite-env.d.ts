@@ -30,6 +30,9 @@ export interface ElectronAPI {
   streamStatus: (id: string) => Promise<import('./shared/streamPlayback').StreamPlaybackSnapshot>;
   streamFrame: (id: string, time: number, direction: -1 | 0 | 1) => Promise<import('./shared/streamPlayback').StreamFrameTarget>;
   closeStream: (id: string) => Promise<void>;
+  repairTimeline: (file: string, id: string) => Promise<import('./shared/timelineRepair').TimelineRepairResult>;
+  cancelRepair: (id: string) => Promise<void>;
+  onRepairProgress: (callback: (progress: import('./shared/timelineRepair').TimelineRepairProgress) => void) => () => void;
   releaseCompressionPreview: (id: string) => Promise<void>;
   onPreviewProgress: (callback: (progress: PreviewProgress) => void) => () => void;
 
@@ -44,13 +47,15 @@ export interface ElectronAPI {
   probeHardwareEncoder: (config?: CompressConfig) => Promise<'cpu' | 'nvenc' | 'qsv'>;
 
   // 剪辑执行与后台引擎
-  submitDraft: (record: PlanRecord) => Promise<{ queued: boolean; active: boolean }>;
+  submitDraft: (record: PlanRecord) => Promise<{ queued: boolean; active: boolean; contentRevision?: string }>;
   onPlanStatusChanged: (callback: (event: { planId: string; status: ExecutionStatus; outputPath?: string; error?: string; record?: PlanRecord }) => void) => () => void;
   onPlanCompleted: (callback: (event: { planId: string; status: 'completed'; outputPath?: string; record?: PlanRecord }) => void) => () => void;
 
   // 方案管理
   listPlans: () => Promise<PlanRecord[]>;
   loadPlan: (id: string) => Promise<PlanRecord>;
+  sourceBinding: (id: string) => Promise<{ record: PlanRecord; identity: string; token?: string; fileInfo?: { size: number; modifiedAt: string } }>;
+  confirmSource: (id: string, token: string) => Promise<PlanRecord>;
   getPlanDetails: () => Promise<PlanListResult>;
   refreshPlans: () => Promise<PlanListResult>;
   onPlanChanged: (callback: (change: PlanChange) => void) => () => void;

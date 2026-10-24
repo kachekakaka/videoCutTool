@@ -141,7 +141,7 @@ export class CacheMaintenanceService {
       try {
         const pointer = path.join(this.registryDirectory, name); await this.safePath(pointer);
         const item = JSON.parse(await fs.promises.readFile(pointer, 'utf8'));
-        if (item.version !== 1 || name !== `${item.id}.json` || !path.isAbsolute(item.directory) || path.basename(item.directory) !== 'managed' || !['playback_cache', 'preview_cache', 'cache', 'slices', 'stream_indexes'].includes(path.basename(path.dirname(item.directory)))) throw new Error('历史根登记不合法');
+        if (item.version !== 1 || name !== `${item.id}.json` || !path.isAbsolute(item.directory) || path.basename(item.directory) !== 'managed' || !['playback_cache', 'preview_cache', 'cache', 'slices', 'stream_indexes', 'index-staging'].includes(path.basename(path.dirname(item.directory)))) throw new Error('历史根登记不合法');
         await this.serial(async () => { if (!this.roots.has(key(item.directory))) { const root = await this.claim(item.directory, item.id); if (root.owned) this.roots.set(key(item.directory), root); } });
       } catch (e) { this.report(name, e); }
     }
@@ -275,6 +275,7 @@ export class CacheMaintenanceService {
           return;
         }
         if (entry.state === 'ready' && entry.kind !== 'task') {
+          if (entry.kind === 'index') { statistics.protected++; return; }
           if (this.options.busy?.()) { statistics.delayed++; return; }
           const policy = this.options.policies?.[entry.kind] ?? CACHE_POLICIES[entry.kind], total = totals.get(entry.kind)!;
           if (now - entry.released < policy.grace || (now - entry.used < policy.ttl && total.bytes <= policy.bytes && total.count <= policy.count)) { statistics.delayed++; return; }
