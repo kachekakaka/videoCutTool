@@ -37,11 +37,18 @@ export class StreamPlaybackController {
   }
   async start() {
     this.adopt(this.snapshot);
-    while (!this.externalIndex.times.length && !this.closed) { await delay(100); if (!this.closed) this.adopt(await window.electronAPI!.streamStatus(this.snapshot.id)); }
+    // 首次与复用索引都从完整时长启动，避免文件头时长为零时留下半初始化播放器。
+    while (!this.snapshot.complete && !this.closed) {
+      await delay(300);
+      if (this.closed) return;
+      const snapshot = await window.electronAPI!.streamStatus(this.snapshot.id);
+      if (!this.closed) this.adopt(snapshot);
+    }
     if (this.closed) return;
+    if (!this.externalIndex.times.length || !Number.isFinite(this.snapshot.durationMs) || !(this.snapshot.durationMs > 0)) throw new Error('完整定位索引缺少有效时长或关键帧');
     if (!mpegts.isSupported()) throw new Error('当前环境不支持流式视频解码');
     const config = { enableWorker: false, enableWorkerForMSE: false, accurateSeek: true, lazyLoad: true, lazyLoadMaxDuration: 30, lazyLoadRecoverDuration: 10, autoCleanupSourceBuffer: true, autoCleanupMaxBackwardDuration: 20, autoCleanupMinBackwardDuration: 10, enableStashBuffer: false, fixAudioTimestampGap: false, vctExternalIndex: this.externalIndex, vctPreciseVideo: true };
-    this.player = mpegts.createPlayer({ type: this.snapshot.container, isLive: false, url: this.snapshot.url, ...(this.snapshot.complete ? { duration: this.snapshot.durationMs + this.snapshot.offsetMs } : {}) }, config);
+    this.player = mpegts.createPlayer({ type: this.snapshot.container, isLive: false, url: this.snapshot.url, duration: this.snapshot.durationMs + this.snapshot.offsetMs }, config);
     this.player.on(mpegts.Events.ERROR, (_type: string, _detail: string, info: unknown) => { if (!this.closed) { this.failure = `流式播放失败：${typeof info === 'object' ? JSON.stringify(info) : String(info)}`; this.pause(); this.observer.error(this.failure); } });
     this.frameCallback = this.video.requestVideoFrameCallback(this.onFrame);
     this.player.attachMediaElement(this.video); this.player.load();
@@ -49,7 +56,6 @@ export class StreamPlaybackController {
     const first = this.snapshot.index.times[0];
     this.initial = () => { if (!this.closed && !this.presented) this.player!.currentTime = Math.max(0, first + 0.5) / 1000; };
     this.video.addEventListener('loadedmetadata', this.initial, { once: true });
-    if (!this.snapshot.complete) void this.poll();
     const began = performance.now();
     while (!this.closed && !this.presented) {
       if (this.failure) throw new Error(this.failure);
@@ -57,11 +63,6 @@ export class StreamPlaybackController {
       await delay(20);
     }
     this.initialized = !this.closed;
-  }
-  private async poll() {
-    try {
-      while (!this.closed && !this.snapshot.complete) { await delay(500); if (!this.closed) this.adopt(await window.electronAPI!.streamStatus(this.snapshot.id)); }
-    } catch (error) { if (!this.closed) { this.failure = String(error); this.pause(); this.observer.error(this.failure); } }
   }
   private onFrame = (now: number, metadata: VideoFrameCallbackMetadata) => {
     if (this.closed) return;

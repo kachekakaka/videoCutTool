@@ -116,7 +116,12 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const submitLock = useRef(false);
   const [metadata, setMetadata] = useState<MediaMetadata | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isPreparingStream, setIsPreparingStream] = useState(false);
+  const [streamPreparationProgress, setStreamPreparationProgress] = useState<number | null>(null);
+  const cancelVideoPreparation = () => {
+    loadEpoch.current++; pendingSelection.current = null;
+    cancelScan(); cancelStreamPreparation();
+    setIsLoading(false); setStreamPreparationProgress(null); setMetadata(null); setRepairSource(null); setNotice(null);
+  };
   const [isKeyframeScanning, setIsKeyframeScanning] = useState(false);
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
@@ -517,7 +522,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     e.target.value = '';
   };
 
-  // 流式素材先准备播放，精确时长与草稿等后台索引完成后再建立。
+  // 先取得完整索引，再建立草稿和播放器；首次加载与索引复用走同一初始化路径。
   const loadAndProbeVideo = async (filePath: string, recordToLoad?: PlanRecord | null) => {
     setSourceConfirmation(null);
     cancelScan();
@@ -529,7 +534,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     playerRef.current?.pause();
     invalidateComparePreview();
     setIsLoading(true);
-    setIsPreparingStream(false);
+    setStreamPreparationProgress(null);
     setDraft(null);
     setMetadata(null);
     setIsKeyframeScanning(false);
@@ -549,10 +554,10 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         if (!isCurrent()) { void window.electronAPI.closeStream(id); return; }
         const streaming = Boolean(snapshot);
         if (snapshot && !snapshot.complete) {
-          // 时长为未知状态；不据此建立草稿或覆盖已保存方案。
-          setMetadata({ ...snapshot.preview, durationMs: 0, keyframes: [] });
-          setCurrentTimeMs(0); setMainViewportMode('player'); setIsPreparingStream(true);
+          // 不挂载播放器，避免在时长未知时创建 MSE；准备引用继续持有同一次分析。
+          setCurrentTimeMs(0); setMainViewportMode('player');
           while (!snapshot.complete) {
+            setStreamPreparationProgress(Math.max(0, Math.min(99, Math.floor(snapshot.progress))));
             if (snapshot.error) {
               if (snapshot.errorCode !== 'TIMELINE_DISCONTINUITY') throw new Error(snapshot.error);
               setRepairSource(filePath); setMetadata(null); setIsLoading(false);
@@ -561,6 +566,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             await new Promise(resolve => setTimeout(resolve, 300));
             if (!isCurrent()) return;
             snapshot = await window.electronAPI.streamStatus(id);
+            if (!isCurrent()) return;
           }
         }
         if (snapshot?.error) { if (snapshot.errorCode === 'TIMELINE_DISCONTINUITY') setRepairSource(filePath); throw new Error(snapshot.error); }
@@ -598,9 +604,9 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         setDraft(newDraft);
         setDraftVersion((v) => v + 1);
 
-        // 瞬间解除整屏加载遮罩，播放器立即挂载并可播放
+        // 完整元数据与草稿就绪后挂载播放器；准备引用释放后仍可复用已发布索引。
         setIsLoading(false);
-        setIsPreparingStream(false);
+        setStreamPreparationProgress(null);
         cancelStreamPreparation();
         pendingSelection.current = null;
 
@@ -628,7 +634,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       console.error('探测视频失败:', err);
       setNotice({ type: 'error', message: err.message || '探测视频元数据失败' });
       setIsLoading(false);
-      setIsPreparingStream(false);
+      setStreamPreparationProgress(null);
       cancelStreamPreparation();
       pendingSelection.current = null;
       setMetadata(null);
@@ -1120,7 +1126,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       {repairMessage && <p className="text-xs whitespace-pre-wrap break-words">{repairMessage}</p>}
       {repairedOutput && <p className="text-xs break-all">修复后的文件：{repairedOutput}</p>}
       <div className="flex flex-wrap gap-3">
-        {repairProgress ? <button disabled={cancelingRepair} onClick={cancelRepair} className="px-3 py-1.5 rounded bg-white/10 disabled:opacity-50">取消修复</button> : repairSource && <><button onClick={() => void startRepair()} className="px-3 py-1.5 rounded bg-blue-600 text-white">修复并继续编辑</button><button onClick={() => { loadEpoch.current++; cancelStreamPreparation(); setIsPreparingStream(false); setRepairSource(null); setNotice(null); }} className="px-3 py-1.5 rounded bg-white/10">停止分析／暂不处理</button></>}
+        {repairProgress ? <button disabled={cancelingRepair} onClick={cancelRepair} className="px-3 py-1.5 rounded bg-white/10 disabled:opacity-50">取消修复</button> : repairSource && <><button onClick={() => void startRepair()} className="px-3 py-1.5 rounded bg-blue-600 text-white">修复并继续编辑</button><button onClick={cancelVideoPreparation} className="px-3 py-1.5 rounded bg-white/10">停止分析／暂不处理</button></>}
         {repairedOutput && <><button onClick={() => onRequestVideo(repairedOutput)} className="px-3 py-1.5 rounded bg-white/10">打开修复后的 MP4</button><button onClick={() => void window.electronAPI?.showItemInFolder(repairedOutput)} className="px-3 py-1.5 rounded bg-white/10">打开文件位置</button></>}
         {!repairProgress && repairMessage && <button onClick={() => { setRepairMessage(''); setRepairedOutput(null); }} className="px-3 py-1.5 rounded bg-white/10">关闭提示</button>}
       </div>
@@ -1146,6 +1152,16 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       <div className="flex-1 h-full overflow-y-auto px-8 py-6">
         <div className="max-w-[1360px] mx-auto space-y-6">
           {repairPanel}
+          {isLoading && (
+            <div role="status" className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-4 text-sm text-zinc-200 space-y-3">
+              <p className="font-medium">{streamPreparationProgress === null ? '正在准备视频信息' : `正在建立定位索引 ${streamPreparationProgress}%`}</p>
+              <p className="text-xs text-zinc-400">完成后即可播放、拖动定位和逐帧编辑。索引会保存，之后打开同一视频可直接复用。</p>
+              {streamPreparationProgress !== null && <div role="progressbar" aria-label="建立定位索引" aria-valuemin={0} aria-valuemax={100} aria-valuenow={streamPreparationProgress} className="h-1.5 rounded-full bg-black/30 overflow-hidden">
+                <div className="h-full bg-blue-500 transition-[width]" style={{ width: `${streamPreparationProgress}%` }} />
+              </div>}
+              <button onClick={cancelVideoPreparation} className="rounded-lg border border-white/15 px-3 py-1.5 hover:bg-white/10">取消准备</button>
+            </div>
+          )}
           <input
             type="file"
             ref={fileInputRef}
@@ -1200,7 +1216,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             </div>
             <h3 className="text-base font-bold text-white mb-1.5">
               {isLoading
-                ? '正在读取视频信息...'
+                ? streamPreparationProgress !== null ? '正在准备视频，请等待索引完成' : '正在读取视频信息...'
                 : isDraggingOver
                 ? '松开鼠标即可立即载入视频！'
                 : '点击或直接拖入待裁剪视频'}
@@ -1269,7 +1285,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               videoWidth={metadata.width}
               videoHeight={metadata.height}
               displayAspectRatio={metadata.displayAspectRatio}
-              isActive={isActive && (!isLoading || isPreparingStream) && mainViewportMode === 'player'}
+              isActive={isActive && !isLoading && mainViewportMode === 'player'}
               shortcutsEnabled={shortcutsEnabled && mainViewportMode === 'player'}
               onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
               onPlayStateChange={(playing) => setIsPlaying(playing)}

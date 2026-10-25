@@ -2,13 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StreamPlaybackController } from '../src/renderer/media/StreamPlaybackController';
 import type { StreamPlaybackSnapshot } from '../src/shared/streamPlayback';
 
-const backend = vi.hoisted(() => ({ player: {} as any }));
-vi.mock('@stream-player', () => ({ default: { isSupported: () => true, Events: { ERROR: 'error' }, createPlayer: () => backend.player } }));
+const backend = vi.hoisted(() => ({ player: {} as any, creations: [] as any[] }));
+vi.mock('@stream-player', () => ({ default: { isSupported: () => true, Events: { ERROR: 'error' }, createPlayer: (data: any) => { backend.creations.push(data); return backend.player; } } }));
 
 describe('流式定位与播放的交错', () => {
-  beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] }));
+  beforeEach(() => { backend.creations = []; vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] }); });
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
-  function setup() {
+  function setup(complete = true) {
     let callback: VideoFrameRequestCallback;
     const video = {
       paused: true, seeking: false, readyState: 4, currentTime: 0,
@@ -18,15 +18,40 @@ describe('流式定位与播放的交错', () => {
       addEventListener: vi.fn(), removeEventListener: vi.fn(), removeAttribute: vi.fn(), load: vi.fn(),
     };
     backend.player = { on: vi.fn(), attachMediaElement: vi.fn(), load: vi.fn(), destroy: vi.fn(), currentTime: 0 };
-    const api = { closeStream: vi.fn(async () => {}), streamFrame: vi.fn(async () => ({ sourceMs: 600000, presentationMs: 600000, nextPresentationMs: 600040, atBoundary: false })) };
+    const api = { closeStream: vi.fn(async () => {}), streamStatus: vi.fn(), streamFrame: vi.fn(async () => ({ sourceMs: 600000, presentationMs: 600000, nextPresentationMs: 600040, atBoundary: false })) };
     vi.stubGlobal('window', { electronAPI: api });
     const observer = { time: vi.fn(), busy: vi.fn(), status: vi.fn(), error: vi.fn() };
-    const snapshot = { id: 'test', container: 'flv', url: 'media://stream/test', complete: true, originUs: 0, baseMs: 0, offsetMs: 0, durationMs: 7200000, progress: 100, index: { times: [0, 600000], filepositions: [0, 1000] } } as StreamPlaybackSnapshot;
+    const snapshot = { id: 'test', container: 'flv', url: 'media://stream/test', complete, originUs: 0, baseMs: 0, offsetMs: 0, durationMs: complete ? 7200000 : 0, progress: complete ? 100 : 5, index: { times: [0, 600000], filepositions: [0, 1000] } } as StreamPlaybackSnapshot;
     const controller = new StreamPlaybackController(video as unknown as HTMLVideoElement, snapshot, observer);
     const frame = (ms: number) => callback(performance.now(), { mediaTime: ms / 1000 } as VideoFrameCallbackMetadata);
     const start = async () => { const pending = controller.start(); frame(0); await vi.advanceTimersByTimeAsync(20); await pending; };
-    return { controller, video, api, observer, frame, start };
+    return { controller, video, api, observer, frame, start, snapshot };
   }
+  it('首次索引完成前不创建播放器，完成后仅以完整时长创建一次', async () => {
+    const f = setup(false);
+    f.api.streamStatus.mockResolvedValue({ ...f.snapshot, complete: true, durationMs: 7200000, progress: 100 });
+    const starting = f.controller.start();
+    expect(backend.creations).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(backend.creations).toHaveLength(1);
+    expect(backend.creations[0].duration).toBe(7200000);
+    f.frame(0); await vi.advanceTimersByTimeAsync(20); await starting;
+    expect(f.api.streamStatus).toHaveBeenCalledTimes(1);
+    f.controller.destroy();
+  });
+  it('等待索引时关闭，即使完成结果迟到也不创建播放器', async () => {
+    const f = setup(false);
+    let resolve!: (snapshot: StreamPlaybackSnapshot) => void;
+    f.api.streamStatus.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+    const starting = f.controller.start(); await vi.advanceTimersByTimeAsync(300);
+    f.controller.destroy();
+    resolve({ ...f.snapshot, complete: true, durationMs: 7200000, progress: 100 });
+    await starting;
+    expect(backend.creations).toHaveLength(0);
+    expect(f.video.requestVideoFrameCallback).not.toHaveBeenCalled();
+    expect(f.api.closeStream).toHaveBeenCalledTimes(1);
+    expect(f.observer.status).toHaveBeenCalledTimes(1);
+  });
   it('定位等待 IPC 时按播放，必须等目标画面确认后再播放', async () => {
     const f = setup(); await f.start();
     let resolve!: (target: any) => void;
