@@ -84,7 +84,7 @@ export const SettingsPage: React.FC = () => {
 
             <div className="space-y-3.5 text-sm text-zinc-300">
               <p>产物保存在原视频所在目录，按处理类型自动归类。</p>
-              <p>裁剪结果（含裁剪后压缩）：<code className="text-blue-300">cut_方案名/</code></p>
+              <p>裁剪结果（含裁剪后压缩）：<code className="text-blue-300">cut/</code>，不按方案分目录。</p>
               <p>整片压缩结果：<code className="text-purple-300">压缩/</code>，不按方案分目录。</p>
               <p className="text-xs text-zinc-500">已有文件保持原位，新产物遇到同名文件自动加序号。</p>
             </div>

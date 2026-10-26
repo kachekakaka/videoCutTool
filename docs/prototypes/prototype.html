@@ -1629,7 +1629,7 @@
         <div class="setting-item">
           <div class="setting-text">
             <h4>默认输出位置</h4>
-            <p>原视频目录下：裁剪结果（含裁剪后压缩）放入 cut_方案名/；整片压缩结果放入 压缩/，不按方案分目录。同名自动加序号，已有产物不搬迁。</p>
+            <p>原视频目录下：裁剪结果（含裁剪后压缩）统一放入 cut/；整片压缩结果放入 压缩/，均不按方案分目录。同名自动加序号，已有产物不搬迁。</p>
           </div>
         </div>
       </div>
@@ -2440,7 +2440,7 @@
         id: planId,
         title: `${state.currentVideoPath.split('/').pop()} (剪辑方案)`,
         sourcePath: state.currentVideoPath,
-        outputPath: `${state.currentVideoPath.replace(/[\\/][^\\/]+$/, '')}/cut_${state.currentVideoPath.split('/').pop()} (剪辑方案)/${state.currentVideoPath.split('/').pop().replace(/\.[^/.]+$/, "")}_cut.mp4`,
+        outputPath: `${state.currentVideoPath.replace(/[\\/][^\\/]+$/, '')}/cut/${state.currentVideoPath.split('/').pop().replace(/\.[^/.]+$/, "")}_cut.mp4`,
         totalDurationMs: state.durationMs,
         keptDurationMs: keptMs,
         cutsCount: state.cuts.length,

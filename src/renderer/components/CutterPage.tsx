@@ -117,6 +117,11 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const [metadata, setMetadata] = useState<MediaMetadata | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [streamPreparationProgress, setStreamPreparationProgress] = useState<number | null>(null);
+  const [preparedStreamId, setPreparedStreamId] = useState<string | null>(null);
+  const releasePreparedStream = () => {
+    // 只释放当前页面交给播放器的准备引用；旧视图的迟到回调不能关闭新任务。
+    if (preparedStreamId && streamPreparation.current === preparedStreamId) cancelStreamPreparation();
+  };
   const cancelVideoPreparation = () => {
     loadEpoch.current++; pendingSelection.current = null;
     cancelScan(); cancelStreamPreparation();
@@ -228,7 +233,6 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const discardedDurationMs = useMemo(() => (draft ? draft.getDiscardedDurationMs() : 0), [draft, draftVersion]);
   const outputMode = draft?.outputMode ?? 'single';
   const outputs = useMemo(() => draft?.getOutputs() ?? [], [draft, draftVersion]);
-  const singleOutput = outputs.length <= 1;
   const outputNumbers = useMemo(() => Object.fromEntries(outputs.flatMap((output, index) => output.segmentIds.map(id => [id, index + 1]))), [outputs]);
   const stripOriginalCover = draft ? draft.stripOriginalCover : true;
 
@@ -384,14 +388,14 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
   // 实时推导预定安全产物路径
   useEffect(() => {
-    if (!metadata?.filePath) {
+    if (!metadata?.filePath || !outputs.length) {
       setSafeOutputPath('');
       return;
     }
     let isCancelled = false;
     if (window.electronAPI?.resolveOutputPath) {
       window.electronAPI
-        .resolveOutputPath(metadata.filePath, singleOutput, currentPlanTitle, exportCompressConfig, stripOriginalCover, metadata.streams, draft?.exportPrecision)
+        .resolveOutputPath(metadata.filePath, outputs.length, currentPlanTitle, exportCompressConfig, stripOriginalCover, metadata.streams, draft?.exportPrecision)
         .then((resolved) => {
           if (!isCancelled) {
             setSafeOutputPath(resolved);
@@ -404,7 +408,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     return () => {
       isCancelled = true;
     };
-  }, [metadata, singleOutput, currentPlanTitle, outputPolicyKey, stripOriginalCover]);
+  }, [metadata, outputs.length, currentPlanTitle, outputPolicyKey, stripOriginalCover]);
 
 
 
@@ -524,6 +528,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
   // 先取得完整索引，再建立草稿和播放器；首次加载与索引复用走同一初始化路径。
   const loadAndProbeVideo = async (filePath: string, recordToLoad?: PlanRecord | null) => {
+    const began = performance.now();
     setSourceConfirmation(null);
     cancelScan();
     cancelStreamPreparation();
@@ -535,6 +540,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     invalidateComparePreview();
     setIsLoading(true);
     setStreamPreparationProgress(null);
+    setPreparedStreamId(null);
     setDraft(null);
     setMetadata(null);
     setIsKeyframeScanning(false);
@@ -556,20 +562,26 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         if (snapshot && !snapshot.complete) {
           // 不挂载播放器，避免在时长未知时创建 MSE；准备引用继续持有同一次分析。
           setCurrentTimeMs(0); setMainViewportMode('player');
-          while (!snapshot.complete) {
-            setStreamPreparationProgress(Math.max(0, Math.min(99, Math.floor(snapshot.progress))));
-            if (snapshot.error) {
-              if (snapshot.errorCode !== 'TIMELINE_DISCONTINUITY') throw new Error(snapshot.error);
+          let progress = await window.electronAPI.streamProgress(id);
+          if (!isCurrent()) return;
+          while (!progress.complete) {
+            setStreamPreparationProgress(Math.max(0, Math.min(99, Math.floor(progress.progress))));
+            if (progress.error) {
+              if (progress.errorCode !== 'TIMELINE_DISCONTINUITY') throw new Error(progress.error);
               setRepairSource(filePath); setMetadata(null); setIsLoading(false);
-              setNotice({ type: 'warning', message: `已发现时间轴异常，正在完成本次只读分析 ${Math.floor(snapshot.progress)}%，修复将复用结果。` });
+              setNotice({ type: 'warning', message: `已发现时间轴异常，正在完成本次只读分析 ${Math.floor(progress.progress)}%，修复将复用结果。` });
             }
             await new Promise(resolve => setTimeout(resolve, 300));
             if (!isCurrent()) return;
-            snapshot = await window.electronAPI.streamStatus(id);
+            progress = await window.electronAPI.streamProgress(id);
             if (!isCurrent()) return;
           }
+          snapshot = await window.electronAPI.streamStatus(id);
+          if (!isCurrent()) return;
         }
         if (snapshot?.error) { if (snapshot.errorCode === 'TIMELINE_DISCONTINUITY') setRepairSource(filePath); throw new Error(snapshot.error); }
+        const preparation = streaming ? await window.electronAPI.streamProgress(id) : null;
+        if (!isCurrent()) return;
         const basicMeta = snapshot?.metadata ?? await window.electronAPI.probeBasic(filePath);
 
         if (!isCurrent()) return;
@@ -604,10 +616,13 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         setDraft(newDraft);
         setDraftVersion((v) => v + 1);
 
-        // 完整元数据与草稿就绪后挂载播放器；准备引用释放后仍可复用已发布索引。
+        // 播放器取得同一在内存中的索引后才释放准备引用，避免交接期间回读磁盘。
         setIsLoading(false);
         setStreamPreparationProgress(null);
-        cancelStreamPreparation();
+        if (streaming) {
+          setPreparedStreamId(id);
+          console.info('[流式准备耗时]', { totalMs: performance.now() - began, ...preparation?.timings });
+        } else cancelStreamPreparation();
         pendingSelection.current = null;
 
         // 第二阶段：若未命中本地关键帧缓存，后台异步静默提取物理关键帧
@@ -984,7 +999,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     if (!draft || !metadata || !window.electronAPI) return null;
     const title = currentPlanTitle || metadata.fileName.replace(/\.[^/.]+$/, '');
     if (!draft.getOutputs().length) throw new Error('请至少保留一个片段');
-    const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.getOutputs().length <= 1, title, exportCompressConfig, draft.stripOriginalCover, metadata.streams, draft?.exportPrecision);
+    const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.getOutputs().length, title, exportCompressConfig, draft.stripOriginalCover, metadata.streams, draft?.exportPrecision);
     const planId = currentPlanId || `plan_${crypto.randomUUID()}`;
     return { ...draft.toRecord({
       id: planId,
@@ -1010,7 +1025,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     const epoch = loadEpoch.current;
     try {
       if (!draft.getOutputs().length) throw new Error('请至少保留一个片段');
-      const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.getOutputs().length <= 1, trimmedTitle, exportCompressConfig, draft.stripOriginalCover, metadata.streams, draft?.exportPrecision);
+      const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, draft.getOutputs().length, trimmedTitle, exportCompressConfig, draft.stripOriginalCover, metadata.streams, draft?.exportPrecision);
       const isUpdating = saveMode === 'update' && Boolean(currentPlanId);
       const targetId = isUpdating && currentPlanId ? currentPlanId : `plan_${crypto.randomUUID()}`;
 
@@ -1084,7 +1099,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     }
     if (metadata?.filePath) {
       try {
-        const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, singleOutput, currentPlanTitle, exportCompressConfig, stripOriginalCover, metadata.streams, draft?.exportPrecision);
+        const outPath = await window.electronAPI.resolveOutputPath(metadata.filePath, outputs.length, currentPlanTitle, exportCompressConfig, stripOriginalCover, metadata.streams, draft?.exportPrecision);
         window.electronAPI.showItemInFolder(outPath);
       } catch {
         window.electronAPI.showItemInFolder(metadata.filePath);
@@ -1286,6 +1301,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               videoHeight={metadata.height}
               displayAspectRatio={metadata.displayAspectRatio}
               isActive={isActive && !isLoading && mainViewportMode === 'player'}
+              onStreamOpened={releasePreparedStream}
               shortcutsEnabled={shortcutsEnabled && mainViewportMode === 'player'}
               onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
               onPlayStateChange={(playing) => setIsPlaying(playing)}

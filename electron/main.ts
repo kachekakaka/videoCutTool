@@ -262,12 +262,12 @@ handle('config:save', async (_event, patch: Partial<AppConfig>) => {
   configChanges = task.catch(() => {}); return task;
 });
 handle('config:getPath', async () => configService.getConfigPath());
-handle('config:resolveOutputPath', async (_event, videoPath: string, isConcat: boolean = true, planTitle?: string, compress?: CompressConfig, stripCover?: boolean, streams: import('../src/shared/types').MediaStreamInfo[] = [], precision?: import('../src/shared/types').ExportPrecision) => {
+handle('config:resolveOutputPath', async (_event, videoPath: string, outputCount = 1, planTitle?: string, compress?: CompressConfig, stripCover?: boolean, streams: import('../src/shared/types').MediaStreamInfo[] = [], precision?: import('../src/shared/types').ExportPrecision) => {
   await files.check(videoPath); validateCompress(compress); if (planTitle) textValue(planTitle, '方案标题', 256);
-  if (typeof isConcat !== 'boolean' || (stripCover !== undefined && typeof stripCover !== 'boolean')) throw new Error('输出选项无效');
+  if (stripCover !== undefined && typeof stripCover !== 'boolean') throw new Error('输出选项无效');
   if (!Array.isArray(streams) || streams.length > 256 || streams.some(stream => !stream || typeof stream.type !== 'string' || typeof stream.codec !== 'string' || stream.type.length > 40 || stream.codec.length > 80 || typeof stream.attachedPicture !== 'boolean')) throw new Error('媒体流摘要无效');
   if (precision !== undefined && !['keyframe', 'frame'].includes(precision)) throw new Error('导出精度无效');
-  const output = await configService.resolveSafeOutputPath(videoPath, isConcat, planTitle, compress, stripCover, streams, precision); files.allowReveal(output); return output;
+  const output = await configService.resolveSafeOutputPath(videoPath, outputCount, planTitle, compress, stripCover, streams, precision); files.allowReveal(output); return output;
 });
 
 handle('media:registerDroppedFile', async (_event, file: string) => files.authorize(file));
@@ -307,6 +307,7 @@ handle('media:openStream', async (event, file: string, id: string) => {
   return streamPlayback.open(event.sender.id, file, id);
 });
 handle('media:streamStatus', async (event, id: string) => { requestId(id); return streamPlayback.status(event.sender.id, id); });
+handle('media:streamProgress', async (event, id: string) => { requestId(id); return streamPlayback.progress(event.sender.id, id); });
 handle('media:streamFrame', async (event, id: string, time: number, direction: -1 | 0 | 1) => { requestId(id); return streamPlayback.frame(event.sender.id, id, time, direction); });
 handle('media:closeStream', async (event, id: string) => { requestId(id); markCanceled(`stream:${event.sender.id}:${id}`); streamPlayback.close(event.sender.id, id); });
 

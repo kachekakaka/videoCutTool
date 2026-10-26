@@ -18,7 +18,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveConfig: (config: Partial<AppConfig>): Promise<AppConfig> => ipcRenderer.invoke('config:save', config),
   onConfigChanged: callback => subscribe('config:changed', callback),
   getConfigPath: (): Promise<string> => ipcRenderer.invoke('config:getPath'),
-  resolveOutputPath: (videoPath, isConcat, planTitle, compress, stripCover, streams, precision) => ipcRenderer.invoke('config:resolveOutputPath', videoPath, isConcat, planTitle, compress, stripCover, streams, precision),
+  resolveOutputPath: (videoPath, outputCount, planTitle, compress, stripCover, streams, precision) => ipcRenderer.invoke('config:resolveOutputPath', videoPath, outputCount, planTitle, compress, stripCover, streams, precision),
 
   // 媒体探测与对话框
   openVideoDialog: (): Promise<string | null> => ipcRenderer.invoke('dialog:openVideo'),
@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   releasePlayback: id => ipcRenderer.invoke('media:releasePlayback', id),
   openStream: (file, id) => ipcRenderer.invoke('media:openStream', file, id),
   streamStatus: id => ipcRenderer.invoke('media:streamStatus', id),
+  streamProgress: id => ipcRenderer.invoke('media:streamProgress', id),
   streamFrame: (id, time, direction) => ipcRenderer.invoke('media:streamFrame', id, time, direction),
   closeStream: id => ipcRenderer.invoke('media:closeStream', id),
   repairTimeline: (file, id) => ipcRenderer.invoke('media:repairTimeline', file, id),

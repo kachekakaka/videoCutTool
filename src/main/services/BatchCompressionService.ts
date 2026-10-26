@@ -52,7 +52,7 @@ export class BatchCompressionService {
     const identity = await fileIdentityAsync(sourcePath);
     const invalid = this.invalid.get(process.platform === 'win32' ? sourcePath.toLowerCase() : sourcePath);
     if (invalid?.identity === identity) throw new Error(invalid.message);
-    const directory = resolveOutputDirectory(sourcePath, title, true);
+    const directory = resolveOutputDirectory(sourcePath, true);
     const same = existing?.compressionOnly && existing.sourcePath === sourcePath && existing.title === title && JSON.stringify(existing.compress) === JSON.stringify(request.compress) && existing.stripOriginalCover === request.stripOriginalCover && existing.outputDirectory === directory;
     // 成功回执丢失后的同 ID 重试只返回原记录，绝不重置已排队或已完成状态。
     if (same && (!request.expectedUpdatedAt || request.expectedUpdatedAt !== existing!.updatedAt)) return existing!;

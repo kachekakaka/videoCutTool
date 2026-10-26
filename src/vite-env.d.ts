@@ -9,7 +9,7 @@ export interface ElectronAPI {
   saveConfig: (config: Partial<AppConfig>) => Promise<AppConfig>;
   onConfigChanged: (callback: (config: AppConfig) => void) => () => void;
   getConfigPath: () => Promise<string>;
-  resolveOutputPath: (videoPath: string, isConcat?: boolean, planTitle?: string, compress?: CompressConfig, stripCover?: boolean, streams?: import('./shared/types').MediaStreamInfo[], precision?: import('./shared/types').ExportPrecision) => Promise<string>;
+  resolveOutputPath: (videoPath: string, outputCount?: number, planTitle?: string, compress?: CompressConfig, stripCover?: boolean, streams?: import('./shared/types').MediaStreamInfo[], precision?: import('./shared/types').ExportPrecision) => Promise<string>;
 
   // 媒体探测与对话框
   openVideoDialog: () => Promise<string | null>;
@@ -28,6 +28,7 @@ export interface ElectronAPI {
   releasePlayback: (id: string) => Promise<void>;
   openStream: (file: string, id: string) => Promise<import('./shared/streamPlayback').StreamPlaybackSnapshot | null>;
   streamStatus: (id: string) => Promise<import('./shared/streamPlayback').StreamPlaybackSnapshot>;
+  streamProgress: (id: string) => Promise<import('./shared/streamPlayback').StreamPreparationStatus>;
   streamFrame: (id: string, time: number, direction: -1 | 0 | 1) => Promise<import('./shared/streamPlayback').StreamFrameTarget>;
   closeStream: (id: string) => Promise<void>;
   repairTimeline: (file: string, id: string) => Promise<import('./shared/timelineRepair').TimelineRepairResult>;

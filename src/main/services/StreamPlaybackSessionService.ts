@@ -32,6 +32,7 @@ export class StreamPlaybackSessionService {
   }
   private snapshot(s: Session): StreamPlaybackSnapshot { return { id: s.id, url: `media://stream/${s.id}`, ...this.indexes.snapshot(s.lease!) }; }
   async status(owner: number, id: string) { const s = this.session(owner, id); await this.indexes.check(s.lease!); return this.snapshot(s); }
+  async progress(owner: number, id: string) { const s = this.session(owner, id); await this.indexes.check(s.lease!); return this.indexes.progress(s.lease!); }
   async frame(owner: number, id: string, time: number, direction: -1 | 0 | 1) { const s = this.session(owner, id); await this.indexes.check(s.lease!); return this.indexes.frame(s.lease!, time, direction); }
   close(owner: number, id: string) {
     const s = this.sessions.get(id); if (!s || s.owner !== owner) return;

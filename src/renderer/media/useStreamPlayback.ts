@@ -5,6 +5,7 @@ import { StreamPlaybackController } from './StreamPlaybackController';
 export function useStreamPlayback(video: React.RefObject<HTMLVideoElement>, file: string, active: boolean, callbacks: {
   time: (ms: number) => void; busy: (value: boolean) => void; error: (message: string) => void;
   current: () => number;
+  opened?: () => void;
 }) {
   const controller = useRef<StreamPlaybackController | null>(null);
   const observer = useRef(callbacks); observer.current = callbacks;
@@ -21,9 +22,13 @@ export function useStreamPlayback(video: React.RefObject<HTMLVideoElement>, file
     setRoute('pending'); setStatus('正在准备播放');
     observer.current.busy(true);
     void (async () => {
+      const began = performance.now();
+      // 本次 effect 的回调绑定本次准备引用，不能通过最新 observer 释放另一素材。
+      const opened = observer.current.opened;
       try {
         const snapshot = api ? await api.openStream(file, id) : null;
         if (stopped) { void api?.closeStream(id).catch(() => {}); return; }
+        opened?.();
         if (!snapshot) { setRoute('native'); setStatus(''); observer.current.busy(false); return; }
         setRoute('stream');
         const resumeTime = observer.current.current();
@@ -34,9 +39,12 @@ export function useStreamPlayback(video: React.RefObject<HTMLVideoElement>, file
           error: message => { if (!stopped) { observer.current.error(message); queueMicrotask(() => instance.destroy()); observer.current.busy(false); } },
         });
         controller.current = instance;
+        const acquiredAt = performance.now();
         await instance.start();
+        if (!stopped) console.info('[流式播放器启动耗时]', { acquireMs: acquiredAt - began, firstFrameMs: performance.now() - acquiredAt });
         if (!stopped && !instance.hasNavigation()) await instance.seek(resumeTime);
       } catch (error) {
+        if (!stopped) opened?.();
         if (!stopped) { setRoute('stream'); setStatus(''); observer.current.error(String(error)); observer.current.busy(false); controller.current?.destroy(); }
         void api?.closeStream(id).catch(() => {});
       }

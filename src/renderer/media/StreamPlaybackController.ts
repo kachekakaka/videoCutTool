@@ -41,8 +41,13 @@ export class StreamPlaybackController {
     while (!this.snapshot.complete && !this.closed) {
       await delay(300);
       if (this.closed) return;
-      const snapshot = await window.electronAPI!.streamStatus(this.snapshot.id);
-      if (!this.closed) this.adopt(snapshot);
+      const progress = await window.electronAPI!.streamProgress(this.snapshot.id);
+      if (this.closed) return;
+      if (progress.error) throw new Error(progress.error);
+      if (progress.complete) {
+        const snapshot = await window.electronAPI!.streamStatus(this.snapshot.id);
+        if (!this.closed) this.adopt(snapshot);
+      } else this.observer.status(`正在建立定位索引 ${Math.floor(progress.progress)}%`);
     }
     if (this.closed) return;
     if (!this.externalIndex.times.length || !Number.isFinite(this.snapshot.durationMs) || !(this.snapshot.durationMs > 0)) throw new Error('完整定位索引缺少有效时长或关键帧');

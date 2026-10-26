@@ -2,12 +2,9 @@ import fs from 'fs';
 import path from 'path';
 import { formatTaskTimestamp } from '../../shared/timeUtils';
 
-/** 产物始终跟随源文件；裁剪按方案归档，整片压缩共用一个目录。 */
-export function resolveOutputDirectory(source: string, title?: string, compressionOnly = false): string {
-  if (compressionOnly) return path.join(path.dirname(source), '压缩');
-  const name = title?.trim() || path.basename(source, path.extname(source));
-  if (/[<>:"/\\|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name)) throw new Error('方案标题不能用于输出文件夹名称');
-  return path.join(path.dirname(source), `cut_${name}`);
+/** 产物始终跟随源文件，按处理类型共用目录；方案名称仅用于文件名。 */
+export function resolveOutputDirectory(source: string, compressionOnly = false): string {
+  return path.join(path.dirname(source), compressionOnly ? '压缩' : 'cut');
 }
 
 function titlePart(title: string | undefined, sourceBase: string): string {

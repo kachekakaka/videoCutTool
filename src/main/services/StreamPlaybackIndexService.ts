@@ -4,7 +4,7 @@ import { CacheMaintenanceService } from './CacheMaintenanceService';
 import { abortError, fileIdentityAsync, MediaLimiter, resolveTool, runMediaTool } from './MediaTools';
 import { rational, frameTime, timeMs } from '../../shared/mediaTime';
 import { MediaMetadata, MediaStreamInfo } from '../../shared/types';
-import { frameAt, StreamContainer, StreamFrameTarget } from '../../shared/streamPlayback';
+import { frameAt, StreamContainer, StreamFrameTarget, StreamPreparationStatus } from '../../shared/streamPlayback';
 import { MediaIndexStore } from './MediaIndexStore';
 import { ProbedFile } from './MediaTools';
 import { REPAIR_CLOCK, RepairPacket } from './RepairTimeline';
@@ -24,6 +24,7 @@ interface IndexJob {
   ready: Promise<void>; done: Promise<void>; data?: IndexData;
   complete: boolean; progress: number; error?: string; errorCode?: 'TIMELINE_DISCONTINUITY'; revision: number;
   sortedRevision: number; sortedFrames: number[];
+  timings: NonNullable<StreamPreparationStatus['timings']>;
 }
 export interface StreamIndexLease { job: IndexJob; release: () => void }
 const timestampUs = (value: unknown) => {
@@ -76,11 +77,15 @@ export class StreamPlaybackIndexService {
     this.maintenance.protect(file);
     let job = this.jobs.get(identity);
     if (!job || job.controller.signal.aborted || job.error) {
-      job = { file, identity, controller: new AbortController(), refs: 0, ready: Promise.resolve(), done: Promise.resolve(), complete: false, progress: 0, revision: 0, sortedRevision: -1, sortedFrames: [] };
+      job = { file, identity, controller: new AbortController(), refs: 0, ready: Promise.resolve(), done: Promise.resolve(), complete: false, progress: 0, revision: 0, sortedRevision: -1, sortedFrames: [], timings: { restoreMs: 0, probeMs: 0, queueMs: 0, scanMs: 0, publishMs: 0 } };
       this.jobs.set(identity, job);
       const current = job, tool = this.tool;
       current.ready = this.prepare(current, container, tool);
-      current.done = current.ready.then(() => current.complete ? undefined : this.limiter.run(() => this.scan(current, tool), current.controller.signal)).catch(error => {
+      current.done = current.ready.then(() => {
+        if (current.complete) return;
+        const queuedAt = performance.now();
+        return this.limiter.run(() => { current.timings.queueMs = performance.now() - queuedAt; return this.scan(current, tool); }, current.controller.signal);
+      }).catch(error => {
         current.error = error instanceof Error ? error.message : String(error);
         if (error?.code === 'TIMELINE_DISCONTINUITY') current.errorCode = error.code;
       });
@@ -101,13 +106,17 @@ export class StreamPlaybackIndexService {
     catch (error) { release(); throw error; }
   }
   private async restore(job: IndexJob, container: StreamContainer) {
-    const saved = await this.store?.find(job.file);
-    if (!saved) return false;
-    const d = await this.store!.read<IndexData>(saved, d => saved.kind === 'stream' && d.identity === job.identity && d.container === container && saved.usable === !d.discontinuity && JSON.stringify(d.info) === JSON.stringify(saved.info) && this.valid(d));
-    job.data = d; job.complete = true; job.progress = 100; job.revision++; return true;
+    const began = performance.now();
+    try {
+      const saved = await this.store?.find(job.file);
+      if (!saved) return false;
+      const d = await this.store!.read<IndexData>(saved, d => saved.kind === 'stream' && d.identity === job.identity && d.container === container && saved.usable === !d.discontinuity && JSON.stringify(d.info) === JSON.stringify(saved.info) && this.valid(d));
+      job.data = d; job.complete = true; job.progress = 100; job.revision++; return true;
+    } finally { job.timings.restoreMs += performance.now() - began; }
   }
   private async prepare(job: IndexJob, container: StreamContainer, tool: string) {
     if (await this.restore(job, container)) return;
+    const began = performance.now();
     const json = JSON.parse(await runMediaTool(tool, ['-v', 'error', '-probesize', '1048576', '-analyzeduration', '1000000', '-read_intervals', '%+#128', '-show_streams', '-show_format', '-show_packets', '-show_entries', 'packet=stream_index,pts_time,dts_time,duration_time,pos,flags:format=format_name,start_time:stream=index,codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,sample_aspect_ratio,time_base,sample_rate:stream_disposition=attached_pic,default', '-of', 'json', job.file], { signal: job.controller.signal, timeoutMs: 30000 }));
     const streams = json.streams ?? [], videos = streams.filter((s: any) => s.codec_type === 'video' && !s.disposition?.attached_pic), audios = streams.filter((s: any) => s.codec_type === 'audio');
     if (videos.length !== 1 || videos[0].codec_name !== 'h264' || audios.length > 1 || audios.some((s: any) => s.codec_name !== 'aac')) throw new Error('流式精确播放目前支持单路 H.264 视频及单路 AAC 音频，不会生成整片兼容副本');
@@ -121,6 +130,7 @@ export class StreamPlaybackIndexService {
     d.repair = { video: [], audio: [], supported: streams.length === 2 && Number(audios[0]?.sample_rate) === 48000 };
     d.info = { durationMs: 0, containerDurationMs: 0, width: d.width, height: d.height, fps: d.fps, displayAspectRatio: d.ratio, videoIndex: d.videoIndex, videoStartMs: (timestampUs(firstVideo.pts_time) - d.originUs) / 1000, timeBase: video.time_base, origin: rational(BigInt(d.originUs), 1000000n), streams: d.streams };
     if (await fileIdentityAsync(job.file) !== job.identity) throw new Error('原视频已变化，请重新打开');
+    job.timings.probeMs = performance.now() - began;
   }
   private valid(d: IndexData) {
     return d.version === 1 && Boolean(d.info) && Array.isArray(d.frames) && Array.isArray(d.keys) && Number.isFinite(d.durationMs) && d.durationMs > 0 && Number.isSafeInteger(d.originUs) && Number.isSafeInteger(d.baseMs) && d.frames.length > 0 && d.keys.length > 0
@@ -132,6 +142,7 @@ export class StreamPlaybackIndexService {
     if (await this.restore(job, job.data!.container)) return;
     const d = job.data!, signal = job.controller.signal;
     if (signal.aborted) throw abortError();
+    const began = performance.now();
     let tail = '', maxEndUs = -Infinity, lastVideoUs = -Infinity, lastVideoPosition = -1;
     const lastDts = new Map<number, number>();
     const packet = (line: string) => {
@@ -174,8 +185,15 @@ export class StreamPlaybackIndexService {
     if (!d.discontinuity || !d.repair?.supported) d.repair = undefined;
     if (d.info) { d.info.durationMs = d.durationMs; d.info.containerDurationMs = d.durationMs; }
     if (!this.valid(d)) throw new Error('索引时间轴无效，无法保证逐帧准确');
+    job.timings.scanMs = performance.now() - began;
+    const publishingAt = performance.now();
     await this.store.publish(job.file, job.identity, 'stream', d.info!, d);
+    job.timings.publishMs = performance.now() - publishingAt;
     if (signal.aborted) throw abortError(); job.complete = true; job.progress = 100; job.revision++;
+  }
+  progress(lease: StreamIndexLease): StreamPreparationStatus {
+    const { job } = lease;
+    return { complete: job.complete, progress: job.progress, error: job.error || job.data?.discontinuity, errorCode: job.error ? job.errorCode : job.data?.discontinuity ? 'TIMELINE_DISCONTINUITY' : undefined, timings: { ...job.timings } };
   }
   snapshot(lease: StreamIndexLease) {
     const job = lease.job, d = job.data!;

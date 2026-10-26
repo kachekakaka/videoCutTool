@@ -338,7 +338,7 @@ export class MediaCuttingEngine {
     let indexedInput: { url: string; close: () => Promise<void> } | undefined;
     try {
       if (!plan.outputs.length || (!compressionOnly && plan.outputs.some(output => !output.planSegments.length))) throw new Error('未选择任何保留片段');
-      const destination = resolveOutputDirectory(plan.sourcePath, plan.title, compressionOnly);
+      const destination = resolveOutputDirectory(plan.sourcePath, compressionOnly);
       const sourceIdentity = await fileIdentityAsync(plan.sourcePath);
       const info = prepared || await probeFile(plan.sourcePath, this.ffprobePath, signal);
       if (!compressionOnly) indexedInput = await this.inputProvider?.(plan.sourcePath, signal);

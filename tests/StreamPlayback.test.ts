@@ -7,7 +7,7 @@ import { StreamPlaybackIndexService } from '../src/main/services/StreamPlaybackI
 describe('流式播放会话边界', () => {
   const create = (identify = async () => 'flv') => {
     const release = vi.fn();
-    const indexes = { identify, acquire: vi.fn(async () => ({ release, job: { data: { container: 'flv' } } })), snapshot: () => ({}), check: async () => {}, shutdown: async () => {} };
+    const indexes = { identify, acquire: vi.fn(async () => ({ release, job: { data: { container: 'flv' } } })), snapshot: vi.fn(() => ({})), progress: vi.fn(() => ({ complete: false, progress: 25 })), check: vi.fn(async () => {}), shutdown: async () => {} };
     return { service: new StreamPlaybackSessionService(indexes as unknown as StreamPlaybackIndexService), indexes, release };
   };
   it('识别尚未结束就关闭时，不再取得索引引用', async () => {
@@ -17,6 +17,18 @@ describe('流式播放会话边界', () => {
     service.close(1, 'pending'); resolve('flv');
     await expect(pending).rejects.toThrow();
     expect(indexes.acquire).not.toHaveBeenCalled();
+    await service.shutdown();
+  });
+  it('进度请求不构建完整快照，且保持窗口和取消边界', async () => {
+    const { service, indexes } = create();
+    await service.open(1, 'unused', 'progress');
+    indexes.snapshot.mockClear();
+    expect(await service.progress(1, 'progress')).toEqual({ complete: false, progress: 25 });
+    expect(indexes.snapshot).not.toHaveBeenCalled();
+    expect(indexes.check).toHaveBeenCalledTimes(1);
+    await expect(service.progress(2, 'progress')).rejects.toThrow();
+    service.closeOwner(1);
+    await expect(service.progress(1, 'progress')).rejects.toThrow();
     await service.shutdown();
   });
   it('窗口隔离、有限范围读取、越界拒绝及关闭后引用释放', async () => {

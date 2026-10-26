@@ -1,6 +1,10 @@
 import type { MediaMetadata } from './types';
 
 export type StreamContainer = 'flv' | 'mpegts';
+export interface StreamPreparationStatus {
+  complete: boolean; progress: number; error?: string; errorCode?: 'TIMELINE_DISCONTINUITY';
+  timings?: { restoreMs: number; probeMs: number; queueMs: number; scanMs: number; publishMs: number };
+}
 export interface StreamPlaybackSnapshot {
   id: string; url: string; container: StreamContainer;
   offsetMs: number; durationMs: number; indexedUntilMs: number; progress: number;

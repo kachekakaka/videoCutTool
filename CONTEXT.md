@@ -126,7 +126,7 @@ _Avoid_: Run state, task progress, finish flag
 _Avoid_: Preview progress, segment progress, elapsed-time ratio
 
 **Output Directory Policy**:
-产物固定保存在原视频所在目录下：裁剪方案（含裁剪后压缩）的产物放入 `cut_方案名/`，整片压缩产物统一放入 `压缩/`，不按方案分目录。裁剪未命名时使用原文件主名作为目录名中的方案名。已有产物不搬迁，方案记录仍存放在 Data Directory 中。
+产物固定保存在原视频所在目录下：裁剪方案（含裁剪后压缩）的产物统一放入 `cut/`，整片压缩产物统一放入 `压缩/`，均不按方案分目录。方案名称仅参与产物文件命名。已有产物不搬迁，方案记录仍存放在 Data Directory 中。
 _Avoid_: Export path rule, save target
 
 **Output Naming Policy**:

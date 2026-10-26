@@ -161,8 +161,8 @@ export class ConfigService {
   /**
    * 根据当前输出目录策略推导视频切片的输出路径
    */
-  public resolveOutputPath(videoSourcePath: string, isConcat: boolean = true, planTitle?: string): Promise<string> {
-    return this.resolveSafeOutputPath(videoSourcePath, isConcat, planTitle);
+  public resolveOutputPath(videoSourcePath: string, outputCount = 1, planTitle?: string): Promise<string> {
+    return this.resolveSafeOutputPath(videoSourcePath, outputCount, planTitle);
   }
 
   /**
@@ -171,21 +171,23 @@ export class ConfigService {
    * - 有方案名：[方案名]原文件名_YYYYMMDD_HHmm.mp4 (合并) / [方案名]原文件名_seg01_YYYYMMDD_HHmm.mp4 (分段)
    * - 无方案名：原文件名_cut_YYYYMMDD_HHmm.mp4 (合并) / 原文件名_seg01_YYYYMMDD_HHmm.mp4 (分段)
    * @param videoSourcePath 源视频路径
-   * @param isConcat 是否为单文件合并模式（若为 false 则推导多分段切片的第一段预定路径）
+   * @param outputCount 实际输出份数，整组避让后返回第一份的预定路径
    * @param planTitle 可选方案名称
    */
   public async resolveSafeOutputPath(
     videoSourcePath: string,
-    isConcat: boolean = true,
+    outputCount = 1,
     planTitle?: string,
     compress?: CompressConfig,
     stripCover = true,
     streams: import('../../shared/types').MediaStreamInfo[] = [],
     precision?: import('../../shared/types').ExportPrecision
   ): Promise<string> {
+    // 与方案最多 10000 个切点形成的输出份数上限一致。
+    if (!Number.isSafeInteger(outputCount) || outputCount < 1 || outputCount > 10001) throw new Error('输出份数无效');
     // 路径仅为预定摘要；复用已载入的流信息，准确媒体检查留在实际执行。
     const extension = precision === 'frame' ? '.mp4' : resolveFormats(videoSourcePath, streams, compress, stripCover).outputExtension;
-    return resolveOutputBatch({ directory: resolveOutputDirectory(videoSourcePath, planTitle), source: videoSourcePath, extension, title: planTitle, segmented: !isConcat })[0];
+    return resolveOutputBatch({ directory: resolveOutputDirectory(videoSourcePath), source: videoSourcePath, extension, title: planTitle, count: outputCount, segmented: outputCount > 1 })[0];
   }
 
   public getConfigPath(): string {
