@@ -9,7 +9,8 @@
     "dev": "vite",
     "build": "tsc && vite build && esbuild electron/preload.ts --bundle --platform=node --format=cjs --outfile=dist-electron/preload.cjs --external:electron",
     "package": "npm run build && electron-builder --win dir --config scripts/electron-builder.cjs",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check:docs": "node scripts/check-docs.cjs"
   },
   "build": {
     "appId": "com.videocuttool.app",

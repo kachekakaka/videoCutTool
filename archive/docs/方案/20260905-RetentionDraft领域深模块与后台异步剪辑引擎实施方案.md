@@ -2,8 +2,8 @@
 
 - **方案编号**：20260905-RetentionDraft领域深模块与后台异步剪辑引擎实施方案
 - **创建日期**：2026-09-05
-- **关联 ADR**：[ADR-0003](../../docs/adr/0003-retention-draft-and-background-cut-engine.md)、[ADR-0001](../../docs/adr/0001-motrix-shell-and-plan-management.md)、[ADR-0002](../../docs/adr/0002-portable-distribution-and-user-data-setup.md)
-- **真源词汇**：[CONTEXT.md](../../CONTEXT.md)
+- **关联 ADR**：[ADR-0003](../../../docs/adr/0003-retention-draft-and-background-cut-engine.md)、[ADR-0001](../../../docs/adr/0001-motrix-shell-and-plan-management.md)、[ADR-0002](../../../docs/adr/0002-portable-distribution-and-user-data-setup.md)
+- **真源词汇**：[CONTEXT.md](../../../CONTEXT.md)
 
 ---
 

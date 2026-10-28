@@ -1,163 +1,156 @@
-# Video Cut Tool (视频裁剪工具)
+# 领域术语
 
-A lightweight, cross-platform desktop application and embeddable module for lossless video trimming, featuring a Motrix-inspired interface, decoupled planning engine, and protocol compatibility with JA_WORKSPACE.
+本文只定义业务概念及其边界。技术路径与数据归属见[架构](docs/架构.md)，字段、枚举和默认值见 [types.ts](src/shared/types.ts)。下列英文名称是代码与文档使用的统一术语；“避免”列出的别名不用于指代同一概念。
 
-## Language
+## Core Editing Concepts
 
-### Core Editing Concepts
+### Cut Point
+用户插入时间轴的毫秒时间点，将一个连续区间分为相邻两段。
+避免：Marker、split point、tag、divider。
 
-**Cut Point**:
-A discrete millisecond timestamp inserted by the operator on the timeline that splits a video or segment into two adjacent segments.
-_Avoid_: Marker, split point, tag, divider
+### Segment
+由媒体边界或 Cut Point 围成的连续时间区间。
+避免：Clip、slice、part、chunk。
 
-**Segment**:
-A contiguous interval of video playback time bounded by the media boundaries or user-inserted cut points.
-_Avoid_: Clip, slice, part, chunk
+### Retention Decision
+用户对 Segment 作出的保留 `keep` 或舍弃 `discard` 决定。
+避免：Flag、status、label、toggle。
 
-**Retention Decision**:
-The operator's explicit classification of a segment as either `keep` (retained in output) or `discard` (cut out).
-_Avoid_: Flag, status, label, toggle
+### Retention Draft
+正在编辑的内存草稿，包含原片、切点、保留决定、画面处理和输出分组；页面切换保留草稿。切点变化须维持编辑不变量，例如合并区间时安全保留已有的保留决定。它不是已落盘的 Plan Record。
+避免：Workspace state、project、draft file。
 
-**Retention Draft**:
-The editable, in-progress state of an ongoing timeline session, containing the source media path, cuts, and per-segment retention decisions. Maintains editing invariants across cut mutations (safely preserving 'keep' decisions upon segment consolidation) and persists in-memory across view navigation.
-_Avoid_: Workspace state, project, draft file
+### Retention Plan
+从草稿计算出的不可变执行规格，描述导出精度、实际处理区间、目的文件与拼接关系。具体边界策略见 Export Precision。
+避免：Export config、cut recipe、job。
 
-**Retention Plan**:
-The immutable execution specification computed from a draft, containing the export precision, physical slice boundaries, destinations, and concatenation rules. Keyframe mode expands ranges for stream copy; frame mode uses the selected display-frame ranges for re-encoding.
-_Avoid_: Export config, cut recipe, job
+### Output File Group
+共同产生一个输出文件的保留片段集合。成员可不相邻，按原片时间顺序拼接；文件按首个成员排序。界面称“文件 N”，合成文件与删除切点是两种操作。分组归属随切点编辑后的区间延续，并随草稿和方案保存。
 
-**Output File Group**:
-A set of retained segments that produces one output file. Membership may be non-adjacent; members are concatenated in source-time order, and files are ordered by their earliest member. The UI names the result “文件 N”, exposes its members, and distinguishes “合成一个文件” from removing a Cut Point. A Retention Draft supports separate, single-file, or custom output; group membership follows intervals through cut edits and is included in snapshots and saved plans.
+### Plan Title
+用户赋予方案的语义标签，用于识别方案及产物命名，不决定输出目录。
+避免：Plan name、job label、tag name。
 
-**Plan Title**:
-The operator-assigned semantic label designating an editing draft or retention plan, persisted in the plan record and injected into the exported media artifact filename as a bracketed prefix (`[Title]`).
-_Avoid_: Plan name, job label, tag name
+### Safe Range
+为保全用户选中内容而向外对齐关键帧的范围；不适用于承诺逐帧精确截断。
+避免：Keyframe range、expanded slice、snapped boundary。
 
-**Safe Range**:
-The keyframe-aligned time interval computed outward from a user range, strictly adhering to the safety principle: expanding boundaries outward to previous/following keyframes so that no kept content is truncated.
-_Avoid_: Keyframe range, expanded slice, snapped boundary
+### Export Precision
+裁剪方案的边界策略：`keyframe` 使用 Safe Range；`frame` 对应“精确导出”，包含起点显示帧、不包含终点显示帧。精度与输出文件分组独立；编码行为和适用限制见[导出模式](docs/架构.md#导出模式)。
 
-**Export Precision（导出精度）**:
-裁剪方案的边界策略：`keyframe` 使用关键帧保全范围；`frame` 对应“精确导出”，按起点包含、终点不包含的显示帧区间重新编码视频及音频。它与输出文件组合方式独立；智能降码继续使用关键帧保全范围。
+### Cut Point Mutation & Snapping
+通过拖动或直接编辑时间修改既有切点，并受相邻切点约束，可吸附到关键帧。手势阈值与碰撞限制查 [Timeline](src/renderer/components/Timeline.tsx) 和 [RetentionDraft](src/shared/RetentionDraft.ts)。
+避免：Marker moving、split shift、point sliding。
 
-**Cut Point Mutation & Snapping**:
-The operator-driven relocation of an existing cut point via 300ms long-press drag or direct timecode editing, strictly bounded by neighboring cut points (>=200ms collision barrier) and optionally magnetizing to adjacent physical keyframes.
-_Avoid_: Marker moving, split shift, point sliding
+### Scrub Thumbnail Preview
+拖动切点时显示目标时刻的独立缩略预览，不驱动主播放器定位。
+避免：Video hover tooltip、slice popup、mini player。
 
-**Scrub Thumbnail Preview**:
-A lightweight, decoupled floating video thumbnail card rendered directly above the active cut point during drag operations, displaying the exact target frame without interrupting or seeking the primary playback canvas.
-_Avoid_: Video hover tooltip, slice popup, mini player
+### In-place Timecode Editing
+在切点或片段的时间文本处直接输入并校验时间，更新草稿中的对应边界。
+避免：Time dialog、manual timestamp entry、direct box。
 
-**In-place Timecode Editing**:
-Direct keyboard text entry and validation of a cut point's timestamp via double-click on the timeline or single-click on the segment card, updating the retention draft with instant millisecond precision.
-_Avoid_: Time dialog, manual timestamp entry, direct box
+### Spatial Crop
+以矩形选择保留画面区域，裁掉区域外画面并改变输出尺寸。
+避免：Video crop、region cut、picture cut、frame slice。
 
-**Spatial Crop**:
-An operator-defined rectangular canvas boundary applied to a segment or full media, retaining enclosed visual content while discarding outer areas and adjusting export resolution accordingly.
-_Avoid_: Video crop, region cut, picture cut, frame slice
+### Crop Aspect Ratio Lock
+限制 Spatial Crop 矩形的宽高比例，缩放时维持选定比例。
+避免：Ratio snap、fixed shape、size lock。
 
-**Crop Aspect Ratio Lock**:
-The optional geometric constraint fixing the proportional dimensions (e.g. 16:9, 9:16, 1:1, or native source aspect) of a Spatial Crop bounding box during interactive resizing.
-_Avoid_: Ratio snap, fixed shape, size lock
+### Region Mask
+用黑块、模糊或马赛克遮挡指定矩形区域，保持原画布尺寸。
+避免：Blackout box、sticker、cover box、censor box。
 
+### Watermark Delogo
+利用矩形周边像素修补静态台标或水印区域；不是 AI 内容恢复。
+避免：Watermark erase、AI inpaint、logo remover、de-watermark。
 
-**Region Mask**:
-An operator-defined rectangular overlay obscuring targeted on-screen content (such as logos, watermarks, or sensitive data) via solid blackout, blur, or pixelation, strictly preserving original canvas dimensions.
-_Avoid_: Blackout box, sticker, cover box, censor box
+### Global Box Propagation
+将指定片段的裁剪或遮罩参数单向复制到当前草稿的其他片段，不建立持续联动。
+避免：Apply to all、global sync、copy crop。
 
-**Watermark Delogo**:
-The targeted elimination of static on-screen logos, identifiers, or watermarks within an operator-defined rectangular boundary using surrounding-pixel edge interpolation (FFmpeg delogo) to achieve smooth, dependency-free background restoration without inflating binary footprint.
-_Avoid_: Watermark erase, AI inpaint, logo remover, de-watermark
+### Dual-Mode Workbench Decoupling
+工作台的时间剪辑与画面处理两种视图互斥显示；画面处理聚焦画布并暂停时间轴播放，两者写入同一方案。
+避免：Split editor、dual window、multi-screen mode。
 
-**Global Box Propagation**:
-The one-way batch replication of a designated segment's spatial crop or mask parameters across all other segments within the active retention draft.
-_Avoid_: Apply to all, global sync, copy crop
+### Global-First Spatial Scope
+画面处理默认作用于整片，允许单独片段覆盖全局配置。
+避免：Default all、global override、segment-first。
 
-**Dual-Mode Workbench Decoupling**:
-The interaction architecture dividing the workspace into two mutually exclusive visual modes within the workbench: Temporal Cut Mode (pure timeline segmentation with zero on-canvas handles) and Spatial Edit Mode (canvas-focused cropping and masking with paused timeline), saving into a unified retention plan.
-_Avoid_: Split editor, dual window, multi-screen mode
+## Management & Execution Concepts
 
-**Global-First Spatial Scope**:
-The scoping policy where spatial crops and masks apply globally across the entire media by default, while permitting optional segment-level overrides for tailored regional edits.
-_Avoid_: Default all, global override, segment-first
+### Media Cutting Engine
+负责后台执行 Retention Plan 的处理模块，协调媒体处理、产物发布与执行状态。实现入口与队列边界见[模块与契约](docs/架构.md#模块与契约)。
+避免：Export queue、worker thread、task runner、ffmpeg wrapper。
 
+### Plan Manager
+创建、查看、修改、删除及提交执行已保存方案的管理模块。
+避免：Task queue、history list、plan store。
 
+### Plan Record
+针对单个源视频持久保存的方案记录，包含处理意图、输出位置与最近执行状态。裁剪记录关联已确认的源版本和共享索引；整片压缩记录独立保存、编辑和执行，不与同批创建的其他记录保持参数联动。保存成功不代表素材已经通过完整媒体检查。
+避免：Task、job record、cut file。
 
-### Management & Execution Concepts
+### Media Index
+与具体源文件版本绑定的定位与时间轴信息，不包含视音频内容，也不替代原片。同一视频的多个方案共享索引；完整索引持久保留，解除方案引用或闲置不会自动删除。源文件变化或索引失效后不能继续据此定位，失效不等于删除。
+避免：视频副本、整片播放缓存。
 
-**Media Cutting Engine**:
-The dedicated background processing subsystem responsible for asynchronously executing retention plans, orchestrating FFmpeg stream copies or precise re-encoding, collision-free output naming, temporary slice lifecycle, and plan execution state updates.
-_Avoid_: Export queue, worker thread, task runner, ffmpeg wrapper
+### Data Directory
+用户选定的持久数据目录，与程序目录及运行缓存分开；具体资产归属见[数据与产物归属](docs/架构.md#数据与产物归属)。
+避免：Workspace folder、cache dir、project folder。
 
-**Plan Manager**:
-The central repository and UI module for creating, viewing, updating, deleting (CRUD), and executing saved retention plans.
-_Avoid_: Task queue, history list, plan store
+### Application Configuration
+Data Directory 中的运行配置，管理工具、执行与通知等设置；字段及默认值以代码为准。
+避免：Preferences、options、ini file。
 
-**Plan Record**:
-针对单个源视频持久化保存的方案记录，包含输出位置、保留决策、处理参数与最近执行状态。裁剪记录还保存用户已确认的源文件版本、内容修订和共享索引引用；纯执行状态更新不改变内容修订，旧记录未确认对应关系前不能执行原切点。批量压缩创建的记录限定为整片压缩，允许准确时长尚未确认，独立编辑和执行，不与同次创建的其他记录保持参数联动；保存成功表示处理意图已持久化，不代表素材已通过完整媒体检查。
-_Avoid_: Task, job record, cut file
+### Initial Data Setup
+启动时没有有效数据目录绑定而出现的初始化流程，引导用户选择或建立 Data Directory。
 
-**Media Index（媒体索引）**:
-与具体源文件版本绑定的定位与时间轴信息，不包含视频或音频内容；同一视频的多个 Plan Record 共享一份，完整索引持久保留，方案解除引用不会删除索引，也不按闲置媒体缓存自动淘汰。索引不替代原片，文件变化或索引失效后不能继续据此定位，失效不等于删除。
-_Avoid_: 视频副本, 整片播放缓存
+### Standalone Portable Executable
+无需安装的便携目录发行方式，由根启动器、工作区指针与完整运行目录共同组成；不能仅复制一个启动文件。它不承诺固定启动耗时。
+避免：Green package、installer package、single-file SFX。
 
-**Data Directory**:
-The user-designated persistent directory hosting the runtime application configuration (`config.json`), saved plan records (`plans/`), and localized user data, completely isolated from application source code.
-_Avoid_: Workspace folder, cache dir, project folder
+### Execution Status
+方案持久保存的执行阶段：`ready` 未提交，`queued` 已接受并等待，`processing` 后台处理中，`completed` 导出完成并记录产物，`failed` 执行失败或上次中断、可重试。状态与恢复操作的实现边界见[模块与契约](docs/架构.md#模块与契约)。
+避免：Run state、task progress、finish flag。
 
-**Application Configuration**:
-The persistent settings file (`config.json`) governing default output paths, toolchain discovery, background notification preferences, and execution options, stored directly within the active Data Directory.
-_Avoid_: Preferences, options, ini file
+### Execution Progress
+单次执行的当前处理阶段与整项完成比例，是临时运行信息，与 Execution Status、播放准备进度和剩余时间估算不同。只有产物发布和完成状态保存均成功时才达到 100%，失败或重试不是完成。
+避免：Preview progress、segment progress、elapsed-time ratio。
 
-**Initial Data Setup**:
-The interactive prompt presented upon application startup when no configuration file is detected in the program directory, prompting the operator to specify or initialize their Data Directory.
-_Avoid_: Install wizard, first-run guide, path dialog
+### Output Directory Policy
+裁剪方案（含裁剪后压缩）固定输出到原视频目录下的 `cut/`，整片压缩输出到 `压缩/`，均不按方案分目录。已有产物不搬迁，方案记录仍在 Data Directory。
+避免：Export path rule、save target。
 
-**Standalone Portable Executable**:
-The zero-installer, instant-launch distribution employing a Clean Root architecture: a root native micro-launcher (`VideoCutTool.exe`), workspace pointer (`workspace.json`), and consolidated runtime directory (`app/`), running without system installation or temporary unpack delays.
-_Avoid_: Green package, zip distribution, installer package, single-file SFX
+### Output Naming Policy
+文件名依次包含可选方案标签 `[Title]`、原文件主名、分段编号或默认 `_cut` 标记、处理时间 `YYYYMMDD_HHmm`，日期在扩展名前。同名时在日期后追加递增序号。裁剪与整片压缩共用规则，已有文件不重命名。
+避免：Export filename rule、cut name format、naming template。
 
-**Execution Status**:
-The persistent lifecycle state of a plan record: `ready`（未提交）、`queued`（已接受并等待执行）、`processing`（后台处理中）、`completed`（导出完成并记录产物路径）与 `failed`（执行失败或上次执行中断，可重试）。状态保存成功后才确认接受任务和广播变更；同一 ID 在排队、执行及结果保存期间只接受一次。处理中不能删除或覆盖保存；排队记录删除时同步移出队列。恢复快照和删除标记属于 Data Directory 中的长期用户恢复数据。
-_Avoid_: Run state, task progress, finish flag
+### Collision Avoidance
+目标名称已存在时自动增加序号，为新产物选择未占用的路径，不覆盖已有媒体。
+避免：Overwrite prevention、deduplication、auto-rename。
 
-**Execution Progress**:
-方案单次执行期间的当前处理阶段与整项任务完成比例，涵盖裁剪、合并、转码及交付收尾；它是临时运行信息，与持久化的 Execution Status、兼容播放预览进度及剩余时间估算不同。只有产物发布和完成状态保存均成功时才达到 100%，失败或重试不能被解释为任务完成。
-_Avoid_: Preview progress, segment progress, elapsed-time ratio
+### Compression Preset
+智能降码使用的编码参数组合，包含质量、尺寸与编码器选择；预设和自定义参数以 [compressPresets](src/shared/compressPresets.ts) 为准。精确导出不借用此概念描述其边界策略。
+避免：Transcode profile、export preset、quality mode。
 
-**Output Directory Policy**:
-产物固定保存在原视频所在目录下：裁剪方案（含裁剪后压缩）的产物统一放入 `cut/`，整片压缩产物统一放入 `压缩/`，均不按方案分目录。方案名称仅参与产物文件命名。已有产物不搬迁，方案记录仍存放在 Data Directory 中。
-_Avoid_: Export path rule, save target
+### Batch Compression
+对多份源视频应用同一套初始压缩参数，并为每份视频分别创建 Plan Record。批量描述创建方式，不表示合并视频或建立多源方案。选入只作快速基础检查，保存不探测媒体，准确时长和完整检查可留到执行；创建及单条编辑不包含播放预览、画质对比、分段裁剪或画面处理。
+避免：批量剪辑、合并压缩、多文件方案。
 
-**Output Naming Policy**:
-产物文件名依次由可选方案标签 `[Title]`、原文件主名、分段编号（或默认 `_cut` 标记）、处理日期时间 `YYYYMMDD_HHmm` 组成，日期位于扩展名前；同名时在日期后追加递增序号。裁剪与整片压缩共用此命名规则，已有文件不重命名。
-_Avoid_: Export filename rule, cut name format, naming template
+### Visual Compression Preview
+最终导出前，对代表性采样画面实际编码并与原画面作 A/B 对比，用于观察画质，不保证最终文件体积。
+避免：Sample viewer、quality test、transcode check。
 
-**Collision Avoidance**:
-The automated filesystem protection mechanism that appends an incremental numeric suffix (`_01`, `_02`) whenever a target output path already exists on disk, guaranteeing zero overwrite of previously exported media.
-_Avoid_: Overwrite prevention, deduplication, auto-rename
+### Preview Sample Point
+专用于画质对比的毫秒时间点，与 Cut Point 独立，增删采样点不改变视频分段和保留决定。
+避免：Cut marker、test cut、compare marker、sample slice。
 
-**Compression Preset**:
-The curated encoding profile (`high_quality`, `balanced`, `high_compression`, `scale_1080p`) governing rate control (CRF), resolution limits, and encoder selection while strictly preserving original audio via stream copy.
-_Avoid_: Transcode profile, export preset, quality mode
+### Transcode Auto-Escalation
+画面处理需要重新编码视频：关键帧模式进入智能降码，精确模式沿用其编码流程。实际编码规则见[导出模式](docs/架构.md#导出模式)。
+避免：Force compress、auto transcode、transcode bump。
 
-**Batch Compression（批量压缩）**:
-对多个源视频整片应用同一套压缩参数，一次保存为每个源视频各自独立的 Plan Record，再由 Plan Manager 执行；创建和保存仅进行快速基础检查，准确时长可以待确认，耗时的完整媒体检查归属执行阶段，创建及单条编辑不包含播放预览、画质对比、分段裁剪或画面处理。批量只描述方案的创建方式，不代表将多个视频合并为一个产物，也不新增包含多个视频的方案记录。
-_Avoid_: 批量剪辑, 合并压缩, 多文件方案
-
-**Visual Compression Preview**:
-The rapid on-demand A/B verification interface extracting representative keyframe samples from kept media intervals, presenting interactive split-slider and side-by-side comparisons between original and encoded frames prior to final rendering.
-_Avoid_: Sample viewer, quality test, transcode check
-
-**Preview Sample Point**:
-A discrete millisecond timestamp designated specifically for the Visual Compression Preview, indicating an exact video frame sampled for original vs compressed quality inspection. Strictly decoupled from Cut Points, it does not alter media segmentation or retention decisions, supports timeline double-click or timecode entry for addition, and can be removed via scene capsule interaction without leaving clutter on the primary timeline.
-_Avoid_: Cut marker, test cut, compare marker, sample slice
-
-**Transcode Auto-Escalation**:
-The automated pipeline policy that upgrades an export job from lossless stream copy to the compression and re-encoding engine whenever spatial cropping, masking, or visual filters are configured.
-_Avoid_: Force compress, auto transcode, transcode bump
-
-**Letterbox Normalization**:
-The automatic visual alignment mechanism that embeds cropped segments with disparate resolutions onto a uniform canvas using letterbox padding and centered scaling during single-file concatenation.
-_Avoid_: Canvas fit, auto pad, dimension align
-
+### Letterbox Normalization
+把不同尺寸的已裁剪片段缩放并居中填充到统一画布，使同一输出文件中的画面尺寸一致。
+避免：Canvas fit、auto pad、dimension align。

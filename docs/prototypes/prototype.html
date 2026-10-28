@@ -237,7 +237,7 @@
     /* Tab 页面容器 */
     .tab-page {
       display: none;
-      padding: 24px 28px 110px;
+      padding: 24px 28px calc(var(--dock-height, 110px) + 24px);
       max-width: var(--content-max-width);
       width: 100%;
       margin: 0 auto;
@@ -881,6 +881,8 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px 24px;
     }
 
     .footer-stats {
@@ -888,6 +890,19 @@
       align-items: center;
       gap: 20px;
       font-size: 13px;
+      flex-wrap: wrap;
+    }
+
+    .export-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+    .export-controls label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+    .export-boundary { flex-basis: 100%; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+    #prototype-notice { margin: auto; padding: 24px; max-width: min(520px, calc(100vw - 32px)); color: #f0f6fc; background: #161b22; border: 1px solid #30363d; border-radius: 14px; }
+    #prototype-notice::backdrop { background: #000b; }
+    #prototype-notice-message { white-space: pre-line; line-height: 1.7; margin: 16px 0; }
+    @media (max-width: 1200px) {
+      .header-inner { flex-wrap: wrap; gap: 12px; }
+      .header-actions { flex-wrap: wrap; }
+      .footer-stats { gap: 12px; }
     }
 
     .stat-item {
@@ -968,6 +983,8 @@
       border-top: 1px solid var(--border-subtle);
       display: flex;
       justify-content: flex-end;
+    }
+
     /* ========================================================= */
     /* 10. 双模式物理解耦工作台与空间修饰 (Dual-Mode & Spatial Edit) */
     /* ========================================================= */
@@ -1360,7 +1377,7 @@
         <div class="header-title">
           <span id="page-heading">视频裁剪工作台</span>
           <span style="font-size: 11px; padding: 2px 8px; border-radius: 12px; background: rgba(88, 166, 255, 0.15); color: var(--accent-blue); border: 1px solid rgba(88, 166, 255, 0.25);">
-            Motrix Shell
+            交互演示 · 不处理媒体
           </span>
         </div>
 
@@ -1382,8 +1399,8 @@
             </svg>
             存为方案
           </button>
-          <button class="btn" onclick="openPlanModal()">查看方案 JSON</button>
-          <button class="btn btn-primary" onclick="triggerExecution()">
+          <button class="btn" onclick="openPlanModal()">查看方案示意</button>
+          <button class="btn btn-primary" id="header-export-button" onclick="triggerExecution()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
               <polygon points="5 3 19 12 5 21 5 3"></polygon>
             </svg>
@@ -1640,16 +1657,16 @@
             <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
             <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
           </svg>
-          启动持久化配置 (config.json)
+          数据目录与启动配置
         </div>
 
         <div class="setting-item">
           <div class="setting-text">
-            <h4>位于可执行程序同级的 config.json</h4>
-            <p>软件启动时自动检测或生成该文件，方案与策略永久有效。</p>
+            <h4>配置与方案保存在选定的数据目录</h4>
+            <p>程序目录的 workspace.json 记录数据位置；实际 config.json 与方案保存在数据目录。尚未绑定数据目录时先完成初始化。</p>
           </div>
           <div class="setting-control">
-            <button class="btn" onclick="openConfigModal()">查看 / 刷新 config.json</button>
+            <button class="btn" onclick="openConfigModal()">查看保存位置示意</button>
           </div>
         </div>
       </div>
@@ -1659,13 +1676,13 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
           </svg>
-          LosslessCut 同款无损流复制与保全
+          导出边界
         </div>
 
         <div class="setting-item">
           <div class="setting-text">
             <h4>关键帧“绝不多删”安全对齐</h4>
-            <p>自动向左吸附前一个关键帧，保证正片零截断、不黑屏、秒切无损。</p>
+            <p>快速无损与智能降码按关键帧保全内容，可能带入所选范围外的画面。精确导出按显示帧边界重新编码，耗时更长、非严格无损。</p>
           </div>
           <div class="setting-control">
             <input type="checkbox" checked disabled style="width: 18px; height: 18px; accent-color: #2ea043;" />
@@ -1814,12 +1831,14 @@
         </div>
       </div>
 
+    </div>
+
     <!-- Tab 5: 画面空间编辑与去水印演进实验室 (Spatial Editing & Delogo Lab) -->
     <div class="tab-page" id="tab-page-spatial">
       <div style="display: flex; flex-direction: column; gap: 18px;">
         <!-- 顶部架构规范说明条 -->
         <div style="background: rgba(88, 166, 255, 0.08); border: 1px solid rgba(88, 166, 255, 0.25); border-radius: 12px; padding: 12px 18px; font-size: 12.5px; color: #58a6ff; display: flex; align-items: center; justify-content: space-between;">
-          <span>📐 <b>画面空间编辑架构</b>：双模式解耦、全局优先作用域、FFmpeg 原生免安装 <code>delogo</code> / <code>crop</code> 极速算子，自动升轨为智能转码。</span>
+          <span>📐 <b>画面处理示意</b>：时间剪辑与画面处理分开操作，默认作用于全片。画面处理需要重新编码，可结合智能降码或精确导出。</span>
           <span style="color: #bc8cff; font-family: monospace;">原片绝对坐标锚定 · 零额外体积 · 统一方案归一</span>
         </div>
 
@@ -1913,7 +1932,7 @@
                 <span>🚀</span> 转码自动升轨策略 (Auto-Escalation)
               </h4>
               <ul style="font-size: 11.5px; color: var(--text-muted); line-height: 1.6; padding-left: 18px; margin: 0;">
-                <li>只要方案包含任何裁切或去水印遮罩，导出引擎自动由 <code>-c copy</code> 升轨为高质量智能转码；</li>
+                <li>包含裁切或遮罩时，关键帧模式使用智能降码；精确模式沿用其重新编码流程；</li>
                 <li>若用户强切回流复制，交互拦截并提示需先清空空间配置；</li>
                 <li>分段独立导出时保留各自画幅分辨率，单文件合并时自动启用 Letterbox 居中对齐。</li>
               </ul>
@@ -1940,17 +1959,23 @@
           <div class="stat-item">
             <span class="stat-dot blue" id="stat-export-dot"></span>
             <span>模式:</span>
-            <span id="stat-export-mode" style="color: #7ee787; font-weight: 500;">极速流拷贝 (-c copy)</span>
+            <span id="stat-export-mode" style="color: #7ee787; font-weight: 500;">快速无损</span>
           </div>
         </div>
 
-        <div style="display: flex; align-items: center; gap: 16px;">
+        <div class="export-controls">
+          <label for="export-mode"><span>导出模式</span>
+            <select id="export-mode" class="select-input" onchange="setPrototypeExportMode(this.value)">
+              <option value="keyframe">快速无损</option><option value="compress">智能降码</option><option value="frame">精确导出</option>
+            </select>
+          </label>
           <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); cursor: pointer;">
             <span>输出方式</span>
             <select id="output-mode" onchange="setOutputMode(this.value)"><option value="separate">分别输出</option><option value="single" selected>全部合成一个</option><option value="custom">自定义合并</option></select>
           </label>
-          <button class="btn btn-primary" onclick="triggerExecution()">🚀 立即执行剪辑</button>
+          <button class="btn btn-primary" id="dock-export-button" onclick="triggerExecution()">立即导出</button>
         </div>
+        <p class="export-boundary" id="export-boundary" aria-live="polite"></p>
       </div>
     </div>
   </div>
@@ -1959,10 +1984,11 @@
   <div class="modal-backdrop" id="plan-modal">
     <div class="modal-box">
       <div class="modal-header">
-        <div style="font-size: 15px; font-weight: 600;" id="modal-title">标准剪辑方案预览 (MediaRetentionPlan)</div>
+        <div style="font-size: 15px; font-weight: 600;" id="modal-title">原型方案示意</div>
         <button class="btn" onclick="closePlanModal()" style="padding: 4px 8px;">✕</button>
       </div>
       <pre class="modal-body" id="plan-json-display"></pre>
+      <p style="padding: 0 24px 12px; color: #8b949e; font-size: 12px;">此处仅说明交互，不是可导入的配置模板。实际数据契约见 <a href="../../src/shared/types.ts">types.ts</a>，职责与保存位置见 <a href="../架构.md">架构文档</a>。</p>
       <div class="modal-footer">
         <button class="btn" onclick="copyModalContent()">复制内容</button>
         <button class="btn btn-primary" onclick="closePlanModal()">关闭</button>
@@ -1985,7 +2011,21 @@
     </form>
   </dialog>
 
+  <dialog id="prototype-notice" aria-labelledby="prototype-notice-title">
+    <h3 id="prototype-notice-title"></h3>
+    <p id="prototype-notice-message"></p>
+    <form method="dialog" style="display:flex;justify-content:flex-end;gap:10px">
+      <button class="btn" id="prototype-notice-cancel" value="cancel">取消</button>
+      <button class="btn btn-primary" id="prototype-notice-confirm" value="confirm">知道了</button>
+    </form>
+  </dialog>
+
   <script>
+    const prototypeCropRects = {
+      source: { x: 10, y: 10, width: 80, height: 80 },
+      '9:16': { x: 32, y: 5, width: 36, height: 90 },
+      '1:1': { x: 25, y: 10, width: 50, height: 80 }
+    };
     const state = {
       durationMs: 150000,
       currentMs: 0,
@@ -1995,6 +2035,7 @@
       currentVideoPath: 'D:/Movies/sample_movie.mp4',
       currentFilter: 'all',
       outputMode: 'single', outputGroups: {},
+      exportPrecision: 'keyframe', compressEnabled: false,
       cuts: [30000, 93055, 110000],
       decisions: {
         seg_0: 'discard',
@@ -2006,10 +2047,7 @@
       workbenchMode: 'temporal', // 'temporal' | 'spatial'
       spatialSubMode: 'crop',    // 'crop' | 'mask'
       cropConfig: {
-        x: 10,
-        y: 10,
-        width: 80,
-        height: 80,
+        ...prototypeCropRects.source,
         ratio: 'free',
         locked: false
       },
@@ -2025,7 +2063,10 @@
           id: 'plan_20260903_01',
           title: 'sample_movie.mp4 (去片头与中插广告)',
           sourcePath: 'D:/Movies/sample_movie.mp4',
-          outputPath: 'D:/Movies/cut_sample_movie.mp4 (去片头与中插广告)/sample_movie_cut.mp4',
+          outputPath: 'D:/Movies/cut/[去片头与中插广告]sample_movie_cut_20260903_2045.mp4',
+          exportPrecision: 'keyframe', compressEnabled: true,
+          cropConfig: { ...prototypeCropRects['9:16'], ratio: '9:16', locked: false },
+          maskList: [{ id: 'saved_mask_1', name: '台标', x: 75, y: 8, width: 18, height: 10, type: 'delogo' }, { id: 'saved_mask_2', name: '字幕', x: 20, y: 85, width: 60, height: 8, type: 'black' }],
           totalDurationMs: 150000,
           keptDurationMs: 103055,
           cutsCount: 3,
@@ -2041,7 +2082,8 @@
           id: 'plan_20260902_02',
           title: 'tutorial_full_hd.mkv (仅截取核心讲解)',
           sourcePath: 'D:/Projects/tutorial_full_hd.mkv',
-          outputPath: 'D:/Projects/cut_tutorial_full_hd.mkv (仅截取核心讲解)/tutorial_full_hd_cut.mkv',
+          outputPath: 'D:/Projects/cut/[仅截取核心讲解]tutorial_full_hd_cut_20260902_1822.mkv',
+          exportPrecision: 'keyframe', compressEnabled: false,
           totalDurationMs: 3600000,
           keptDurationMs: 1800000,
           cutsCount: 2,
@@ -2376,7 +2418,7 @@
           <div class="plan-info">
             <div class="plan-title">
               <input type="checkbox" aria-label="选择方案" ${selectedPrototypePlans.has(plan.id) ? 'checked' : ''} ${busy || isCompleted ? 'disabled' : ''} onchange="this.checked ? selectedPrototypePlans.add('${plan.id}') : selectedPrototypePlans.delete('${plan.id}')" />
-              <span>${safeText(plan.title)}</span>${plan.compressionOnly ? '<span style="color:#bc8cff;font-size:11px">整片压缩</span>' : ''}
+              <span>${safeText(plan.title)}</span><span style="color:#bc8cff;font-size:11px">${plan.compressionOnly ? '整片压缩' : plan.exportPrecision === 'frame' ? '精确导出' : plan.compressEnabled ? '智能降码' : '快速无损'}</span>
               <span class="status-tag ${isCompleted ? 'completed' : 'ready'}">
                 ${isCompleted ? '✔ 已完成 · 100%' : plan.status === 'queued' ? '等待处理' : plan.status === 'processing' ? '处理中' : '⏳ 待执行'}
               </span>
@@ -2385,13 +2427,13 @@
             </div>
             <div class="plan-path-sub">来源: ${safeText(plan.sourcePath)}</div>
             <div class="plan-path-sub" style="color: ${isCompleted ? '#3fb950' : '#58a6ff'};">
-              ${plan.outputPath ? '产物: ' + safeText(plan.outputPath) : '输出目录: ' + safeText(plan.outputDirectory)} ${isCompleted ? '(已生成)' : ''}
+              ${plan.outputPath ? '产物示意: ' + safeText(plan.outputPath) : '输出目录: ' + safeText(plan.outputDirectory)} ${isCompleted ? '(演示完成)' : ''}
             </div>
             <div class="plan-meta-row">
               <span>切点: ${plan.cutsCount} 个</span>
               <span>保留正片: ${plan.keptDurationMs == null ? '时长待确认' : formatDuration(plan.keptDurationMs)}</span>
               <span>更新时间: ${plan.updatedAt}</span>
-              ${plan.spatialCrop || plan.masksCount ? '<span style="color: #bc8cff;">● 包含空间修饰 (智能转码升轨)</span>' : ''}
+              ${plan.spatialCrop || plan.masksCount ? '<span style="color: #bc8cff;">● 包含画面处理，需要重新编码</span>' : ''}
               ${isCompleted && plan.completedAt ? `<span style="color: #3fb950;">执行完成于: ${plan.completedAt}</span>` : ''}
             </div>
           </div>
@@ -2430,7 +2472,7 @@
       renderPlansList();
     }
 
-    function saveCurrentToPlans() {
+    function saveCurrentToPlans({ notify = true } = {}) {
       const planId = `plan_${Date.now()}`;
       const segments = getSegments();
       let keptMs = 0;
@@ -2440,7 +2482,11 @@
         id: planId,
         title: `${state.currentVideoPath.split('/').pop()} (剪辑方案)`,
         sourcePath: state.currentVideoPath,
-        outputPath: `${state.currentVideoPath.replace(/[\\/][^\\/]+$/, '')}/cut/${state.currentVideoPath.split('/').pop().replace(/\.[^/.]+$/, "")}_cut.mp4`,
+        outputPath: prototypeOutputPath(state.currentVideoPath, '剪辑方案'),
+        exportPrecision: state.exportPrecision,
+        compressEnabled: prototypeExportMode() === 'compress',
+        cropConfig: structuredClone(state.cropConfig), maskList: structuredClone(state.maskList),
+        spatialCrop: hasPrototypeSpatial() ? state.cropConfig.ratio : null, masksCount: state.maskList.length,
         totalDurationMs: state.durationMs,
         keptDurationMs: keptMs,
         cutsCount: state.cuts.length,
@@ -2453,7 +2499,8 @@
 
       state.savedPlans.unshift(newPlan);
       renderPlansList();
-      alert('已成功保存当前方案到【方案管理中心】！');
+      if (notify) showPrototypeNotice('方案已保存到演示列表', '导出模式与画面配置会随方案回载；刷新页面会重置演示数据。');
+      return planId;
     }
 
     function loadPlanToCutter(planId) {
@@ -2464,6 +2511,10 @@
       state.cuts = [...plan.cuts];
       state.decisions = { ...plan.decisions };
       state.outputMode = plan.outputMode || 'single'; state.outputGroups = { ...plan.outputGroups };
+      state.exportPrecision = plan.exportPrecision || 'keyframe'; state.compressEnabled = !!plan.compressEnabled;
+      state.cropConfig = structuredClone(plan.cropConfig || { x: 0, y: 0, width: 100, height: 100, ratio: 'free', locked: false });
+      state.maskList = structuredClone(plan.maskList || []); state.durationMs = plan.totalDurationMs;
+      renderSpatialOverlay(); updateExportModeIndicator();
       selectedOutput.clear(); selectingOutput = false; outputHistory = [];
       state.currentVideoPath = plan.sourcePath;
       document.getElementById('video-name-tag').innerText = `${plan.title} (正在编辑)`;
@@ -2472,14 +2523,16 @@
       renderSegmentCards();
       drawTimeline();
       seekTo(0);
-      alert(`已成功载入方案【${plan.title}】到工作台！`);
+      showPrototypeNotice('已载入方案', plan.title + '；导出模式与画面配置已恢复。');
     }
 
-    function deletePlan(id) {
+    async function deletePlan(id) {
       const index = state.savedPlans.findIndex(plan => plan.id === id);
       if (index < 0 || state.savedPlans[index].status === 'processing') return;
-      if (confirm('确认删除该方案记录？')) {
-        state.savedPlans.splice(index, 1);
+      if (await showPrototypeNotice('删除方案', '确认删除该演示记录？', true)) {
+        const current = state.savedPlans.findIndex(plan => plan.id === id && plan.status !== 'processing');
+        if (current < 0) return;
+        state.savedPlans.splice(current, 1);
         renderPlansList();
       }
     }
@@ -2505,7 +2558,8 @@
         if (!state.savedPlans.includes(plan)) { prototypeRunning = false; drainPrototypeQueue(); return; }
         plan.status = 'processing'; plan.progressPercent = null; plan.progressStage = '检查视频'; renderPlansList();
         // 原型仅演示阶段变化，正式应用读取实际 FFmpeg 进度。
-        const stages = plan.compressionOnly ? [['转码中', 30], ['转码中', 60], ['转码中', 85], ['转码中', 94], ['校验产物', 95], ['发布中', 97], ['等待保存结果', 99]] : [['裁剪中（1/2）', 20], ['裁剪中（2/2）', 35], ['合并中', 45], ['转码中', 65], ['校验产物', 95], ['发布中', 97], ['等待保存结果', 99]];
+        const processing = plan.exportPrecision === 'frame' ? '按帧边界编码' : plan.compressionOnly || plan.compressEnabled ? '转码中' : '复制保留片段';
+        const stages = [[processing, 25], [processing, 50], [processing, 75], [processing, 94], ['校验产物', 95], ['发布中', 97], ['等待保存结果', 99]];
         stages.forEach(([stage, percent], index) => setTimeout(() => {
           if (plan.compressionOnly && index === 0) { plan.totalDurationMs = 60000; plan.keptDurationMs = 60000; }
           plan.progressStage = stage; plan.progressPercent = percent; renderPlansList();
@@ -2517,7 +2571,7 @@
     function batchExecutePlans() {
       const readyPlans = state.savedPlans.filter(p => p.status === 'ready');
       if (readyPlans.length === 0) {
-        alert('当前没有待执行的方案！');
+        showPrototypeNotice('暂无待执行方案', '请先保存方案或调整筛选。');
         return;
       }
       readyPlans.forEach(p => executePlan(p.id));
@@ -2525,17 +2579,8 @@
     }
 
     function openConfigModal() {
-      const sampleConfig = {
-        "_comment": "VideoCutTool 默认启动配置文件 (放置于 exe 同级目录)",
-        "version": "1.0.0",
-        "keyframe_safety_guaranteed": true,
-        "auto_concat_single_file": true,
-        "ffmpeg_path": "./tools/ffmpeg.exe",
-        "plans_storage_path": "./plans"
-      };
-
-      document.getElementById('modal-title').innerText = '可执行文件同级 config.json 内容';
-      document.getElementById('plan-json-display').innerText = JSON.stringify(sampleConfig, null, 2);
+      document.getElementById('modal-title').innerText = '配置保存位置示意';
+      document.getElementById('plan-json-display').innerText = '程序目录/\n  VideoCutTool.exe\n  workspace.json  → 指向选定的数据目录\n  app/            → 完整运行目录\n\n数据目录/\n  config.json     → 实际运行配置\n  plans/          → 已保存方案\n  其他持久数据     → 恢复记录与完整媒体索引';
       document.getElementById('plan-modal').classList.add('open');
     }
 
@@ -2697,7 +2742,12 @@
     }
     requestAnimationFrame(loop);
 
+    function isPrototypeModalOpen() {
+      return !!document.querySelector('dialog[open], .modal-backdrop.open');
+    }
+
     window.addEventListener('keydown', (e) => {
+      if (e.defaultPrevented || isPrototypeModalOpen()) return;
       if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
       if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
       else if (e.code === 'KeyC') { e.preventDefault(); insertCutAtCurrent(); }
@@ -2711,11 +2761,13 @@
         sourcePath: state.currentVideoPath,
         durationMs: state.durationMs,
         outputMode: state.outputMode,
+        exportPrecision: state.exportPrecision,
+        exportMode: prototypeExportMode(),
         outputs: outputFiles().map(members => ({ segmentIds: members.map(s => s.id) })),
         cuts: state.cuts,
         segments: getSegments()
       };
-      document.getElementById('modal-title').innerText = '当前裁剪方案 JSON (MediaRetentionPlan)';
+      document.getElementById('modal-title').innerText = '原型方案示意（非完整数据契约）';
       document.getElementById('plan-json-display').innerText = JSON.stringify(plan, null, 2);
       document.getElementById('plan-modal').classList.add('open');
     }
@@ -2726,11 +2778,32 @@
 
     function copyModalContent() {
       const text = document.getElementById('plan-json-display').innerText;
-      navigator.clipboard.writeText(text).then(() => alert('已复制到剪贴板！'));
+      navigator.clipboard.writeText(text).then(() => showPrototypeNotice('已复制', '内容已复制到剪贴板。')).catch(() => showPrototypeNotice('复制未完成', '当前浏览器未允许写入剪贴板，请手动选择文本复制。'));
     }
 
     function triggerExecution() {
-      alert(`🚀 无损剪辑开始！\n\n已锁定保留正片。\n调用 FFmpeg 流拷贝 (-c copy) 极速生成视频！\n关键帧保全机制已激活：绝不多删一帧正片！`);
+      const mode = prototypeExportMode();
+      executePlan(saveCurrentToPlans({ notify: false }));
+      showPrototypeNotice('已加入演示队列', prototypeModeLabel(mode) + '：' + document.getElementById('export-boundary').textContent + '\n\n可在方案中心查看模拟进度。本原型不会处理媒体或生成文件。');
+    }
+
+    function showPrototypeNotice(title, message, confirm = false) {
+      const dialog = document.getElementById('prototype-notice');
+      document.getElementById('prototype-notice-title').textContent = title;
+      document.getElementById('prototype-notice-message').textContent = message;
+      document.getElementById('prototype-notice-cancel').hidden = !confirm;
+      document.getElementById('prototype-notice-confirm').textContent = confirm ? '确认删除' : '知道了';
+      dialog.returnValue = '';
+      dialog.showModal();
+      return new Promise(resolve => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true }));
+    }
+
+    function prototypeOutputPath(source, title) {
+      const normalized = source.replaceAll('\\', '/');
+      const now = new Date();
+      const pad = value => String(value).padStart(2, '0');
+      const stamp = now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) + '_' + pad(now.getHours()) + pad(now.getMinutes());
+      return normalized.replace(/\/[^/]+$/, '') + '/cut/[' + title + ']' + normalized.split('/').pop().replace(/\.[^.]+$/, '') + '_cut_' + stamp + '.mp4';
     }
 
     // ==========================================
@@ -2926,12 +2999,14 @@
       document.getElementById('proto-scene-notice').textContent = protoAddScene(state.currentMs);
     });
     document.getElementById('proto-scenes-bar').addEventListener('keydown', event => {
+      if (isPrototypeModalOpen()) return;
       if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault(); protoDeleteScene(labState.scene);
       }
     });
     window.addEventListener('resize', drawProtoCompareTimeline);
     window.addEventListener('keydown', event => {
+      if (isPrototypeModalOpen()) return;
       if (event.key === 'Escape') document.getElementById('proto-compress-panel').style.display = 'none';
     });
 
@@ -3106,58 +3181,36 @@
     }
 
     function setCropRatio(ratio) {
-      state.cropConfig.ratio = ratio;
-      document.querySelectorAll('.ratio-pill').forEach(btn => btn.classList.remove('active'));
-      const activeBtn = document.getElementById(`ratio-pill-${ratio.replace(':', '-')}`) || document.getElementById('ratio-pill-free');
-      if (activeBtn) activeBtn.classList.add('active');
-
-      const cropBox = document.getElementById('proto-crop-box');
-      const badge = document.getElementById('crop-coord-display');
-
-      if (ratio === '9:16') {
-        cropBox.style.left = '32%';
-        cropBox.style.top = '5%';
-        cropBox.style.width = '36%';
-        cropBox.style.height = '90%';
-        badge.innerText = '9:16 移动竖屏 (405 × 720)';
-      } else if (ratio === '16:9' || ratio === 'source') {
-        cropBox.style.left = '10%';
-        cropBox.style.top = '10%';
-        cropBox.style.width = '80%';
-        cropBox.style.height = '80%';
-        badge.innerText = '16:9 原片画幅 (768 × 432)';
-      } else if (ratio === '1:1') {
-        cropBox.style.left = '25%';
-        cropBox.style.top = '10%';
-        cropBox.style.width = '50%';
-        cropBox.style.height = '80%';
-        badge.innerText = '1:1 正方形画幅 (432 × 432)';
-      } else {
-        badge.innerText = '自由构图画幅';
-      }
-
+      const preset = prototypeCropRects[ratio === '16:9' ? 'source' : ratio];
+      Object.assign(state.cropConfig, preset || {}, { ratio });
+      renderCropConfig();
       updateExportModeIndicator();
       renderSegmentCards();
     }
 
+    function renderCropConfig() {
+      const crop = state.cropConfig;
+      Object.assign(document.getElementById('proto-crop-box').style, {
+        left: crop.x + '%', top: crop.y + '%', width: crop.width + '%', height: crop.height + '%'
+      });
+      const pill = 'ratio-pill-' + (crop.ratio === '16:9' ? 'source' : crop.ratio.replace(':', '-'));
+      document.querySelectorAll('#spatial-crop-controls .ratio-pill').forEach(btn => btn.classList.toggle('active', btn.id === pill));
+      const labels = { '9:16': '9:16 移动竖屏', '16:9': '16:9 原片画幅', source: '16:9 原片画幅', '1:1': '1:1 正方形画幅' };
+      const fullFrame = crop.x === 0 && crop.y === 0 && crop.width === 100 && crop.height === 100;
+      document.getElementById('crop-coord-display').textContent = labels[crop.ratio] || (fullFrame ? '100% 全画幅 (未裁切)' : '自由构图画幅');
+      const lock = document.getElementById('btn-crop-lock');
+      lock.textContent = '🔒 比例锁: ' + (crop.locked ? '开' : '关');
+      lock.style.color = crop.locked ? '#58a6ff' : 'var(--text-muted)';
+    }
+
     function toggleCropRatioLock() {
       state.cropConfig.locked = !state.cropConfig.locked;
-      const btn = document.getElementById('btn-crop-lock');
-      btn.innerText = `🔒 比例锁: ${state.cropConfig.locked ? '开' : '关'}`;
-      btn.style.color = state.cropConfig.locked ? '#58a6ff' : 'var(--text-muted)';
+      renderCropConfig();
     }
 
     function resetCropToFull() {
-      const cropBox = document.getElementById('proto-crop-box');
-      cropBox.style.left = '0%';
-      cropBox.style.top = '0%';
-      cropBox.style.width = '100%';
-      cropBox.style.height = '100%';
-      document.getElementById('crop-coord-display').innerText = '100% 全画幅 (未裁切)';
-      state.cropConfig.ratio = 'free';
-      document.querySelectorAll('.ratio-pill').forEach(btn => btn.classList.remove('active'));
-      const freeBtn = document.getElementById('ratio-pill-free');
-      if (freeBtn) freeBtn.classList.add('active');
+      Object.assign(state.cropConfig, { x: 0, y: 0, width: 100, height: 100, ratio: 'free' });
+      renderCropConfig();
       updateExportModeIndicator();
       renderSegmentCards();
     }
@@ -3227,41 +3280,42 @@
     }
 
     function updateExportModeIndicator() {
-      const hasSpatial = (state.cropConfig.ratio !== 'free') || (state.maskList.length > 0);
+      const mode = prototypeExportMode();
       const modeText = document.getElementById('stat-export-mode');
       const dot = document.getElementById('stat-export-dot');
       const badge = document.getElementById('cutter-engine-badge');
+      const description = mode === 'frame'
+        ? '保留起点画面，不包含终点画面；重新编码为 MP4，耗时更长、非严格无损。原片保留。'
+        : '按关键帧保全所选内容，起点可能提前、片尾可能扩出；余量以实际产物为准。' + (hasPrototypeSpatial() ? ' 已启用画面处理，需要重新编码。' : '');
+      modeText.textContent = prototypeModeLabel(mode); modeText.title = description;
+      modeText.style.color = mode === 'keyframe' ? '#7ee787' : '#bc8cff';
+      dot.style.background = mode === 'keyframe' ? '#58a6ff' : '#bc8cff';
+      badge.textContent = mode === 'frame' ? '● 按显示帧边界导出' : '● 关键帧保全';
+      document.getElementById('export-mode').value = mode;
+      document.getElementById('export-boundary').textContent = description;
+      const buttonLabel = mode === 'frame' ? '精确导出' : prototypeModeLabel(mode) + '导出';
+      ['header-export-button', 'dock-export-button'].forEach(id => document.getElementById(id).textContent = buttonLabel);
+    }
 
-      if (hasSpatial) {
-        if (modeText) {
-          modeText.innerHTML = '<span style="color: #bc8cff; font-weight: 600;">智能转码升轨 (-vf delogo/crop)</span>';
-          modeText.title = '检测到包含画面裁切或去水印遮罩，系统已自动升轨为智能转码编码，确保画面处理生效';
-        }
-        if (dot) {
-          dot.className = 'stat-dot';
-          dot.style.background = '#bc8cff';
-        }
-        if (badge) {
-          badge.innerText = '● 关键帧保全 + 智能转码升轨';
-          badge.style.color = '#bc8cff';
-        }
-      } else {
-        if (modeText) {
-          modeText.innerHTML = '<span style="color: #7ee787; font-weight: 500;">极速流拷贝 (-c copy)</span>';
-          modeText.title = '未配置画面空间滤镜，采用无损关键帧秒切';
-        }
-        if (dot) {
-          dot.className = 'stat-dot blue';
-          dot.style.background = '';
-        }
-        if (badge) {
-          badge.innerText = '● 关键帧保全已激活';
-          badge.style.color = '#3fb950';
-        }
+    function hasPrototypeSpatial() {
+      const crop = state.cropConfig;
+      return crop.ratio !== 'free' || crop.x !== 0 || crop.y !== 0 || crop.width !== 100 || crop.height !== 100 || state.maskList.length > 0;
+    }
+    function prototypeModeLabel(mode) { return ({ keyframe: '快速无损', compress: '智能降码', frame: '精确导出' })[mode]; }
+    function prototypeExportMode() { return state.exportPrecision === 'frame' ? 'frame' : state.compressEnabled || hasPrototypeSpatial() ? 'compress' : 'keyframe'; }
+    function setPrototypeExportMode(mode) {
+      if (mode === 'keyframe' && hasPrototypeSpatial()) {
+        updateExportModeIndicator();
+        showPrototypeNotice('画面处理需要重新编码', '请先还原全画幅并清除遮罩，再选择快速无损；也可以使用智能降码或精确导出。');
+        return;
       }
+      state.exportPrecision = mode === 'frame' ? 'frame' : 'keyframe';
+      state.compressEnabled = mode === 'compress';
+      updateExportModeIndicator();
     }
 
     function renderSpatialOverlay() {
+      renderCropConfig();
       const masksContainer = document.getElementById('proto-masks-container');
       const layerList = document.getElementById('inspector-layer-list');
       const headerTitle = document.getElementById('inspector-header-title');
@@ -3392,6 +3446,7 @@
     updateUI();
     renderSpatialOverlay();
     updateExportModeIndicator();
+    new ResizeObserver(entries => document.documentElement.style.setProperty('--dock-height', entries[0].target.offsetHeight + 'px')).observe(document.getElementById('dock-footer'));
   </script>
 </body>
 </html>
