@@ -412,6 +412,11 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
   const playerRef = useRef<VideoPlayerRef | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const mainPlayerActive = isActive && !isLoading && mainViewportMode === 'player';
+  useEffect(() => {
+    // 只释放已完成的准备；播放器尚未启用时，正在分析的会话仍由加载流程持有。
+    if (!mainPlayerActive) preparedStream?.release();
+  }, [mainPlayerActive, preparedStream]);
   const shortcutsEnabled = isActive && !repairConfirmation && !isLoading && !showSaveModal && !showNoCutWarningModal && !showCompressSettings && workbenchMode === 'temporal';
   useEffect(() => { if (!isActive || mainViewportMode !== 'player') { playerRef.current?.pause(); setAuditionRange(null); } }, [isActive, mainViewportMode]);
 
@@ -669,7 +674,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   useEffect(() => {
     if (previousActive.current === isActive) return;
     previousActive.current = isActive;
-    if (!isActive && streamPreparation.current) { loadEpoch.current++; cancelStreamPreparation(); }
+    if (!isActive && pendingSelection.current) { loadEpoch.current++; cancelStreamPreparation(); }
     if (isActive && pendingSelection.current) void loadAndProbeVideo(pendingSelection.current.file, pendingSelection.current.record);
   }, [isActive]);
 
@@ -1304,8 +1309,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               videoWidth={metadata.width}
               videoHeight={metadata.height}
               displayAspectRatio={metadata.displayAspectRatio}
-              isActive={isActive && !isLoading && mainViewportMode === 'player'}
-              onStreamOpened={preparedStream?.release}
+              isActive={mainPlayerActive}
+              onStreamOpenSettled={preparedStream?.release}
               shortcutsEnabled={shortcutsEnabled && mainViewportMode === 'player'}
               onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
               onPlayStateChange={(playing) => setIsPlaying(playing)}

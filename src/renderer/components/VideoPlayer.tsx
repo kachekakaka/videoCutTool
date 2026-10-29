@@ -7,7 +7,7 @@ export interface VideoPlayerRef {
   getCurrentTimeMs: () => number; getIsPlaying: () => boolean; isNavigating: () => boolean;
 }
 interface VideoPlayerProps {
-  onStreamOpened?: () => void;
+  onStreamOpenSettled?: () => void;
   playbackRate?: number;
   timeOriginMs?: number;
   videoPath: string; durationMs: number; fps?: number; isActive?: boolean; shortcutsEnabled?: boolean;
@@ -18,7 +18,7 @@ interface VideoPlayerProps {
 export { formatTimecode, parseTimecodeToMs } from '../../shared/timeUtils';
 
 export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
-  videoPath, durationMs, fps = 30, timeOriginMs = 0, playbackRate = 1, isActive = true, shortcutsEnabled = true, videoWidth, videoHeight, displayAspectRatio, children, onTimeUpdate, onPlayStateChange, onInsertCut, aspectRatioMode = 'auto', auditionRange, onAuditionEnd, onStreamOpened,
+  videoPath, durationMs, fps = 30, timeOriginMs = 0, playbackRate = 1, isActive = true, shortcutsEnabled = true, videoWidth, videoHeight, displayAspectRatio, children, onTimeUpdate, onPlayStateChange, onInsertCut, aspectRatioMode = 'auto', auditionRange, onAuditionEnd, onStreamOpenSettled,
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement | null>(null), position = useRef(0), navigationEpoch = useRef(0), navigation = useRef(Promise.resolve());
   const presented = useRef<{ ms: number; at: number } | null>(null), navigating = useRef(false), wantsPlayback = useRef(false), callbacks = useRef({ onTimeUpdate, auditionRange, onAuditionEnd });
@@ -43,7 +43,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
   const finishedAudition = useRef<typeof auditionRange>(null);
   const playbackPath = currentPreview?.path || videoPath, offset = currentPreview?.offset ?? timeOriginMs;
   const stream = useStreamPlayback(videoRef, videoPath, isActive, {
-    opened: onStreamOpened,
+    openSettled: onStreamOpenSettled,
     current: () => position.current,
     busy: value => { navigating.current = value; },
     error: message => { wantsPlayback.current = false; setError(message); },
