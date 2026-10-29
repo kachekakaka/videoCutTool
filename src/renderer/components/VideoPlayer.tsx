@@ -37,7 +37,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
   const [preview, setPreview] = useState<{ source: string; path: string; offset: number } | null>(null);
   const [error, setError] = useState(''), [progress, setProgress] = useState<number | null>(null);
   const [navigationError, setNavigationError] = useState('');
-  const request = useRef<string | null>(null), sourceEpoch = useRef(0), attemptedRemux = useRef(false);
+  const request = useRef<string | null>(null), sourceEpoch = useRef(0);
   const currentPreview = preview?.source === videoPath ? preview : null;
   const streamAnnouncedAt = useRef(0);
   const finishedAudition = useRef<typeof auditionRange>(null);
@@ -147,12 +147,12 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     if (previewLease.current) void window.electronAPI?.releasePlayback(previewLease.current).catch(() => {});
     previewLease.current = null;
   };
-  const preparePreview = async (convert: boolean) => {
+  const preparePreview = async () => {
     if (!window.electronAPI || request.current || !isActive || stream.route !== 'native') return;
     const epoch = sourceEpoch.current, id = crypto.randomUUID();
     request.current = id; setProgress(0); pause();
     try {
-      const result = await window.electronAPI.preparePlayback(videoPath, convert, id);
+      const result = await window.electronAPI.preparePlayback(videoPath, true, id);
       if (sourceEpoch.current !== epoch || request.current !== id) { void window.electronAPI.releasePlayback(id); return; }
       if (result.path) { releasePreview(); previewLease.current = id; position.current = current(); setPreview({ source: videoPath, path: result.path, offset: result.timeOffsetMs || 0 }); setError(''); }
       else setError('此素材需要生成兼容预览后播放，处理时间取决于视频长度。剪辑仍使用原片。');
@@ -160,7 +160,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     finally { if (request.current === id) { request.current = null; setProgress(null); } }
   };
   useEffect(() => {
-    sourceEpoch.current++; navigationEpoch.current++; position.current = 0; presented.current = null; navigating.current = true; attemptedRemux.current = false;
+    sourceEpoch.current++; navigationEpoch.current++; position.current = 0; presented.current = null; navigating.current = true;
     wantsPlayback.current = false; setNavigationError(''); setPreview(null); setError(''); onPlayStateChange?.(false); cancelPreview();
     return () => { sourceEpoch.current++; navigationEpoch.current++; navigating.current = false; cancelPreview(); releasePreview(); };
   }, [videoPath]);
@@ -186,15 +186,16 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
       >
         <video ref={videoRef} src={source} onLoadedMetadata={() => { applyPlaybackRate(); if (stream.route === 'native') void seek(position.current); }} onPlay={() => onPlayStateChange?.(true)} onPause={() => onPlayStateChange?.(false)} onEnded={() => { wantsPlayback.current = false; stream.controller.current?.pause(); }} onClick={togglePlay} onError={() => {
           if (stream.route !== 'native') return;
-          setError('当前素材无法直接播放，可生成兼容预览；剪辑仍使用原片。');
+          navigationEpoch.current++; pause(); navigating.current = false; presented.current = null;
+          setNavigationError(''); setError('当前素材播放失败，请重试播放或手动生成兼容预览。');
           onPlayStateChange?.(false);
-          if (!attemptedRemux.current && isActive) { attemptedRemux.current = true; void preparePreview(false); }
         }} className="w-full h-full object-contain cursor-pointer" />
         {children}
       </div>
       {(error || progress !== null) && <div className="absolute inset-0 flex items-center justify-center bg-black/85 p-6"><div className="max-w-lg text-center text-sm text-zinc-200 space-y-3">
         <p className="break-words">{progress !== null ? `正在生成播放预览 ${Math.round(progress)}%` : error}</p>
-        {progress !== null ? <button onClick={cancelPreview} className="px-3 py-2 rounded-lg bg-white/10">取消生成</button> : <div className="flex justify-center gap-3"><button onClick={() => { setError(''); if (stream.route === 'native') videoRef.current?.load(); else stream.retry(); }} className="px-3 py-2 rounded-lg bg-white/10">重试播放</button>{stream.route === 'native' && <button onClick={() => void preparePreview(true)} className="px-3 py-2 rounded-lg bg-blue-600">生成兼容预览</button>}</div>}
+        {progress === null && stream.route === 'native' && <p className="text-zinc-400">兼容预览会重新编码整部视频，耗时取决于视频长度；导出仍使用原片。</p>}
+        {progress !== null ? <button onClick={cancelPreview} className="px-3 py-2 rounded-lg bg-white/10">取消生成</button> : <div className="flex justify-center gap-3"><button onClick={() => { setError(''); if (stream.route === 'native') videoRef.current?.load(); else stream.retry(); }} className="px-3 py-2 rounded-lg bg-white/10">重试播放</button>{stream.route === 'native' && <button onClick={() => void preparePreview()} className="px-3 py-2 rounded-lg bg-blue-600">生成兼容预览</button>}</div>}
       </div></div>}
       {currentPreview && !error && progress === null && <span className="absolute bottom-2 left-3 text-[10px] text-zinc-400 bg-black/60 px-2 py-1 rounded">兼容预览 · 导出使用原片</span>}
       {navigationError && <span role="status" className="absolute bottom-2 left-3 text-xs text-amber-200 bg-black/80 px-2 py-1 rounded">{navigationError}</span>}

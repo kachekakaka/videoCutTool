@@ -43,8 +43,6 @@ protocol.registerSchemesAsPrivileged([
 app.commandLine.appendSwitch('disable-gpu-cache');
 app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 app.commandLine.appendSwitch('disable-http-cache');
-// 异常录像的损坏包会令部分硬件解码器终止播放；软件视频解码可容错，界面 GPU 加速保持启用。
-app.commandLine.appendSwitch('disable-accelerated-video-decode');
 app.enableSandbox();
 
 // 强制原生深色沉浸主题
