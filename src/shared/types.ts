@@ -151,7 +151,6 @@ export type ExecutionStatus = 'ready' | 'queued' | 'processing' | 'completed' | 
 interface PlanRecordFields {
   sourceIdentity?: string;
   contentRevision?: string;
-  mediaIndexId?: string;
   exportPrecision?: ExportPrecision;
   id: string;
   title: string;
@@ -217,7 +216,7 @@ export interface CutResult {
   resolvedEncoder?: 'cpu' | 'nvenc' | 'qsv';
 }
 
-export interface PlanChange { record?: PlanRecord; deletedId?: string }
+export interface PlanChange { record?: PlanRecord; deletedId?: string; issuesToAdd?: string[] }
 export type ExecutionStage = 'preparing' | 'normalizing' | 'cutting' | 'merging' | 'encoding' | 'verifying' | 'publishing' | 'saving' | 'failed';
 export interface ExecutionProgress {
   planId: string;

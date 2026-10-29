@@ -15,8 +15,13 @@ export class MediaIndexStore {
   private writes = new Map<string, Promise<MediaIndexRecord>>();
   readonly ready: Promise<void>;
   readonly issues: string[] = [];
-  onPublished?: (record: MediaIndexRecord) => void;
-  constructor(dataDirectory: string, private readonly maintenance?: CacheMaintenanceService) { this.directory = path.join(dataDirectory, 'media-index'); this.ready = this.initialize(); }
+  constructor(dataDirectory: string, private readonly maintenance?: CacheMaintenanceService) {
+    this.directory = path.join(dataDirectory, 'media-index');
+    this.ready = this.initialize().catch(error => {
+      this.issues.push(`索引目录无法读取，文件已保留，不自动重新扫描：${String(error)}`);
+      throw error;
+    });
+  }
   private async initialize() {
     await fs.promises.mkdir(this.directory, { recursive: true });
     const names = (await fs.promises.readdir(this.directory)).filter(name => /^[a-f0-9-]{36}$/.test(name));
@@ -48,12 +53,11 @@ export class MediaIndexStore {
     if (!hit && this.unidentified) throw new Error('存在无法确认归属的索引记录，文件已保留；不自动重新扫描，请先检查索引读取错误');
     return hit;
   }
-  async find(file: string, options: { waitForPublication?: boolean } = {}) {
+  async find(file: string) {
     await this.ready;
     const identity = await fileIdentityAsync(file);
     const pending = this.writes.get(identity);
-    // 媒体准备接续在途发布；方案保存只查询已完成结果，不能等待媒体分析或落盘。
-    if (pending && options.waitForPublication !== false) {
+    if (pending) {
       await pending;
       if (await fileIdentityAsync(file) !== identity) throw new Error('等待索引期间素材发生变化，请重新打开');
     }
@@ -90,7 +94,6 @@ export class MediaIndexStore {
         // 同盘目录重命名同时发布数据与完成记录；发布前的半成品留在登记任务目录。
         await fs.promises.rename(directory, path.join(this.directory, record.id));
         this.entries.set(identity, record);
-        try { this.onPublished?.(record); } catch (error) { this.issues.push(`完整索引已保存，方案关联待恢复：${String(error)}`); }
         return record;
       } finally {
         await maintenance.abandon(directory); maintenance.release(directory); await maintenance.sweep();

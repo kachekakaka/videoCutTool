@@ -5,10 +5,12 @@ const initialEngine: EngineState = { activePlanId: null, queuedIds: [], storageE
 interface AppData { config: AppConfig; plans: PlanRecord[]; issues: string[]; engine: EngineState; loading: boolean; error: string; refresh: () => Promise<void>; saveConfig: (patch: Partial<AppConfig>) => Promise<AppConfig> }
 const Context = createContext<AppData | null>(null);
 const applyChange = (records: PlanRecord[], change: PlanChange) => {
+  if (!change.record && !change.deletedId) return records;
   const result = records.filter(record => record.id !== (change.record?.id || change.deletedId));
   if (change.record) result.push(change.record);
   return result.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
 };
+const addIssues = (issues: string[], additions?: string[]) => additions?.length ? [...new Set([...issues, ...additions])] : issues;
 export const AppDataProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [config, setConfig] = useState(DEFAULT_APP_CONFIG), [plans, setPlans] = useState<PlanRecord[]>([]), [issues, setIssues] = useState<string[]>([]);
   const [engine, setEngine] = useState(initialEngine), [loading, setLoading] = useState(false), [error, setError] = useState('');
@@ -19,7 +21,12 @@ export const AppDataProvider: React.FC<React.PropsWithChildren> = ({ children })
     if (!api) return Promise.resolve();
     journal.current = []; setLoading(true);
     const task = (scan ? api.refreshPlans() : api.getPlanDetails()).then(result => {
-      setPlans((journal.current || []).reduce(applyChange, result.records)); setIssues(result.issues); setError('');
+      let records = result.records, nextIssues = result.issues;
+      for (const change of journal.current || []) {
+        records = applyChange(records, change);
+        nextIssues = addIssues(nextIssues, change.issuesToAdd);
+      }
+      setPlans(records); setIssues(nextIssues); setError('');
     }).catch(error => { setError(String(error)); }).finally(() => { journal.current = null; refreshTask.current = null; setLoading(false); });
     refreshTask.current = task; return task;
   }, []);
@@ -27,7 +34,11 @@ export const AppDataProvider: React.FC<React.PropsWithChildren> = ({ children })
     const api = window.electronAPI; if (!api) return;
     let configChanged = false, engineChanged = false, alive = true;
     const offConfig = api.onConfigChanged(next => { configChanged = true; setConfig(next); });
-    const offPlans = api.onPlanChanged(change => { journal.current?.push(change); setPlans(previous => applyChange(previous, change)); });
+    const offPlans = api.onPlanChanged(change => {
+      journal.current?.push(change);
+      if (change.record || change.deletedId) setPlans(previous => applyChange(previous, change));
+      if (change.issuesToAdd?.length) setIssues(previous => addIssues(previous, change.issuesToAdd));
+    });
     const offEngine = api.onEngineStateChanged(next => { engineChanged = true; setEngine(next); });
     void api.getConfig().then(next => { if (alive && !configChanged) setConfig(next); }).catch(error => setError(String(error)));
     void api.getEngineState().then(next => { if (alive && !engineChanged) setEngine(next); }).catch(error => setError(String(error)));

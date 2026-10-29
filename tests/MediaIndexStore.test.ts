@@ -14,7 +14,7 @@ const info: ProbedFile = {
   origin: { numerator: '0', denominator: '1' }, streams: [{ index: 0, type: 'video', codec: 'h264', attachedPicture: false, default: true }],
 };
 async function setup() {
-  const base = path.resolve('../videoCutTool_tmp/shared-index-followup-20261024/unit');
+  const base = path.resolve('../videoCutTool_tmp/20261029-方案索引关联简化/unit');
   await fs.promises.mkdir(base, { recursive: true });
   const directory = await fs.promises.mkdtemp(path.join(base, 'store-'));
   const source = path.join(directory, 'source.mp4'); await fs.promises.writeFile(source, '只读原片哨兵');
@@ -33,7 +33,7 @@ async function seed(x: Awaited<ReturnType<typeof setup>>, payload?: string) {
 }
 
 describe('共享索引异常不退回重复扫描', () => {
-  it('发布尚未完成时媒体使用者等待同一结果，方案查找不等待', async () => {
+  it('发布尚未完成时媒体使用者等待同一结果', async () => {
     const x = await setup();
     let reached!: () => void, release!: () => void;
     const arrived = new Promise<void>(resolve => { reached = resolve; });
@@ -50,10 +50,20 @@ describe('共享索引异常不退回重复扫描', () => {
       const reading = x.store.find(x.source).then(record => { finished = true; return record; });
       await new Promise(resolve => setTimeout(resolve, 30));
       expect(finished).toBe(false);
-      expect(await x.store.find(x.source, { waitForPublication: false })).toBeUndefined();
       release();
       expect((await reading)?.id).toBe((await publishing).id);
     } finally { release(); await publishing; }
+  });
+  it('索引目录初始化失败时保留诊断，查询和发布不能当作未命中继续', async () => {
+    const x = await setup(), blocked = path.join(x.directory, 'blocked');
+    await fs.promises.mkdir(blocked);
+    const file = path.join(blocked, 'media-index'); await fs.promises.writeFile(file, '保留目录冲突文件');
+    const store = new MediaIndexStore(blocked, x.maintenance);
+    await expect(store.ready).rejects.toThrow();
+    await expect(store.find(x.source)).rejects.toThrow();
+    await expect(store.publish(x.source, x.identity, 'frames', info, {})).rejects.toThrow();
+    expect(store.issues).toHaveLength(1); expect(store.issues[0]).toMatch(/索引目录.*不自动重新扫描/);
+    expect(await fs.promises.readFile(file, 'utf8')).toBe('保留目录冲突文件');
   });
   it('结构合法的 JSON 若语义校验失败也停止复用并报告', async () => {
     const x = await setup(), seeded = await seed(x, '{"points":[]}');
