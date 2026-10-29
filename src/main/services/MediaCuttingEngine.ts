@@ -17,7 +17,13 @@ import { exportPreciseFile, preciseAudioDefaults } from './PreciseExport';
 
 type Encoder = 'cpu' | 'nvenc' | 'qsv';
 type InputProvider = (file: string, signal?: AbortSignal) => Promise<{ url: string; close: () => Promise<void> }>;
-type Job = { record: PlanRecord; prober: KeyframeProber; prepared?: { identity: string; info: ProbedFile } };
+type PreparedSource = Readonly<{ identity: string; info: ProbedFile }>;
+type PlanExecutionData = Readonly<{
+  plan: MediaRetentionPlan;
+  source: Readonly<{ identity: string; info?: ProbedFile }>;
+  compressionOnly: boolean;
+}>;
+type Job = { record: PlanRecord; prober: KeyframeProber; prepared?: PreparedSource };
 export type PlanStatusListener = (event: { planId: string; status: ExecutionStatus; outputPath?: string; error?: string; record?: PlanRecord }) => void;
 
 export class MediaCuttingEngine {
@@ -119,32 +125,35 @@ export class MediaCuttingEngine {
       });
       let final: PlanRecord;
       try {
+        if (!processing.compressionOnly && !processing.sourceIdentity) throw new Error('素材对应关系待确认，请回载方案确认后执行');
         if (processing.sourceIdentity && processing.sourceIdentity !== await fileIdentityAsync(processing.sourcePath)) throw new Error('排队期间素材已变化，原方案切点未执行');
         const execution = this.executionSnapshot(tracker);
         let plan: MediaRetentionPlan;
-        let prepared: ProbedFile | undefined;
+        let source: PlanExecutionData['source'];
         if (processing.compressionOnly) {
           const identity = await fileIdentityAsync(processing.sourcePath);
-          prepared = job.prepared?.identity === identity ? job.prepared.info : await probeFile(processing.sourcePath, execution.ffprobePath, this.controller.signal);
+          const prepared = { identity, info: job.prepared?.identity === identity ? job.prepared.info : await probeFile(processing.sourcePath, execution.ffprobePath, this.controller.signal) };
           if (await fileIdentityAsync(processing.sourcePath) !== identity) throw new Error('检查期间素材发生变化，请重试');
-          processing.totalDurationMs = prepared.durationMs; processing.keptDurationMs = prepared.durationMs;
-          job.prepared = { identity, info: prepared };
+          processing.totalDurationMs = prepared.info.durationMs; processing.keptDurationMs = prepared.info.durationMs;
+          job.prepared = prepared; source = prepared;
           try { await this.persist(processing); }
           catch (error) {
             this.queue.unshift(job); this.active = null; this.controller = null; this.clearProgress(); this.blockStorage(error); return;
           }
           this.notify(processing);
           plan = { version: '1.0', title: processing.title, sourcePath: processing.sourcePath,
-            outputPath: '', durationMs: prepared.durationMs, totalKeptDurationMs: prepared.durationMs,
+            outputPath: '', durationMs: prepared.info.durationMs, totalKeptDurationMs: prepared.info.durationMs,
             stripOriginalCover: processing.stripOriginalCover !== false,
             compress: processing.compress, outputs: [{ segmentIds: [], planSegments: [], spatialSegments: [] }], blockers: [] };
         } else {
           const meta = await job.prober.probe(processing.sourcePath, this.controller.signal);
           if (this.controller.signal.aborted) throw new Error('上次执行中断，可重试');
+          if (meta.sourceIdentity !== processing.sourceIdentity) throw new Error('读取期间素材已变化，原方案切点未执行');
+          source = { identity: processing.sourceIdentity! };
           const draft = RetentionDraft.fromRecord(processing, meta.durationMs);
           plan = draft.toPlan(meta.keyframes, { outputPath: processing.outputPath || processing.sourcePath, stripOriginalCover: processing.stripOriginalCover !== false, title: processing.title, keyframePoints: meta.keyframePoints });
         }
-        const result = await execution.executeSnapshot(plan, this.controller.signal, processing.compressionOnly === true, prepared);
+        const result = await execution.executeSnapshot({ plan, source, compressionOnly: processing.compressionOnly === true }, this.controller.signal);
         final = result.success
           ? { ...processing, status: 'completed', outputPath: result.outputPath, outputPaths: result.outputPaths, resolvedEncoder: result.resolvedEncoder, completedAt: new Date().toISOString(), error: undefined }
           : { ...processing, status: 'failed', outputPath: result.outputPath, outputPaths: result.outputPaths, error: result.error || '剪辑失败' };
@@ -218,7 +227,7 @@ export class MediaCuttingEngine {
     return new PlanExecution(ffmpegPath, this.ffprobePath, this.tmpDir, this.maintenance, this.tempReady,
       (config, signal) => this.probeEncoderSupportFor(ffmpegPath, config, signal), this.inputProvider, tracker);
   }
-  executeRawPlan(plan: MediaRetentionPlan, signal?: AbortSignal): Promise<CutResult> { return this.executionSnapshot().executeSnapshot(plan, signal); }
+  executeRawPlan(data: PlanExecutionData, signal?: AbortSignal): Promise<CutResult> { return this.executionSnapshot().executeSnapshot(data, signal); }
   async compressFile(input: string, output: string, config: CompressConfig, encoder: Encoder = 'cpu', signal?: AbortSignal, spatialFilterArgs?: string[], progressKey?: string, cpuRetry = false, stripCover = false, prepared?: ProbedFile): Promise<void> {
     return this.executionSnapshot().compressFile(input, output, config, encoder, signal, spatialFilterArgs, progressKey, cpuRetry, stripCover, prepared);
   }
@@ -347,7 +356,8 @@ class PlanExecution {
     parts.push(`${concat}${scale ? ',' + scale : ''}[spatialVideo]`);
     await this.runStep(progressKey, buildCompressArgs(input, output, config, encoder, { streams: info.streams, stripCover: false, videoFilterGraph: { graph: parts.join(';'), streamIndex: info.videoIndex, output: 'spatialVideo', timeBase: info.timeBase } }), info.durationMs, signal, cpuRetry);
   }
-  async executeSnapshot(plan: MediaRetentionPlan, signal?: AbortSignal, compressionOnly = false, prepared?: ProbedFile): Promise<CutResult> {
+  async executeSnapshot(data: PlanExecutionData, signal?: AbortSignal): Promise<CutResult> {
+    const { plan, source: boundSource, compressionOnly } = data;
     this.maintenance.protect(plan.sourcePath);
     await this.tempReady;
     const directory = await this.maintenance.create(this.tmpDir, 'task', '');
@@ -356,8 +366,8 @@ class PlanExecution {
     try {
       if (!plan.outputs.length || (!compressionOnly && plan.outputs.some(output => !output.planSegments.length))) throw new Error('未选择任何保留片段');
       const destination = resolveOutputDirectory(plan.sourcePath, compressionOnly);
-      const sourceIdentity = await fileIdentityAsync(plan.sourcePath);
-      const info = prepared || await probeFile(plan.sourcePath, this.ffprobePath, signal);
+      if (await fileIdentityAsync(plan.sourcePath) !== boundSource.identity) throw new Error('导出开始前原片发生变化，未发布结果');
+      const info = boundSource.info || await probeFile(plan.sourcePath, this.ffprobePath, signal);
       if (!compressionOnly) indexedInput = await this.inputProvider?.(plan.sourcePath, signal);
       const streams = retainedStreams(info.streams, plan.stripOriginalCover !== false);
       const precise = plan.exportPrecision === 'frame';
@@ -455,7 +465,7 @@ class PlanExecution {
         this.tracker?.finishOperation(`verify:${i}`);
       }
       await fs.promises.mkdir(destination, { recursive: true });
-      if (await fileIdentityAsync(plan.sourcePath) !== sourceIdentity) throw new Error('导出期间原片发生变化，未发布结果');
+      if (await fileIdentityAsync(plan.sourcePath) !== boundSource.identity) throw new Error('导出期间原片发生变化，未发布结果');
       const timestamp = formatTaskTimestamp();
       for (let attempt = 0; attempt < 10; attempt++) {
         if (signal?.aborted) throw new Error('操作已取消');
