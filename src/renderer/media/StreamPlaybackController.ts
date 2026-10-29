@@ -1,10 +1,9 @@
 import mpegts from '@stream-player';
 import { frameAt, StreamPlaybackSnapshot } from '../../shared/streamPlayback';
-import type { MediaMetadata } from '../../shared/types';
 
 interface Observer {
   time: (sourceMs: number) => void; busy: (busy: boolean) => void;
-  status: (text: string) => void; metadata?: (metadata: MediaMetadata) => void;
+  status: (text: string) => void;
   error: (message: string) => void;
 }
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -19,7 +18,6 @@ export class StreamPlaybackController {
   private position = 0;
   private seeking = false;
   private desiredPlaying = false;
-  private announcedMetadata = false;
   private failure?: string;
   private initial?: () => void;
   private initialized = false;
@@ -33,7 +31,6 @@ export class StreamPlaybackController {
     for (const value of snapshot.index.filepositions) this.externalIndex.filepositions.push(value);
     if (snapshot.error) throw new Error(snapshot.error);
     this.observer.status(snapshot.complete ? '' : `正在建立定位索引 ${Math.floor(snapshot.progress)}%`);
-    if (snapshot.metadata && !this.announcedMetadata) { this.announcedMetadata = true; this.observer.metadata?.(snapshot.metadata); }
   }
   async start() {
     this.adopt(this.snapshot);
@@ -141,6 +138,5 @@ export class StreamPlaybackController {
     this.closed = true; this.epoch++; this.video.cancelVideoFrameCallback(this.frameCallback);
     if (this.initial) this.video.removeEventListener('loadedmetadata', this.initial);
     this.player?.destroy(); this.player = undefined; this.video.removeAttribute('src'); this.video.load();
-    void window.electronAPI!.closeStream(this.snapshot.id).catch(() => {});
   }
 }

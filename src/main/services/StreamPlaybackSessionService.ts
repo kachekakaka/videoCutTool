@@ -1,29 +1,40 @@
 import fs from 'fs';
 import { Readable } from 'stream';
 import { StreamPlaybackIndexService, StreamIndexLease } from './StreamPlaybackIndexService';
-import { StreamPlaybackSnapshot } from '../../shared/streamPlayback';
+import { StreamPlaybackSnapshot, StreamPreparationSnapshot } from '../../shared/streamPlayback';
 import { abortError } from './MediaTools';
 
-interface Session { id: string; owner: number; file: string; controller: AbortController; lease?: StreamIndexLease; streams: Set<fs.ReadStream>; ready: Promise<StreamPlaybackSnapshot | null> }
+interface Session { id: string; owner: number; file: string; controller: AbortController; lease?: StreamIndexLease; streams: Set<fs.ReadStream>; ready: Promise<boolean> }
 export class StreamPlaybackSessionService {
   private sessions = new Map<string, Session>();
   private closing = false;
   constructor(readonly indexes: StreamPlaybackIndexService) {}
-  open(owner: number, file: string, id: string): Promise<StreamPlaybackSnapshot | null> {
-    if (this.closing) return Promise.reject(abortError());
-    if (this.sessions.has(id)) return Promise.reject(new Error('播放会话已存在'));
-    if ([...this.sessions.values()].filter(s => s.owner === owner).length >= 4) return Promise.reject(new Error('打开的播放视图过多'));
-    const s: Session = { id, owner, file, controller: new AbortController(), streams: new Set(), ready: Promise.resolve(null) };
+  private async openSession(owner: number, file: string, id: string): Promise<Session | null> {
+    if (this.closing) throw abortError();
+    if (this.sessions.has(id)) throw new Error('播放会话已存在');
+    if ([...this.sessions.values()].filter(s => s.owner === owner).length >= 4) throw new Error('打开的播放视图过多');
+    const s: Session = { id, owner, file, controller: new AbortController(), streams: new Set(), ready: Promise.resolve(false) };
     this.sessions.set(id, s);
     s.ready = (async () => {
       const container = await this.indexes.identify(file);
       if (s.controller.signal.aborted) throw abortError();
-      if (!container) { this.close(owner, id); return null; }
+      if (!container) { this.close(owner, id); return false; }
       s.lease = await this.indexes.acquire(file, container, s.controller.signal);
       if (s.controller.signal.aborted) throw abortError();
-      return this.snapshot(s);
+      // 会话只保存就绪结果，按调用用途生成返回值，不保留派生快照。
+      return true;
     })().catch(error => { this.close(owner, id); throw error; });
-    return s.ready;
+    if (!await s.ready) return null;
+    if (s.controller.signal.aborted) throw abortError();
+    return s;
+  }
+  async open(owner: number, file: string, id: string): Promise<StreamPlaybackSnapshot | null> {
+    const s = await this.openSession(owner, file, id);
+    return s ? this.snapshot(s) : null;
+  }
+  async openPreparation(owner: number, file: string, id: string): Promise<StreamPreparationSnapshot | null> {
+    const s = await this.openSession(owner, file, id);
+    return s ? this.indexes.preparation(s.lease!) : null;
   }
   private session(owner: number, id: string) {
     const s = this.sessions.get(id);
@@ -32,6 +43,7 @@ export class StreamPlaybackSessionService {
   }
   private snapshot(s: Session): StreamPlaybackSnapshot { return { id: s.id, url: `media://stream/${s.id}`, ...this.indexes.snapshot(s.lease!) }; }
   async status(owner: number, id: string) { const s = this.session(owner, id); await this.indexes.check(s.lease!); return this.snapshot(s); }
+  async preparation(owner: number, id: string) { const s = this.session(owner, id); await this.indexes.check(s.lease!); return this.indexes.preparation(s.lease!); }
   async progress(owner: number, id: string) { const s = this.session(owner, id); await this.indexes.check(s.lease!); return this.indexes.progress(s.lease!); }
   async frame(owner: number, id: string, time: number, direction: -1 | 0 | 1) { const s = this.session(owner, id); await this.indexes.check(s.lease!); return this.indexes.frame(s.lease!, time, direction); }
   close(owner: number, id: string) {

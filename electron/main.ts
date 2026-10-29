@@ -110,7 +110,7 @@ function handle(channel: string, work: (event: IpcMainInvokeEvent, ...args: any[
     const generation = streamWindowGeneration.get(event.sender) ?? 0;
     try {
       if (/^(media:|compress:|engine:submitDraft)/.test(channel)) await configChanges;
-      if (['media:openStream', 'media:repairTimeline'].includes(channel) && generation !== (streamWindowGeneration.get(event.sender) ?? 0)) throw new Error('播放窗口已失效');
+      if (['media:openStream', 'media:openStreamPreparation', 'media:repairTimeline'].includes(channel) && generation !== (streamWindowGeneration.get(event.sender) ?? 0)) throw new Error('播放窗口已失效');
       return await work(event, ...args);
     } finally { ipcActive.set(channel, Math.max(0, (ipcActive.get(channel) ?? 1) - 1)); }
   });
@@ -295,7 +295,7 @@ handle('media:preparePlayback', async (event, file: string, convert: boolean, id
 });
 handle('media:cancelPlayback', async (event, id: string) => { requestId(id); markCanceled(`play:${event.sender.id}:${id}`); return playbackService.cancel(`${event.sender.id}:${id}`); });
 handle('media:releasePlayback', async (event, id: string) => { requestId(id); playbackService.release(`${event.sender.id}:${id}`); });
-handle('media:openStream', async (event, file: string, id: string) => {
+async function openStreamSession(event: IpcMainInvokeEvent, file: string, id: string, preparation: boolean) {
   requestId(id);
   const frame = event.senderFrame;
   const generation = streamWindowGeneration.get(event.sender) ?? 0;
@@ -304,8 +304,11 @@ handle('media:openStream', async (event, file: string, id: string) => {
   // 必须在取得索引引用前拒绝迟到请求，不能在退出事件之后重新创建会话。
   if (generation !== (streamWindowGeneration.get(event.sender) ?? 0) || !frame || frame.isDestroyed() || event.sender.isDestroyed() || event.sender.isCrashed() || event.sender.mainFrame !== frame) throw new Error('播放窗口已失效');
   checkCanceled(`stream:${event.sender.id}:${id}`);
-  return streamPlayback.open(event.sender.id, file, id);
-});
+  return preparation ? streamPlayback.openPreparation(event.sender.id, file, id) : streamPlayback.open(event.sender.id, file, id);
+}
+handle('media:openStream', (event, file: string, id: string) => openStreamSession(event, file, id, false));
+handle('media:openStreamPreparation', (event, file: string, id: string) => openStreamSession(event, file, id, true));
+handle('media:streamPreparation', async (event, id: string) => { requestId(id); return streamPlayback.preparation(event.sender.id, id); });
 handle('media:streamStatus', async (event, id: string) => { requestId(id); return streamPlayback.status(event.sender.id, id); });
 handle('media:streamProgress', async (event, id: string) => { requestId(id); return streamPlayback.progress(event.sender.id, id); });
 handle('media:streamFrame', async (event, id: string, time: number, direction: -1 | 0 | 1) => { requestId(id); return streamPlayback.frame(event.sender.id, id, time, direction); });

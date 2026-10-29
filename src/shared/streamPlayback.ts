@@ -5,12 +5,14 @@ export interface StreamPreparationStatus {
   complete: boolean; progress: number; error?: string; errorCode?: 'TIMELINE_DISCONTINUITY';
   timings?: { restoreMs: number; probeMs: number; queueMs: number; scanMs: number; publishMs: number };
 }
+export interface StreamPreparationSnapshot extends StreamPreparationStatus {
+  metadata?: MediaMetadata;
+}
 export interface StreamPlaybackSnapshot {
   id: string; url: string; container: StreamContainer;
   offsetMs: number; durationMs: number; indexedUntilMs: number; progress: number;
-  complete: boolean; error?: string; errorCode?: 'TIMELINE_DISCONTINUITY'; metadata?: MediaMetadata;
+  complete: boolean; error?: string; errorCode?: 'TIMELINE_DISCONTINUITY';
   originUs: number; baseMs: number; frames?: number[];
-  preview: Pick<MediaMetadata, 'filePath' | 'fileName' | 'width' | 'height' | 'displayAspectRatio' | 'fps' | 'streams' | 'timeOrigin'>;
   index: { times: number[]; filepositions: number[] };
 }
 export interface StreamFrameTarget {

@@ -42,6 +42,8 @@ interface CutterPageProps {
   onVideoLoaded: (path: string) => void;
 }
 
+type PreparedStream = { release: () => void };
+
 const getCompareCacheKey = (videoPath: string, config: CompressConfig, timestamps: number[]) =>
   JSON.stringify([videoPath, config, timestamps]);
 
@@ -58,7 +60,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const { config: appConfig, plans } = useAppData();
   const loadEpoch = useRef(0);
   const scanId = useRef<string | null>(null);
-  const streamPreparation = useRef<string | null>(null);
+  const streamPreparation = useRef<PreparedStream | null>(null);
   const pendingSelection = useRef<{ file: string; record?: PlanRecord | null } | null>(null);
   const previousActive = useRef(isActive);
   const activeRef = useRef(isActive); activeRef.current = isActive;
@@ -111,17 +113,13 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     } catch (error) { setRepairMessage(`修复未完成：${String(error)}`); }
     finally { if (repairRequest.current === id) { repairRequest.current = null; setRepairConfirmation(null); setRepairProgress(null); setCancelingRepair(false); } }
   };
-  const cancelStreamPreparation = () => { if (streamPreparation.current) void window.electronAPI?.closeStream(streamPreparation.current).catch(() => {}); streamPreparation.current = null; };
+  const cancelStreamPreparation = () => { streamPreparation.current?.release(); };
   const cancelScan = () => { if (scanId.current) void window.electronAPI?.cancelKeyframes(scanId.current).catch(() => {}); scanId.current = null; };
   const submitLock = useRef(false);
   const [metadata, setMetadata] = useState<MediaMetadata | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [streamPreparationProgress, setStreamPreparationProgress] = useState<number | null>(null);
-  const [preparedStreamId, setPreparedStreamId] = useState<string | null>(null);
-  const releasePreparedStream = () => {
-    // 只释放当前页面交给播放器的准备引用；旧视图的迟到回调不能关闭新任务。
-    if (preparedStreamId && streamPreparation.current === preparedStreamId) cancelStreamPreparation();
-  };
+  const [preparedStream, setPreparedStream] = useState<PreparedStream | null>(null);
   const cancelVideoPreparation = () => {
     loadEpoch.current++; pendingSelection.current = null;
     cancelScan(); cancelStreamPreparation();
@@ -540,7 +538,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     invalidateComparePreview();
     setIsLoading(true);
     setStreamPreparationProgress(null);
-    setPreparedStreamId(null);
+    setPreparedStream(null);
     setDraft(null);
     setMetadata(null);
     setIsKeyframeScanning(false);
@@ -555,9 +553,17 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           if (recordToLoad.sourcePath !== filePath) throw new Error('方案素材路径已变化，请重新回载');
         }
         loadedRevision.current = recordToLoad?.contentRevision;
-        const id = crypto.randomUUID(); streamPreparation.current = id;
-        let snapshot = await window.electronAPI.openStream(filePath, id);
-        if (!isCurrent()) { void window.electronAPI.closeStream(id); return; }
+        const id = crypto.randomUUID(), api = window.electronAPI;
+        let released = false;
+        const preparation: PreparedStream = { release: () => {
+          if (released) return;
+          released = true;
+          if (streamPreparation.current === preparation) streamPreparation.current = null;
+          void api.closeStream(id).catch(() => {});
+        } };
+        streamPreparation.current = preparation;
+        let snapshot = await api.openStreamPreparation(filePath, id);
+        if (!isCurrent()) { preparation.release(); return; }
         const streaming = Boolean(snapshot);
         if (snapshot && !snapshot.complete) {
           // 不挂载播放器，避免在时长未知时创建 MSE；准备引用继续持有同一次分析。
@@ -576,12 +582,10 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             progress = await window.electronAPI.streamProgress(id);
             if (!isCurrent()) return;
           }
-          snapshot = await window.electronAPI.streamStatus(id);
+          snapshot = await api.streamPreparation(id);
           if (!isCurrent()) return;
         }
         if (snapshot?.error) { if (snapshot.errorCode === 'TIMELINE_DISCONTINUITY') setRepairSource(filePath); throw new Error(snapshot.error); }
-        const preparation = streaming ? await window.electronAPI.streamProgress(id) : null;
-        if (!isCurrent()) return;
         const basicMeta = snapshot?.metadata ?? await window.electronAPI.probeBasic(filePath);
 
         if (!isCurrent()) return;
@@ -620,8 +624,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         setIsLoading(false);
         setStreamPreparationProgress(null);
         if (streaming) {
-          setPreparedStreamId(id);
-          console.info('[流式准备耗时]', { totalMs: performance.now() - began, ...preparation?.timings });
+          setPreparedStream(preparation);
+          console.info('[流式准备耗时]', { totalMs: performance.now() - began, ...snapshot?.timings });
         } else cancelStreamPreparation();
         pendingSelection.current = null;
 
@@ -1301,7 +1305,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               videoHeight={metadata.height}
               displayAspectRatio={metadata.displayAspectRatio}
               isActive={isActive && !isLoading && mainViewportMode === 'player'}
-              onStreamOpened={releasePreparedStream}
+              onStreamOpened={preparedStream?.release}
               shortcutsEnabled={shortcutsEnabled && mainViewportMode === 'player'}
               onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
               onPlayStateChange={(playing) => setIsPlaying(playing)}

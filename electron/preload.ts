@@ -36,6 +36,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   cancelPlayback: id => ipcRenderer.invoke('media:cancelPlayback', id),
   releasePlayback: id => ipcRenderer.invoke('media:releasePlayback', id),
   openStream: (file, id) => ipcRenderer.invoke('media:openStream', file, id),
+  openStreamPreparation: (file, id) => ipcRenderer.invoke('media:openStreamPreparation', file, id),
+  streamPreparation: id => ipcRenderer.invoke('media:streamPreparation', id),
   streamStatus: id => ipcRenderer.invoke('media:streamStatus', id),
   streamProgress: id => ipcRenderer.invoke('media:streamProgress', id),
   streamFrame: (id, time, direction) => ipcRenderer.invoke('media:streamFrame', id, time, direction),

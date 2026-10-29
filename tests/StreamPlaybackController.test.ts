@@ -49,7 +49,7 @@ describe('流式定位与播放的交错', () => {
     await starting;
     expect(backend.creations).toHaveLength(0);
     expect(f.video.requestVideoFrameCallback).not.toHaveBeenCalled();
-    expect(f.api.closeStream).toHaveBeenCalledTimes(1);
+    expect(f.api.closeStream).not.toHaveBeenCalled();
     expect(f.observer.status).toHaveBeenCalledTimes(1);
   });
   it('准备期间只轮询小进度，完成时才获取一次完整索引', async () => {
@@ -105,13 +105,14 @@ describe('流式定位与播放的交错', () => {
     expect(await seeking).toBe(true); expect(f.video.play).not.toHaveBeenCalled();
     f.controller.destroy();
   });
-  it('关闭待定位会话后不再播放，且只释放一次', async () => {
+  it('关闭待定位控制器后不再播放，只销毁一次播放器并由调用方关闭会话', async () => {
     const f = setup(); await f.start();
     const seeking = f.controller.seek(600000); await vi.advanceTimersByTimeAsync(10);
     f.controller.destroy(); f.controller.play(); f.controller.destroy();
     await vi.advanceTimersByTimeAsync(10);
     expect(await seeking).toBe(false); expect(f.video.play).not.toHaveBeenCalled();
-    expect(f.api.closeStream).toHaveBeenCalledTimes(1);
+    expect(backend.player.destroy).toHaveBeenCalledTimes(1);
+    expect(f.api.closeStream).not.toHaveBeenCalled();
   });
   it('首帧准备期间的播放意图由首次定位确认后恢复', async () => {
     const f = setup(), starting = f.controller.start();

@@ -27,6 +27,8 @@ export interface ElectronAPI {
   cancelPlayback: (id: string) => Promise<void>;
   releasePlayback: (id: string) => Promise<void>;
   openStream: (file: string, id: string) => Promise<import('./shared/streamPlayback').StreamPlaybackSnapshot | null>;
+  openStreamPreparation: (file: string, id: string) => Promise<import('./shared/streamPlayback').StreamPreparationSnapshot | null>;
+  streamPreparation: (id: string) => Promise<import('./shared/streamPlayback').StreamPreparationSnapshot>;
   streamStatus: (id: string) => Promise<import('./shared/streamPlayback').StreamPlaybackSnapshot>;
   streamProgress: (id: string) => Promise<import('./shared/streamPlayback').StreamPreparationStatus>;
   streamFrame: (id: string, time: number, direction: -1 | 0 | 1) => Promise<import('./shared/streamPlayback').StreamFrameTarget>;

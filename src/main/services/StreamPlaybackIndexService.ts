@@ -4,7 +4,7 @@ import { CacheMaintenanceService } from './CacheMaintenanceService';
 import { abortError, fileIdentityAsync, MediaLimiter, resolveTool, runMediaTool } from './MediaTools';
 import { rational, frameTime, timeMs } from '../../shared/mediaTime';
 import { MediaMetadata, MediaStreamInfo } from '../../shared/types';
-import { frameAt, StreamContainer, StreamFrameTarget, StreamPreparationStatus } from '../../shared/streamPlayback';
+import { frameAt, StreamContainer, StreamFrameTarget, StreamPreparationStatus, StreamPreparationSnapshot } from '../../shared/streamPlayback';
 import { MediaIndexStore } from './MediaIndexStore';
 import { ProbedFile } from './MediaTools';
 import { REPAIR_CLOCK, RepairPacket } from './RepairTimeline';
@@ -195,10 +195,13 @@ export class StreamPlaybackIndexService {
     const { job } = lease;
     return { complete: job.complete, progress: job.progress, error: job.error || job.data?.discontinuity, errorCode: job.error ? job.errorCode : job.data?.discontinuity ? 'TIMELINE_DISCONTINUITY' : undefined, timings: { ...job.timings } };
   }
+  preparation(lease: StreamIndexLease): StreamPreparationSnapshot {
+    const status = this.progress(lease);
+    return { ...status, metadata: status.complete && !status.error ? this.metadata(lease.job) : undefined };
+  }
   snapshot(lease: StreamIndexLease) {
     const job = lease.job, d = job.data!;
-    const { durationMs: _duration, keyframes: _keys, keyframePoints: _points, ...preview } = this.metadata(job);
-    return { container: d.container, preview, originUs: d.originUs, baseMs: d.baseMs, frames: job.complete ? d.frames : undefined, offsetMs: d.originUs / 1000 - d.baseMs, durationMs: d.durationMs, indexedUntilMs: job.complete ? d.durationMs : Math.max(0, ((d.keys.at(-1)?.pts ?? d.originUs) - d.originUs) / 1000), progress: job.progress, complete: job.complete, error: job.error || d.discontinuity, errorCode: job.error ? job.errorCode : d.discontinuity ? 'TIMELINE_DISCONTINUITY' as const : undefined, index: { times: d.keys.map(k => Math.floor(k.pts / 1000) - d.baseMs), filepositions: d.keys.map(k => k.position) }, metadata: job.complete && !d.discontinuity ? this.metadata(job) : undefined };
+    return { container: d.container, originUs: d.originUs, baseMs: d.baseMs, frames: job.complete ? d.frames : undefined, offsetMs: d.originUs / 1000 - d.baseMs, durationMs: d.durationMs, indexedUntilMs: job.complete ? d.durationMs : Math.max(0, ((d.keys.at(-1)?.pts ?? d.originUs) - d.originUs) / 1000), progress: job.progress, complete: job.complete, error: job.error || d.discontinuity, errorCode: job.error ? job.errorCode : d.discontinuity ? 'TIMELINE_DISCONTINUITY' as const : undefined, index: { times: d.keys.map(k => Math.floor(k.pts / 1000) - d.baseMs), filepositions: d.keys.map(k => k.position) } };
   }
   metadata(job: IndexJob): MediaMetadata {
     const d = job.data!;
