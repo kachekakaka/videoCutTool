@@ -61,10 +61,11 @@ export class FileAccessRegistry {
   private media = new Map<string, string>();
   private reveals = new Set<string>();
   private key(file: string) { const result = path.resolve(file); return process.platform === 'win32' ? result.toLowerCase() : result; }
-  async authorize(file: string): Promise<string> {
+  async authorize(file: string, assertCanRegister?: () => void): Promise<string> {
     localPath(file);
     const resolved = await fs.promises.realpath(file);
     if (!(await fs.promises.stat(resolved)).isFile()) throw new Error('素材不是普通文件');
+    assertCanRegister?.();
     this.media.set(this.key(file), this.key(resolved)); this.media.set(this.key(resolved), this.key(resolved));
     this.allowReveal(file); return file;
   }

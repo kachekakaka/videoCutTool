@@ -94,26 +94,50 @@ function markCanceled(key: string) { canceledRequests.add(key); if (canceledRequ
 function checkCanceled(key: string) { if (canceledRequests.delete(key)) throw new Error('操作已取消'); }
 let configChanges: Promise<unknown> = Promise.resolve();
 const ipcActive = new Map<string, number>();
-const streamWindowGeneration = new WeakMap<IpcMainInvokeEvent['sender'], number>();
-function handle(channel: string, work: (event: IpcMainInvokeEvent, ...args: any[]) => any) {
+const windowPages = new WeakMap<IpcMainInvokeEvent['sender'], { generation: number; acceptingPreviews: boolean }>();
+function isTrustedPage(value: string) {
+  if (!value) return false;
+  const url = new URL(value);
+  return process.env.VITE_DEV_SERVER_URL
+    ? url.origin === new URL(process.env.VITE_DEV_SERVER_URL).origin
+    : url.protocol === 'file:' && path.resolve(fileURLToPath(url)) === path.resolve(__dirname, '../dist/index.html');
+}
+interface PreviewContext {
+  key(id: string): string;
+  isCurrent(): boolean;
+  check(): void;
+}
+function previewContext(event: IpcMainInvokeEvent, generation: number): PreviewContext {
+  const prefix = `${event.sender.id}:${generation}:`;
+  const isCurrent = () => {
+    const page = windowPages.get(event.sender);
+    if (quitting || !page?.acceptingPreviews || page.generation !== generation || event.sender.isDestroyed() || event.sender.isCrashed()) return false;
+    const frame = event.senderFrame;
+    return Boolean(frame && !frame.isDestroyed() && frame === event.sender.mainFrame);
+  };
+  return { key: id => `${prefix}${id}`, isCurrent, check: () => { if (!isCurrent()) throw abortError(); } };
+}
+function handle(channel: string, work: (event: IpcMainInvokeEvent, ...args: any[]) => any, preview?: 'start' | 'control') {
   ipcMain.handle(channel, async (event, ...args) => {
     const frame = event.senderFrame;
     if (!mainWindow || event.sender !== mainWindow.webContents || frame !== event.sender.mainFrame) throw new Error('拒绝非可信窗口请求');
-    const url = new URL(frame.url);
-    const trusted = process.env.VITE_DEV_SERVER_URL
-      ? url.origin === new URL(process.env.VITE_DEV_SERVER_URL).origin
-      : url.protocol === 'file:' && path.resolve(fileURLToPath(url)) === path.resolve(__dirname, '../dist/index.html');
-    if (!trusted || quitting) throw new Error('请求来源无效或应用正在关闭');
+    if (!isTrustedPage(frame.url) || quitting) throw new Error('请求来源无效或应用正在关闭');
     const count = ipcActive.get(channel) ?? 0;
     if (count >= 32 || args.length > (channel === 'config:resolveOutputPath' ? 7 : 6)) throw new Error('请求过于频繁，请稍后重试');
     ipcActive.set(channel, count + 1);
-    const generation = streamWindowGeneration.get(event.sender) ?? 0;
+    const generation = windowPages.get(event.sender)?.generation ?? 0;
+    const page = preview ? previewContext(event, generation) : undefined;
     try {
-      if (/^(media:|compress:|engine:submitDraft)/.test(channel)) await configChanges;
-      if (['media:openStream', 'media:openStreamPreparation', 'media:repairTimeline'].includes(channel) && generation !== (streamWindowGeneration.get(event.sender) ?? 0)) throw new Error('播放窗口已失效');
-      return await work(event, ...args);
+      page?.check();
+      if (preview !== 'control' && /^(media:|compress:|engine:submitDraft)/.test(channel)) await configChanges;
+      page?.check();
+      if (['media:openStream', 'media:openStreamPreparation', 'media:repairTimeline'].includes(channel) && generation !== (windowPages.get(event.sender)?.generation ?? 0)) throw new Error('播放窗口已失效');
+      return await (page ? work(event, page, ...args) : work(event, ...args));
     } finally { ipcActive.set(channel, Math.max(0, (ipcActive.get(channel) ?? 1) - 1)); }
   });
+}
+function handlePreview(channel: string, work: (event: IpcMainInvokeEvent, page: PreviewContext, ...args: any[]) => any, control = false) {
+  handle(channel, work, control ? 'control' : 'start');
 }
 function rememberPlanOutputs(records: PlanRecord[]) { for (const record of records) { maintenance?.protect(record.sourcePath, ...(record.outputPaths ?? []), ...(record.outputPath ? [record.outputPath] : [])); if (record.outputPath) files.allowReveal(record.outputPath); record.outputPaths?.forEach(file => files.allowReveal(file)); } }
 
@@ -161,14 +185,6 @@ function createWindow() {
     callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [`default-src 'self'; script-src 'self' ${dev ? "'unsafe-inline' " + dev : ''}; style-src 'self' 'unsafe-inline'; img-src 'self' media: data:; media-src 'self' media: blob:; connect-src 'self' media: ${connect}; object-src 'none'; frame-src 'none'; base-uri 'none'`] } });
   });
 
-  const htmlPath = path.join(__dirname, '../dist/index.html');
-
-  if (process.env.VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-  } else {
-    mainWindow.loadFile(htmlPath);
-  }
-
   // 首帧渲染就绪后瞬间光滑呈现，彻底消除白屏与黑框闪烁
   mainWindow.once('ready-to-show', () => {
     if (mainWindow && !mainWindow.isVisible()) {
@@ -188,17 +204,28 @@ function createWindow() {
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
     console.error('[Window Error] 页面加载失败:', errorCode, errorDescription);
   });
-  const ownerPrefix = `${mainWindow.webContents.id}:`;
   const owner = mainWindow.webContents.id;
   const contents = mainWindow.webContents;
+  const page = { generation: 0, acceptingPreviews: false };
+  windowPages.set(contents, page);
   const releaseWindowCaches = () => {
-    streamWindowGeneration.set(contents, (streamWindowGeneration.get(contents) ?? 0) + 1);
+    const ownerPrefix = `${owner}:${page.generation}:`;
+    page.acceptingPreviews = false;
+    page.generation++;
     void previewService?.releaseOwner(ownerPrefix); void playbackService?.releaseOwner(ownerPrefix); streamPlayback?.closeOwner(owner);
     for (const request of repairRequests.values()) if (request.owner === owner) request.controller.abort();
   };
-  mainWindow.webContents.on('render-process-gone', releaseWindowCaches);
-  mainWindow.webContents.on('destroyed', releaseWindowCaches);
-  mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => { if (isMainFrame && !isInPlace) releaseWindowCaches(); });
+  const acceptPreviews = () => {
+    if (quitting || contents.isDestroyed() || contents.isCrashed()) return;
+    const frame = contents.mainFrame;
+    page.acceptingPreviews = !frame.isDestroyed() && isTrustedPage(frame.url);
+  };
+  contents.on('render-process-gone', releaseWindowCaches);
+  contents.on('destroyed', releaseWindowCaches);
+  contents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => { if (isMainFrame && !isInPlace) releaseWindowCaches(); });
+  contents.on('did-navigate', acceptPreviews);
+  // 被阻止或取消的导航没有提交事件；仅在加载停止后恢复仍可用的主文档。
+  contents.on('did-stop-loading', () => { if (!contents.isDestroyed() && !contents.isLoadingMainFrame()) acceptPreviews(); });
 
   mainWindow.on('closed', () => {
     files.clear();
@@ -216,6 +243,13 @@ function createWindow() {
       if (answer === 0) event.preventDefault();
     }
   });
+
+  // 页面生命周期监听先就位，再开始首次导航。
+  if (process.env.VITE_DEV_SERVER_URL) {
+    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
+  } else {
+    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+  }
 }
 
 function getMimeType(filePath: string): string {
@@ -282,27 +316,29 @@ handle('media:probeKeyframes', async (event, filePath: string, id: string) => {
 });
 handle('media:cancelKeyframes', async (event, id: string) => { requestId(id); const key = `${event.sender.id}:${id}`; markCanceled(`scan:${key}`); scanRequests.get(key)?.controller.abort(); });
 handle('media:adjacentFrame', async (_event, file: string, time: number, direction: -1 | 1) => { await files.check(file); return prober.adjacentFrame(file, time, direction); });
-handle('media:preparePlayback', async (event, file: string, convert: boolean, id: string) => {
+handlePreview('media:preparePlayback', async (event, page, file: string, convert: boolean, id: string) => {
   requestId(id); if (typeof convert !== 'boolean') throw new Error('播放选项无效'); await files.check(file);
-  checkCanceled(`play:${event.sender.id}:${id}`);
+  page.check();
+  const key = page.key(id);
+  checkCanceled(`play:${key}`);
   maintenance.protect(file);
-  const key = `${event.sender.id}:${id}`;
   try {
-    const result = await playbackService.prepare(file, convert, key, progress => { if (!event.sender.isDestroyed()) event.sender.send('media:previewProgress', { ...progress, requestId: id }); });
-    if (event.sender.isDestroyed()) throw new Error('播放窗口已关闭');
-    if (result.path) await files.authorize(result.path); return result;
+    const result = await playbackService.prepare(file, convert, key, progress => { if (page.isCurrent()) event.senderFrame?.send('media:previewProgress', { ...progress, requestId: id }); });
+    page.check();
+    if (result.path) await files.authorize(result.path, page.check);
+    page.check(); return result;
   } catch (error) { playbackService.release(key); throw error; }
 });
-handle('media:cancelPlayback', async (event, id: string) => { requestId(id); markCanceled(`play:${event.sender.id}:${id}`); return playbackService.cancel(`${event.sender.id}:${id}`); });
-handle('media:releasePlayback', async (event, id: string) => { requestId(id); playbackService.release(`${event.sender.id}:${id}`); });
+handlePreview('media:cancelPlayback', async (_event, page, id: string) => { requestId(id); const key = page.key(id); markCanceled(`play:${key}`); return playbackService.cancel(key); }, true);
+handlePreview('media:releasePlayback', async (_event, page, id: string) => { requestId(id); playbackService.release(page.key(id)); }, true);
 async function openStreamSession(event: IpcMainInvokeEvent, file: string, id: string, preparation: boolean) {
   requestId(id);
   const frame = event.senderFrame;
-  const generation = streamWindowGeneration.get(event.sender) ?? 0;
+  const generation = windowPages.get(event.sender)?.generation ?? 0;
   await files.check(file);
   // 文件检查期间窗口可能已经崩溃或换页；此时 closeOwner 尚无会话可释放。
   // 必须在取得索引引用前拒绝迟到请求，不能在退出事件之后重新创建会话。
-  if (generation !== (streamWindowGeneration.get(event.sender) ?? 0) || !frame || frame.isDestroyed() || event.sender.isDestroyed() || event.sender.isCrashed() || event.sender.mainFrame !== frame) throw new Error('播放窗口已失效');
+  if (generation !== (windowPages.get(event.sender)?.generation ?? 0) || !frame || frame.isDestroyed() || event.sender.isDestroyed() || event.sender.isCrashed() || event.sender.mainFrame !== frame) throw new Error('播放窗口已失效');
   checkCanceled(`stream:${event.sender.id}:${id}`);
   return preparation ? streamPlayback.openPreparation(event.sender.id, file, id) : streamPlayback.open(event.sender.id, file, id);
 }
@@ -319,9 +355,9 @@ handle('media:repairTimeline', (event, file: string, id: string) => {
   const key = `${event.sender.id}:${id}`;
   if (repairRequests.has(key)) return repairRequests.get(key)!.promise;
   if (repairRequests.size) throw new Error('已有时间轴修复任务，请等待完成或先取消');
-  const controller = new AbortController(), generation = streamWindowGeneration.get(event.sender) ?? 0;
+  const controller = new AbortController(), generation = windowPages.get(event.sender)?.generation ?? 0;
   const check = () => {
-    if (controller.signal.aborted || quitting || event.sender.isDestroyed() || event.sender.isCrashed() || generation !== (streamWindowGeneration.get(event.sender) ?? 0)) throw abortError();
+    if (controller.signal.aborted || quitting || event.sender.isDestroyed() || event.sender.isCrashed() || generation !== (windowPages.get(event.sender)?.generation ?? 0)) throw abortError();
   };
   const progress = (value: Omit<TimelineRepairProgress, 'requestId'>) => { if (!event.sender.isDestroyed()) event.sender.send('media:repairProgress', { ...value, requestId: id }); };
   const promise = (async (): Promise<TimelineRepairResult> => {
@@ -369,20 +405,22 @@ handle('media:confirmRepair', (event, id: string, approved: boolean) => {
 });
 
 // 降码画质抽样对比与硬件探测
-handle('compress:previewSamples', async (event, videoPath: string, timestampsMs: number[], config: CompressConfig, id: string) => {
+handlePreview('compress:previewSamples', async (_event, page, videoPath: string, timestampsMs: number[], config: CompressConfig, id: string) => {
   requestId(id); validateCompress(config); await files.check(videoPath);
-  checkCanceled(`compare:${event.sender.id}:${id}`);
+  page.check();
+  const key = page.key(id);
+  checkCanceled(`compare:${key}`);
   if (!Array.isArray(timestampsMs) || timestampsMs.length > 5 || !timestampsMs.length || timestampsMs.some(time => !Number.isFinite(time) || time < 0)) throw new Error('抽样时间点无效');
   maintenance.protect(videoPath);
-  const key = `${event.sender.id}:${id}`;
   try {
     const result = await previewService.generatePreviewSamples(videoPath, timestampsMs, config, key);
-    if (event.sender.isDestroyed()) throw new Error('预览窗口已关闭');
-    await Promise.all(result.flatMap(sample => [sample.originalUrl!, sample.compressedUrl!]).map(url => files.authorize(new URL(url).searchParams.get('path')!))); return result.map(sample => ({ ...sample, cacheLeaseId: id }));
+    page.check();
+    await Promise.all(result.flatMap(sample => [sample.originalUrl!, sample.compressedUrl!]).map(url => files.authorize(new URL(url).searchParams.get('path')!, page.check)));
+    page.check(); return result.map(sample => ({ ...sample, cacheLeaseId: id }));
   } catch (error) { previewService.release(key); throw error; }
 });
-handle('compress:cancelPreview', async (event, id: string) => { requestId(id); markCanceled(`compare:${event.sender.id}:${id}`); return previewService.cancel(`${event.sender.id}:${id}`); });
-handle('compress:releasePreview', async (event, id: string) => { requestId(id); previewService.release(`${event.sender.id}:${id}`); });
+handlePreview('compress:cancelPreview', async (_event, page, id: string) => { requestId(id); const key = page.key(id); markCanceled(`compare:${key}`); return previewService.cancel(key); }, true);
+handlePreview('compress:releasePreview', async (_event, page, id: string) => { requestId(id); previewService.release(page.key(id)); }, true);
 handle('compress:probeEncoder', async (_event, config?: CompressConfig) => { validateCompress(config); return cuttingEngine.probeEncoderSupport(config); });
 
 // 剪辑引擎与后台任务
