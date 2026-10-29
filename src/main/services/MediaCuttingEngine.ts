@@ -16,6 +16,7 @@ import { removeMp4Preroll } from './Mp4TimelineRepair';
 import { exportPreciseFile, preciseAudioDefaults } from './PreciseExport';
 
 type Encoder = 'cpu' | 'nvenc' | 'qsv';
+type InputProvider = (file: string, signal?: AbortSignal) => Promise<{ url: string; close: () => Promise<void> }>;
 type Job = { record: PlanRecord; prober: KeyframeProber; prepared?: { identity: string; info: ProbedFile } };
 export type PlanStatusListener = (event: { planId: string; status: ExecutionStatus; outputPath?: string; error?: string; record?: PlanRecord }) => void;
 
@@ -42,8 +43,7 @@ export class MediaCuttingEngine {
   private drainPromise: Promise<void> = Promise.resolve();
   private progress: ExecutionProgress | null = null;
   private progressRun: symbol | null = null;
-  private tracker?: ExecutionProgressTracker;
-  private inputProvider?: (file: string, signal?: AbortSignal) => Promise<{ url: string; close: () => Promise<void> }>;
+  private inputProvider?: InputProvider;
   setInputProvider(provider: NonNullable<MediaCuttingEngine['inputProvider']>) { this.inputProvider = provider; }
 
   private maintenance: CacheMaintenanceService;
@@ -120,8 +120,7 @@ export class MediaCuttingEngine {
       let final: PlanRecord;
       try {
         if (processing.sourceIdentity && processing.sourceIdentity !== await fileIdentityAsync(processing.sourcePath)) throw new Error('排队期间素材已变化，原方案切点未执行');
-        const execution = this.executionSnapshot();
-        execution.tracker = tracker;
+        const execution = this.executionSnapshot(tracker);
         let plan: MediaRetentionPlan;
         let prepared: ProbedFile | undefined;
         if (processing.compressionOnly) {
@@ -178,15 +177,18 @@ export class MediaCuttingEngine {
   }
 
   async probeEncoderSupport(config: CompressConfig = { enabled: true, preset: 'balanced' }, signal?: AbortSignal): Promise<Encoder> {
+    return this.probeEncoderSupportFor(this.ffmpegPath, config, signal);
+  }
+  private async probeEncoderSupportFor(ffmpegPath: string, config: CompressConfig, signal?: AbortSignal): Promise<Encoder> {
     if (signal?.aborted) throw abortError();
     if (config.hardwareAcceleration === false || config.encoder === 'cpu') return 'cpu';
     const target = config.preset === 'high_compression' ? 'hevc' : 'h264';
     const requested = config.encoder || 'auto';
-    const key = `${this.ffmpegPath}:${target}:${requested}`;
+    const key = `${ffmpegPath}:${target}:${requested}`;
     const existing = this.cachedEncoders.get(key); if (existing) return existing;
     let job = this.encoderJobs.get(key);
     if (!job || job.controller.signal.aborted) {
-      const controller = new AbortController(), executable = this.ffmpegPath;
+      const controller = new AbortController(), executable = ffmpegPath;
       const promise = (async (): Promise<Encoder> => {
       const choices: Encoder[] = requested === 'auto' ? ['nvenc', 'qsv'] : [requested as Encoder];
       for (const encoder of choices) {
@@ -211,6 +213,31 @@ export class MediaCuttingEngine {
       currentJob.promise.then(encoder => { cleanup(); if (signal?.aborted) reject(abortError()); else resolve(encoder); }, error => { cleanup(); reject(error); });
     });
   }
+  private executionSnapshot(tracker?: ExecutionProgressTracker): PlanExecution {
+    const ffmpegPath = this.ffmpegPath;
+    return new PlanExecution(ffmpegPath, this.ffprobePath, this.tmpDir, this.maintenance, this.tempReady,
+      (config, signal) => this.probeEncoderSupportFor(ffmpegPath, config, signal), this.inputProvider, tracker);
+  }
+  executeRawPlan(plan: MediaRetentionPlan, signal?: AbortSignal): Promise<CutResult> { return this.executionSnapshot().executeSnapshot(plan, signal); }
+  async compressFile(input: string, output: string, config: CompressConfig, encoder: Encoder = 'cpu', signal?: AbortSignal, spatialFilterArgs?: string[], progressKey?: string, cpuRetry = false, stripCover = false, prepared?: ProbedFile): Promise<void> {
+    return this.executionSnapshot().compressFile(input, output, config, encoder, signal, spatialFilterArgs, progressKey, cpuRetry, stripCover, prepared);
+  }
+  resolveSafeSingleOutputPath(candidate: string, source: string, title?: string) { return resolveOutputBatch({ directory: path.dirname(candidate), source, extension: path.extname(candidate) || path.extname(source), title })[0]; }
+  resolveSafeSegmentPaths(directory: string, _base: string, extension: string, count: number, source: string, title?: string) { return resolveOutputBatch({ directory, source, extension, count, title, segmented: true }); }
+}
+
+/** 单次导出固定配置并借用共享资源，队列与共享服务的关闭责任仍归原引擎。 */
+class PlanExecution {
+  constructor(
+    private readonly ffmpegPath: string,
+    readonly ffprobePath: string,
+    private readonly tmpDir: string,
+    private readonly maintenance: CacheMaintenanceService,
+    private readonly tempReady: Promise<void>,
+    private readonly probeEncoderSupport: (config: CompressConfig, signal?: AbortSignal) => Promise<Encoder>,
+    private readonly inputProvider?: InputProvider,
+    private readonly tracker?: ExecutionProgressTracker,
+  ) {}
   private async runStep(key: string | undefined, args: string[], durationMs: number, signal?: AbortSignal, cpuRetry = false) {
     if (!this.tracker || !key) { await runMediaTool(this.ffmpegPath, args, { signal }); return; }
     const onOutput = this.tracker.start(key, durationMs, cpuRetry);
@@ -276,16 +303,6 @@ export class MediaCuttingEngine {
   private async removePublished(file: string, identity: fs.Stats) {
     try { const current = await fs.promises.lstat(file); if (current.ino === identity.ino && current.dev === identity.dev) await fs.promises.unlink(file); } catch {}
   }
-  private executionSnapshot(): MediaCuttingEngine {
-    // 快照只冻结工具配置；任务必须共享原登记根及维护实例，不能重复嵌套 managed 或争抢目录锁。
-    const worker = new MediaCuttingEngine(this.ffmpegPath, path.dirname(this.tmpDir), undefined, undefined, this.maintenance);
-    worker.updateTools(this.ffmpegPath, this.ffprobePath);
-    worker.cachedEncoders = this.cachedEncoders; worker.encoderJobs = this.encoderJobs;
-    worker.inputProvider = this.inputProvider;
-    return worker;
-  }
-  executeRawPlan(plan: MediaRetentionPlan, signal?: AbortSignal): Promise<CutResult> { return this.executionSnapshot().executeSnapshot(plan, signal); }
-
   /** 一份安全覆盖只编码一次；视频在解码后按逻辑边界分窗，音轨不跟随窗口重复。 */
   private async spatialPiece(input: string, output: string, pieces: string[], unions: PlanSegment[], plan: OutputFilePlan, size: Dimension, target: Dimension | undefined, config: CompressConfig, encoder: Encoder, signal?: AbortSignal, progressKey?: string, cpuRetry = false) {
     const info = await probeFile(input, this.ffprobePath, signal);
@@ -330,7 +347,7 @@ export class MediaCuttingEngine {
     parts.push(`${concat}${scale ? ',' + scale : ''}[spatialVideo]`);
     await this.runStep(progressKey, buildCompressArgs(input, output, config, encoder, { streams: info.streams, stripCover: false, videoFilterGraph: { graph: parts.join(';'), streamIndex: info.videoIndex, output: 'spatialVideo', timeBase: info.timeBase } }), info.durationMs, signal, cpuRetry);
   }
-  private async executeSnapshot(plan: MediaRetentionPlan, signal?: AbortSignal, compressionOnly = false, prepared?: ProbedFile): Promise<CutResult> {
+  async executeSnapshot(plan: MediaRetentionPlan, signal?: AbortSignal, compressionOnly = false, prepared?: ProbedFile): Promise<CutResult> {
     this.maintenance.protect(plan.sourcePath);
     await this.tempReady;
     const directory = await this.maintenance.create(this.tmpDir, 'task', '');
@@ -465,6 +482,4 @@ export class MediaCuttingEngine {
     }
     });
   }
-  resolveSafeSingleOutputPath(candidate: string, source: string, title?: string) { return resolveOutputBatch({ directory: path.dirname(candidate), source, extension: path.extname(candidate) || path.extname(source), title })[0]; }
-  resolveSafeSegmentPaths(directory: string, _base: string, extension: string, count: number, source: string, title?: string) { return resolveOutputBatch({ directory, source, extension, count, title, segmented: true }); }
 }
