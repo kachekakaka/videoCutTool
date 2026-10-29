@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Sidebar, TabId } from './renderer/components/Sidebar';
 import { Header } from './renderer/components/Header';
-import { CutterPage } from './renderer/components/CutterPage';
+import { CutterPage, CutterLoadRequest } from './renderer/components/CutterPage';
 import { PlansPage } from './renderer/components/PlansPage';
 import { SettingsPage } from './renderer/components/SettingsPage';
 import { BatchCompressionPage } from './renderer/components/BatchCompressionPage';
@@ -13,9 +13,9 @@ const AppContent: React.FC = () => {
   const { plans, config } = useAppData();
   const [activeTab, setActiveTab] = useState<TabId>('cutter');
   const [currentVideoPath, setCurrentVideoPath] = useState<string | null>(null);
-  const [loadedPlan, setLoadedPlan] = useState<PlanRecord | null>(null);
   const [compressionEdit, setCompressionEdit] = useState<{ record: PlanRecord; generation: number } | null>(null);
-  const [requestedVideo, setRequestedVideo] = useState<{ path: string; generation: number } | null>(null);
+  const [cutterLoadRequest, setCutterLoadRequest] = useState<CutterLoadRequest | null>(null);
+  const selectionIntent = React.useRef(0);
   const [globalToast, setGlobalToast] = useState<{ message: string; outputPath?: string } | null>(null);
 
   useEffect(() => {
@@ -36,8 +36,7 @@ const AppContent: React.FC = () => {
   }, [config.notifyOnExportComplete]);
 
   const requestVideo = (filePath: string) => {
-    setLoadedPlan(null);
-    setRequestedVideo(previous => ({ path: filePath, generation: (previous?.generation || 0) + 1 }));
+    setCutterLoadRequest({ generation: ++selectionIntent.current, selection: { kind: 'file', path: filePath } });
     setActiveTab('cutter');
   };
 
@@ -74,17 +73,19 @@ const AppContent: React.FC = () => {
 
   // 从方案列表回载方案到工作台
   const handleLoadPlanIntoCutter = async (plan: PlanRecord) => {
+    const generation = ++selectionIntent.current;
     try {
       const saved = await window.electronAPI?.loadPlan(plan.id);
-      if (!saved) return;
+      if (generation !== selectionIntent.current || !saved) return;
       if (saved.compressionOnly) {
         setCompressionEdit(previous => ({ record: saved, generation: (previous?.generation || 0) + 1 }));
         setActiveTab('compression'); return;
       }
-      setLoadedPlan(saved);
-      setRequestedVideo(previous => ({ path: saved.sourcePath, generation: (previous?.generation || 0) + 1 }));
+      setCutterLoadRequest({ generation, selection: { kind: 'plan', record: saved } });
       setActiveTab('cutter');
-    } catch (error) { setGlobalToast({ message: `载入方案失败：${String(error)}` }); }
+    } catch (error) {
+      if (generation === selectionIntent.current) setGlobalToast({ message: `载入方案失败：${String(error)}` });
+    }
   };
 
   // 打开当前视频对应的输出目录
@@ -152,11 +153,9 @@ const AppContent: React.FC = () => {
             <CutterPage
               isActive={activeTab === 'cutter'}
               onOpenVideo={handleOpenVideo}
-              initialVideoPath={requestedVideo?.path}
-              loadGeneration={requestedVideo?.generation}
+              loadRequest={cutterLoadRequest}
               onRequestVideo={requestVideo}
               onVideoLoaded={setCurrentVideoPath}
-              loadedPlanRecord={loadedPlan}
             />
           </div>
 

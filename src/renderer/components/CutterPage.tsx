@@ -31,13 +31,16 @@ import {
   Eye,
 } from 'lucide-react';
 
+export type CutterLoadRequest = Readonly<{
+  generation: number;
+  selection: Readonly<{ kind: 'file'; path: string }> | Readonly<{ kind: 'plan'; record: PlanRecord }>;
+}>;
+
 interface CutterPageProps {
   onOpenVideo: () => void;
-  initialVideoPath?: string | null;
-  loadedPlanRecord?: PlanRecord | null;
+  loadRequest: CutterLoadRequest | null;
   onPlanSaved?: () => void;
   isActive?: boolean;
-  loadGeneration?: number;
   onRequestVideo: (path: string) => void;
   onVideoLoaded: (path: string) => void;
 }
@@ -49,11 +52,9 @@ const getCompareCacheKey = (videoPath: string, config: CompressConfig, timestamp
 
 export const CutterPage: React.FC<CutterPageProps> = ({
   onOpenVideo,
-  initialVideoPath,
-  loadedPlanRecord,
+  loadRequest,
   onPlanSaved,
   isActive = true,
-  loadGeneration,
   onRequestVideo,
   onVideoLoaded,
 }) => {
@@ -61,8 +62,9 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const loadEpoch = useRef(0);
   const scanId = useRef<string | null>(null);
   const streamPreparation = useRef<PreparedStream | null>(null);
-  const pendingSelection = useRef<{ file: string; record?: PlanRecord | null } | null>(null);
-  const previousActive = useRef(isActive);
+  const acceptedGeneration = useRef<number | null>(null);
+  const pendingSelection = useRef<CutterLoadRequest | null>(null);
+  const requestRef = useRef(loadRequest); requestRef.current = loadRequest;
   const activeRef = useRef(isActive); activeRef.current = isActive;
   const repairRequest = useRef<string | null>(null);
   const repairCanceled = useRef(false);
@@ -117,13 +119,15 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const cancelScan = () => { if (scanId.current) void window.electronAPI?.cancelKeyframes(scanId.current).catch(() => {}); scanId.current = null; };
   const submitLock = useRef(false);
   const [metadata, setMetadata] = useState<MediaMetadata | null>(null);
+  const [readySelectionId, setReadySelectionId] = useState<number | null>(null);
+  const selectionReady = loadRequest !== null && readySelectionId === loadRequest.generation;
   const [isLoading, setIsLoading] = useState(false);
   const [streamPreparationProgress, setStreamPreparationProgress] = useState<number | null>(null);
   const [preparedStream, setPreparedStream] = useState<PreparedStream | null>(null);
   const cancelVideoPreparation = () => {
     loadEpoch.current++; pendingSelection.current = null;
     cancelScan(); cancelStreamPreparation();
-    setIsLoading(false); setStreamPreparationProgress(null); setMetadata(null); setRepairSource(null); setNotice(null);
+    setSourceConfirmation(null); setIsLoading(false); setStreamPreparationProgress(null); setMetadata(null); setRepairSource(null); setNotice(null);
   };
   const [isKeyframeScanning, setIsKeyframeScanning] = useState(false);
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
@@ -169,8 +173,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const [notice, setNotice] = useState<{ type: 'success' | 'error' | 'warning'; message: string } | null>(null);
 
   // 当前绑定方案状态与保存模态框
-  const [currentPlanId, setCurrentPlanId] = useState<string | null>(loadedPlanRecord ? loadedPlanRecord.id : null);
-  const [currentPlanTitle, setCurrentPlanTitle] = useState<string>(loadedPlanRecord ? loadedPlanRecord.title : '');
+  const [currentPlanId, setCurrentPlanId] = useState<string | null>(null);
+  const [currentPlanTitle, setCurrentPlanTitle] = useState<string>('');
   const [showSaveModal, setShowSaveModal] = useState(false);
   const savingRef = useRef(false);
   const [saving, setSaving] = useState(false);
@@ -355,7 +359,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
   // 首批加载也由工作台持有；视图只呈现结果，不再与新增请求各自维护一套缓存。
   useEffect(() => {
-    if (!isActive || mainViewportMode !== 'compare' || isLoading || !metadata?.filePath || compareCache.key === compareRequestKey) return;
+    if (!isActive || !selectionReady || mainViewportMode !== 'compare' || isLoading || !metadata?.filePath || compareCache.key === compareRequestKey) return;
     let active = true;
     const requestId = crypto.randomUUID();
     const epoch = compareEpochRef.current;
@@ -382,7 +386,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     };
     const timer = setTimeout(() => void fetchSamples(), 300);
     return () => { active = false; clearTimeout(timer); void window.electronAPI?.cancelCompressionPreview(requestId).catch(() => {}); };
-  }, [compareRequestKey, compareCache, mainViewportMode, isLoading, isActive]);
+  }, [compareRequestKey, compareCache, mainViewportMode, isLoading, isActive, selectionReady]);
 
   // 实时推导预定安全产物路径
   useEffect(() => {
@@ -412,12 +416,12 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
   const playerRef = useRef<VideoPlayerRef | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const mainPlayerActive = isActive && !isLoading && mainViewportMode === 'player';
+  const mainPlayerActive = isActive && selectionReady && !isLoading && mainViewportMode === 'player';
   useEffect(() => {
     // 只释放已完成的准备；播放器尚未启用时，正在分析的会话仍由加载流程持有。
     if (!mainPlayerActive) preparedStream?.release();
   }, [mainPlayerActive, preparedStream]);
-  const shortcutsEnabled = isActive && !repairConfirmation && !isLoading && !showSaveModal && !showNoCutWarningModal && !showCompressSettings && workbenchMode === 'temporal';
+  const shortcutsEnabled = isActive && selectionReady && !repairConfirmation && !isLoading && !showSaveModal && !showNoCutWarningModal && !showCompressSettings && workbenchMode === 'temporal';
   useEffect(() => { if (!isActive || mainViewportMode !== 'player') { playerRef.current?.pause(); setAuditionRange(null); } }, [isActive, mainViewportMode]);
 
   // 提交草稿操作变更至撤销栈
@@ -530,15 +534,16 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   };
 
   // 先取得完整索引，再建立草稿和播放器；首次加载与索引复用走同一初始化路径。
-  const loadAndProbeVideo = async (filePath: string, recordToLoad?: PlanRecord | null) => {
+  const loadAndProbeVideo = async (request: CutterLoadRequest) => {
+    const filePath = request.selection.kind === 'file' ? request.selection.path : request.selection.record.sourcePath;
+    let recordToLoad = request.selection.kind === 'plan' ? request.selection.record : undefined;
     const began = performance.now();
     setSourceConfirmation(null);
     cancelScan();
     cancelStreamPreparation();
     cancelRepair(); setRepairSource(null);
-    pendingSelection.current = { file: filePath, record: recordToLoad };
     const epoch = ++loadEpoch.current;
-    const isCurrent = () => loadEpoch.current === epoch;
+    const isCurrent = () => loadEpoch.current === epoch && requestRef.current?.generation === request.generation;
     playerRef.current?.pause();
     invalidateComparePreview();
     setIsLoading(true);
@@ -623,6 +628,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           setCurrentPlanTitle('');
         }
         setDraft(newDraft);
+        setReadySelectionId(request.generation);
         setDraftVersion((v) => v + 1);
 
         // 播放器取得同一在内存中的索引后才释放准备引用，避免交接期间回读磁盘。
@@ -665,18 +671,38 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     }
   };
 
-  useEffect(() => {
-    if (initialVideoPath) {
-      loadAndProbeVideo(initialVideoPath, loadedPlanRecord);
-    }
-  }, [initialVideoPath, loadedPlanRecord, loadGeneration]);
+  const startPending = () => {
+    if (activeRef.current && pendingSelection.current) void loadAndProbeVideo(pendingSelection.current);
+  };
 
+  // 新选择与切页恢复共用一个入口；清理尝试不消费选择，StrictMode 重放时仍可继续。
   useEffect(() => {
-    if (previousActive.current === isActive) return;
-    previousActive.current = isActive;
-    if (!isActive && pendingSelection.current) { loadEpoch.current++; cancelStreamPreparation(); }
-    if (isActive && pendingSelection.current) void loadAndProbeVideo(pendingSelection.current.file, pendingSelection.current.record);
-  }, [isActive]);
+    const changed = acceptedGeneration.current !== (loadRequest?.generation ?? null);
+    if (changed) {
+      acceptedGeneration.current = loadRequest?.generation ?? null;
+      pendingSelection.current = loadRequest;
+    }
+    if (!isActive) {
+      if (changed) { cancelScan(); cancelRepair(); setSourceConfirmation(null); }
+      if (changed || pendingSelection.current) { loadEpoch.current++; cancelStreamPreparation(); }
+      return;
+    }
+    startPending();
+  }, [loadRequest, isActive]);
+
+  const confirmSource = () => {
+    const confirmation = sourceConfirmation, request = pendingSelection.current, epoch = loadEpoch.current;
+    if (!confirmation || !request) return;
+    const isCurrent = () => activeRef.current && loadEpoch.current === epoch
+      && pendingSelection.current === request && requestRef.current?.generation === request.generation;
+    void window.electronAPI!.confirmSource(confirmation.record.id, confirmation.token).then(record => {
+      if (!isCurrent()) return;
+      pendingSelection.current = { generation: request.generation, selection: { kind: 'plan', record } };
+      startPending();
+    }).catch(error => {
+      if (isCurrent()) setNotice({ type: 'error', message: String(error) });
+    });
+  };
 
   // 插入切点
   const handleInsertCut = () => {
@@ -1158,7 +1184,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   );
 
   // 空状态视图
-  if (!metadata) {
+  if (!metadata || !selectionReady) {
     if (sourceConfirmation) return (
       <div className="m-6 rounded-xl border border-amber-500/40 bg-amber-950/20 p-5 space-y-3 text-slate-200">
         <h3 className="font-semibold">确认方案对应的素材</h3>
@@ -1167,8 +1193,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         <p>记录时长：{sourceConfirmation.record.totalDurationMs === null ? '待确认' : `${(sourceConfirmation.record.totalDurationMs / 1000).toFixed(3)} 秒`}</p>
         {sourceConfirmation.fileInfo && <p>当前文件：{(sourceConfirmation.fileInfo.size / 1024 ** 3).toFixed(3)} GiB；修改时间：{new Date(sourceConfirmation.fileInfo.modifiedAt).toLocaleString()}</p>}
         <p>这个方案没有记录创建时的文件身份，软件无法确认当前文件是否被替换。同名、同时长也不能证明是原片。请确认当前素材与方案对应，确认后才使用原切点。</p>
-        <button className="rounded bg-blue-600 px-4 py-2 mr-3" onClick={() => { const pending = sourceConfirmation, epoch = loadEpoch.current; void window.electronAPI!.confirmSource(pending.record.id, pending.token).then(record => { if (loadEpoch.current === epoch) void loadAndProbeVideo(record.sourcePath, record); }).catch(error => setNotice({ type: 'error', message: String(error) })); }}>确认对应并打开</button>
-        <button className="rounded bg-white/10 px-4 py-2" onClick={() => { loadEpoch.current++; setSourceConfirmation(null); }}>取消</button>
+        <button className="rounded bg-blue-600 px-4 py-2 mr-3" onClick={confirmSource}>确认对应并打开</button>
+        <button className="rounded bg-white/10 px-4 py-2" onClick={cancelVideoPreparation}>取消</button>
         {notice && <p className="text-rose-300">{notice.message}</p>}
       </div>
     );
@@ -1321,7 +1347,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             >
               {workbenchMode === 'spatial' && isActive && !isLoading && mainViewportMode === 'player' && metadata && (
                 <SpatialOverlay
-                  key={`${metadata.filePath}:${loadGeneration}:${targetSegmentId ?? 'global'}:${spatialSubMode}`}
+                  key={`${metadata.filePath}:${loadRequest?.generation}:${targetSegmentId ?? 'global'}:${spatialSubMode}`}
                   videoWidth={metadata.width || 1920}
                   videoHeight={metadata.height || 1080}
                   displayAspectRatio={metadata.displayAspectRatio}
