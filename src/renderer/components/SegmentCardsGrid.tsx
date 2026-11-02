@@ -447,7 +447,7 @@ export const SegmentCardsGrid: React.FC<SegmentCardsGridProps> = ({
   const stepLabel = formatStepLabel(activeStepMs);
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-2.5 items-stretch">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-2.5 items-stretch max-h-[160px] overflow-y-auto pr-1">
       {segments.map((seg, idx) => {
         const hasSpatial = Boolean((segmentSpatialMap && segmentSpatialMap[seg.id]) || hasGlobalSpatial);
         return (

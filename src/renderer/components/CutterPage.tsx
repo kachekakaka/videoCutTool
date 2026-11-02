@@ -43,6 +43,9 @@ interface CutterPageProps {
   isActive?: boolean;
   onRequestVideo: (path: string) => void;
   onVideoLoaded: (path: string) => void;
+  workbenchMode: WorkbenchMode;
+  onWorkbenchModeChange: (mode: WorkbenchMode) => void;
+  onSpatialActiveChange: (active: boolean) => void;
 }
 
 type PreparedStream = { release: () => void };
@@ -57,6 +60,9 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   isActive = true,
   onRequestVideo,
   onVideoLoaded,
+  workbenchMode,
+  onWorkbenchModeChange: setWorkbenchMode,
+  onSpatialActiveChange,
 }) => {
   const { config: appConfig, plans } = useAppData();
   const loadEpoch = useRef(0);
@@ -187,8 +193,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const [showCompressSettings, setShowCompressSettings] = useState(false);
   const [mainViewportMode, setMainViewportMode] = useState<'player' | 'compare'>('player');
 
-  // 工作台双模式解耦状态 (时间分段剪辑 ↔ 画面空间修饰)
-  const [workbenchMode, setWorkbenchMode] = useState<WorkbenchMode>('temporal');
+  // 工作台模式由 App 统一管理，顶栏和工具栏共用同一状态。
   const [spatialSubMode, setSpatialSubMode] = useState<SpatialSubMode>('crop');
   const [cropRatio, setCropRatio] = useState<CropRatioType>('free');
   const [isCropLocked, setIsCropLocked] = useState(false);
@@ -196,13 +201,12 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const [spatialScope, setSpatialScope] = useState<SpatialScope>('global');
   const [selectedMaskId, setSelectedMaskId] = useState<string | null>(null);
 
-  const handleSwitchWorkbenchMode = useCallback((newMode: WorkbenchMode) => {
-    if (newMode === 'spatial') {
+  useEffect(() => {
+    if (workbenchMode === 'spatial') {
       playerRef.current?.pause();
       setIsPlaying(false);
     }
-    setWorkbenchMode(newMode);
-  }, []);
+  }, [workbenchMode]);
 
   // 画质对比抽样画格、选中的场景页码及视图模式常驻工作台（跨 Tab / 跨视窗绝不丢失）
   const [compareCache, setCompareCache] = useState<{ key: string; samples: PreviewSample[] }>({ key: '', samples: [] });
@@ -280,6 +284,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const currentCropBox = effectiveSpatial?.crop;
   const currentMasks = effectiveSpatial?.masks || [];
   const hasSpatialActive = Boolean(draft?.hasSpatialConfig(metadata ? { width: metadata.width, height: metadata.height } : undefined));
+  useEffect(() => { onSpatialActiveChange(hasSpatialActive); }, [hasSpatialActive, onSpatialActiveChange]);
   const exportCompressConfig: CompressConfig = hasSpatialActive && !isCompressMode ? { enabled: true, preset: 'balanced', crf: 22 } : currentCompressConfig;
   const outputPolicyKey = JSON.stringify([exportCompressConfig.enabled, exportCompressConfig.preset, isPreciseMode, appConfig.ffprobePath]);
   useEffect(() => { setCropRatio(currentCropBox?.ratio ?? 'free'); setIsCropLocked(currentCropBox?.locked ?? false); }, [draft, draftVersion, targetSegmentId]);
@@ -1303,25 +1308,26 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     <div className="flex-1 h-full overflow-hidden px-4 sm:px-6 xl:px-8 py-3 flex flex-col relative min-h-0">
       <div className="w-full max-w-[1360px] mx-auto space-y-2 flex-1 flex flex-col min-h-0">
         {repairPanel}
-        {/* 工作台顶栏双模式解耦控制栏 */}
-        <WorkbenchModeBar
-          mode={workbenchMode}
-          onModeChange={handleSwitchWorkbenchMode}
-          subMode={spatialSubMode}
-          onSubModeChange={setSpatialSubMode}
-          cropRatio={cropRatio}
-          onCropRatioChange={handleCropRatioChange}
-          isCropLocked={isCropLocked}
-          onToggleCropLock={() => commitDraftChange(d => d.setCrop({ ...(currentCropBox ?? { x: 0, y: 0, width: makeEven(metadata.width), height: makeEven(metadata.height), ratio: 'free' }), locked: !isCropLocked }, targetSegmentId))}
-          onResetCropToFull={handleResetCropToFull}
-          activeMaskType={activeMaskType}
-          onActiveMaskTypeChange={setActiveMaskType}
-          onAddMask={handleAddMask}
-          scope={spatialScope}
-          onToggleScope={() => setSpatialScope(spatialScope === 'global' ? 'segment' : 'global')}
-          currentSegmentIndex={currentSegment ? currentSegment.index : 1}
-          hasSpatialActive={hasSpatialActive}
-        />
+        {/* 画面空间修饰二级控制工具栏：仅在空间模式下按需展开，时间剪辑时 100% 隐藏释放垂直高度 */}
+        {workbenchMode === 'spatial' && (
+          <WorkbenchModeBar
+            mode={workbenchMode}
+            onModeChange={setWorkbenchMode}
+            subMode={spatialSubMode}
+            onSubModeChange={setSpatialSubMode}
+            cropRatio={cropRatio}
+            onCropRatioChange={handleCropRatioChange}
+            isCropLocked={isCropLocked}
+            onToggleCropLock={() => commitDraftChange(d => d.setCrop({ ...(currentCropBox ?? { x: 0, y: 0, width: makeEven(metadata.width), height: makeEven(metadata.height), ratio: 'free' }), locked: !isCropLocked }, targetSegmentId))}
+            onResetCropToFull={handleResetCropToFull}
+            activeMaskType={activeMaskType}
+            onActiveMaskTypeChange={setActiveMaskType}
+            onAddMask={handleAddMask}
+            scope={spatialScope}
+            onToggleScope={() => setSpatialScope(spatialScope === 'global' ? 'segment' : 'global')}
+            currentSegmentIndex={currentSegment ? currentSegment.index : 1}
+          />
+        )}
 
         {/* 1. 纯净视频画面视窗 / 降码画质 A/B 对比就地视窗 */}
           <div className={mainViewportMode === 'player' ? 'relative flex-1 min-h-0 flex flex-col' : 'hidden'}>
@@ -1462,6 +1468,20 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               <span>分段列表 ({segments.length})</span>
             </div>
 
+            {/* 预定输出文件数胶囊徽章（鼠标悬浮提示拼接映射） */}
+            <span
+              className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-purple-500/15 border border-purple-500/30 text-purple-300 text-[10.5px] font-medium whitespace-nowrap shrink-0 cursor-help"
+              title={
+                outputs.map((out, index) => {
+                  const segNums = out.segmentIds.map(id => `第 ${segments.find(s => s.id === id)?.index} 段`).join(' → ');
+                  return `文件 ${index + 1}：${segNums}`;
+                }).join('\n') + '\n(按原视频顺序拼接)'
+              }
+            >
+              <span>📦</span>
+              <span>预定输出 {outputs.length} 个文件</span>
+            </span>
+
             {/* 关键帧后台扫描与索引状态指示 */}
             {isKeyframeScanning ? (
               <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-normal animate-pulse whitespace-nowrap shrink-0">
@@ -1566,7 +1586,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
         </div>
 
         {/* 4. 精炼双行分段卡片流 */}
-        <div className="max-h-[160px] shrink-0 overflow-y-auto overflow-x-hidden pr-0.5">
+        <div className="shrink-0 min-h-0">
           <SegmentCardsGrid
             segments={segments}
             selectingOutputs={selectingOutputs}
@@ -1591,21 +1611,45 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           />
         </div>
 
-        <div className="shrink-0 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs" aria-label="输出文件清单">
-          <div className="text-zinc-200" role="status">将输出 {outputs.length} 个文件<span className="ml-3 text-zinc-400">按原视频顺序拼接</span></div>
-          <div className="max-h-[72px] overflow-y-auto mt-1 space-y-1">
-            {outputs.map((output, index) => <div key={output.segmentIds.join(',')} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-zinc-300">
-              <span className="text-violet-200">文件 {index + 1}：</span>
-              {output.segmentIds.map((id, memberIndex) => <React.Fragment key={id}>
-                {memberIndex > 0 && <span aria-hidden="true">→</span>}
-                <span className="inline-flex items-center gap-1">第 {segments.find(segment => segment.id === id)?.index} 段
-                  {outputMode === 'custom' && output.segmentIds.length > 1 && <button aria-label={`从文件 ${index + 1} 移出第 ${segments.find(segment => segment.id === id)?.index} 段`} title="移出此段，单独输出" onClick={() => commitDraftChange(d => d.separateSegments([id]))} className="px-1.5 py-0.5 rounded hover:bg-white/15 text-zinc-400 hover:text-white">×</button>}
-                </span>
-              </React.Fragment>)}
-              {outputMode === 'custom' && output.segmentIds.length > 1 && <button onClick={() => commitDraftChange(d => d.separateSegments(output.segmentIds))} className="px-2 py-0.5 rounded text-violet-200 hover:bg-white/10" aria-label={`将文件 ${index + 1} 拆开输出`}>拆开输出</button>}
-            </div>)}
+        {/* 自定义合并时的片段拆解管理面板（仅在有合并多段时显示，其余情况零占空间） */}
+        {outputMode === 'custom' && outputs.some(output => output.segmentIds.length > 1) && (
+          <div className="shrink-0 rounded-lg border border-purple-500/20 bg-purple-950/20 px-3 py-1.5 text-xs animate-in fade-in" aria-label="输出文件清单">
+            <div className="text-purple-200 font-medium flex items-center justify-between" role="status">
+              <span>已自定义合并 {outputs.filter(o => o.segmentIds.length > 1).length} 组文件</span>
+              <span className="text-zinc-400 text-[11px]">按原视频顺序拼接</span>
+            </div>
+            <div className="max-h-[56px] overflow-y-auto mt-1 space-y-1">
+              {outputs.map((output, index) => output.segmentIds.length > 1 ? (
+                <div key={output.segmentIds.join(',')} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-zinc-300">
+                  <span className="text-violet-200">文件 {index + 1}：</span>
+                  {output.segmentIds.map((id, memberIndex) => (
+                    <React.Fragment key={id}>
+                      {memberIndex > 0 && <span aria-hidden="true" className="text-zinc-500">→</span>}
+                      <span className="inline-flex items-center gap-1 bg-white/5 px-1.5 py-0.5 rounded text-[11px]">
+                        第 {segments.find(segment => segment.id === id)?.index} 段
+                        <button
+                          aria-label={`从文件 ${index + 1} 移出第 ${segments.find(segment => segment.id === id)?.index} 段`}
+                          title="移出此段，单独输出"
+                          onClick={() => commitDraftChange(d => d.separateSegments([id]))}
+                          className="px-1 py-0.5 rounded hover:bg-white/15 text-zinc-400 hover:text-white"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    </React.Fragment>
+                  ))}
+                  <button
+                    onClick={() => commitDraftChange(d => d.separateSegments(output.segmentIds))}
+                    className="px-2 py-0.5 rounded bg-purple-500/10 hover:bg-purple-500/20 text-violet-300 text-[11px] border border-purple-500/20 transition-colors"
+                    aria-label={`将文件 ${index + 1} 拆开输出`}
+                  >
+                    全部拆开
+                  </button>
+                </div>
+              ) : null)}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* 5. 底部固定状态 Dock 栏 (建立顶级 relative z-50 层叠上下文，彻底杜绝任何下层视窗横穿切断弹窗) */}
         <div className="mt-auto shrink-0 pt-1 pb-1 relative z-50">
@@ -1650,25 +1694,48 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               )}
             </div>
 
-            {/* 中间：剪辑偏好选项组 */}
-            <div className="flex items-center gap-2 sm:gap-2.5 text-xs text-zinc-300 select-none shrink-0 mx-0.5">
-              <label className="flex items-center gap-1">输出方式
-                <select aria-label="输出方式" value={outputMode} onChange={event => handleOutputMode(event.target.value as OutputMode)} className="bg-zinc-900 text-zinc-100 border border-white/20 rounded px-2 py-1" title="切换方式会重设组合，可撤销">
-                  <option value="separate">分别输出</option>
-                  <option value="single">全部合成一个</option>
-                  <option value="custom">自定义合并</option>
-                </select>
-              </label>
-
-              <label className="flex items-center gap-1 cursor-pointer hover:text-white transition-colors" title="勾选后剥离原片固定封面，让切片视频自动展示各段首帧画面，防止所有切片封面雷同">
-                <input
-                  type="checkbox"
-                  checked={stripOriginalCover}
-                  onChange={(e) => handleToggleCover(e.target.checked)}
-                  className="w-3.5 h-3.5 accent-blue-500 rounded cursor-pointer"
-                />
-                <span>首帧封面</span>
-              </label>
+            {/* 中间：输出方式平铺胶囊组（彻底去除原生白底下拉框） */}
+            <div className="flex items-center bg-black/40 border border-white/10 p-0.5 rounded-xl text-xs font-medium select-none shrink-0 mx-0.5" role="group" aria-label="输出方式">
+              <span className="text-[11px] text-zinc-400 pl-2 pr-1 shrink-0">输出:</span>
+              <button
+                type="button"
+                onClick={() => handleOutputMode('separate')}
+                aria-pressed={outputMode === 'separate'}
+                className={`px-2.5 py-1 rounded-lg text-xs transition-all whitespace-nowrap ${
+                  outputMode === 'separate'
+                    ? 'bg-blue-600/30 text-blue-300 font-bold border border-blue-500/40 shadow-sm'
+                    : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                }`}
+                title="每个保留片段分别输出为独立的视频文件"
+              >
+                分别输出
+              </button>
+              <button
+                type="button"
+                onClick={() => handleOutputMode('single')}
+                aria-pressed={outputMode === 'single'}
+                className={`px-2.5 py-1 rounded-lg text-xs transition-all whitespace-nowrap ${
+                  outputMode === 'single'
+                    ? 'bg-blue-600/30 text-blue-300 font-bold border border-blue-500/40 shadow-sm'
+                    : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                }`}
+                title="所有保留片段自动按原视频顺序拼接为一个视频文件"
+              >
+                全部合成
+              </button>
+              <button
+                type="button"
+                onClick={() => handleOutputMode('custom')}
+                aria-pressed={outputMode === 'custom'}
+                className={`px-2.5 py-1 rounded-lg text-xs transition-all whitespace-nowrap ${
+                  outputMode === 'custom'
+                    ? 'bg-blue-600/30 text-blue-300 font-bold border border-blue-500/40 shadow-sm'
+                    : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                }`}
+                title="自定义任意片段的分组与合并拼接方式"
+              >
+                自定义合并
+              </button>
             </div>
 
             {/* 右侧动作按钮组 */}
@@ -1767,6 +1834,20 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                   </button>
                 </div>
               )}
+
+              {/* 首帧封面开关微型胶囊 */}
+              <label
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-zinc-800/80 hover:bg-zinc-700/80 border border-white/10 text-xs text-zinc-300 hover:text-white cursor-pointer select-none transition-colors shrink-0"
+                title="勾选后剥离原片固定封面，让切片视频自动展示各段首帧画面，防止所有切片封面雷同"
+              >
+                <input
+                  type="checkbox"
+                  checked={stripOriginalCover}
+                  onChange={(e) => handleToggleCover(e.target.checked)}
+                  className="w-3.5 h-3.5 accent-blue-500 rounded cursor-pointer"
+                />
+                <span className="text-[11px] whitespace-nowrap">首帧封面</span>
+              </label>
 
               {/* 存为方案按钮 */}
               <button

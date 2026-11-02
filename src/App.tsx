@@ -13,6 +13,8 @@ const AppContent: React.FC = () => {
   const { plans, config } = useAppData();
   const [activeTab, setActiveTab] = useState<TabId>('cutter');
   const [currentVideoPath, setCurrentVideoPath] = useState<string | null>(null);
+  const [workbenchMode, setWorkbenchMode] = useState<'temporal' | 'spatial'>('temporal');
+  const [hasSpatialActive, setHasSpatialActive] = useState(false);
   const [compressionEdit, setCompressionEdit] = useState<{ record: PlanRecord; generation: number } | null>(null);
   const [cutterLoadRequest, setCutterLoadRequest] = useState<CutterLoadRequest | null>(null);
   const selectionIntent = React.useRef(0);
@@ -145,6 +147,9 @@ const AppContent: React.FC = () => {
           onOpenVideo={activeTab === 'compression' ? undefined : handleOpenVideo}
           onOpenOutputFolder={activeTab === 'cutter' && currentVideoPath ? handleOpenOutputFolder : undefined}
           currentVideoName={activeTab === 'cutter' ? currentVideoName : undefined}
+          workbenchMode={activeTab === 'cutter' && currentVideoPath ? workbenchMode : undefined}
+          onWorkbenchModeChange={setWorkbenchMode}
+          hasSpatialActive={hasSpatialActive}
         />
 
         <main className="flex-1 overflow-hidden relative flex flex-col">
@@ -156,6 +161,9 @@ const AppContent: React.FC = () => {
               loadRequest={cutterLoadRequest}
               onRequestVideo={requestVideo}
               onVideoLoaded={setCurrentVideoPath}
+              workbenchMode={workbenchMode}
+              onWorkbenchModeChange={setWorkbenchMode}
+              onSpatialActiveChange={setHasSpatialActive}
             />
           </div>
 

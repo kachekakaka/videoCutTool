@@ -178,7 +178,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     window.addEventListener('keydown', handle); return () => window.removeEventListener('keydown', handle);
   });
   const source = stream.route === 'native' ? (/^(https?:|media:)/.test(playbackPath) ? playbackPath : `media://video?path=${encodeURIComponent(playbackPath)}`) : undefined;
-  return <div className="w-full flex-1 min-h-[240px] flex flex-col rounded-2xl overflow-hidden bg-[#161b22]/90 border border-white/10 shadow-2xl">
+  return <div className="w-full flex-1 min-h-0 flex flex-col rounded-2xl overflow-hidden bg-[#161b22]/90 border border-white/10 shadow-2xl">
     <div ref={viewport} className="relative flex-1 min-h-0 w-full bg-black/95 flex items-center justify-center overflow-hidden select-none">
       <div
         style={{ width: contentWidth, height: contentWidth / ratio }}

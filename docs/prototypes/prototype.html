@@ -267,7 +267,7 @@
     .video-viewport {
       position: relative;
       width: 100%;
-      height: 380px;
+      height: 460px;
       background: #000;
       border-radius: 12px;
       overflow: hidden;
@@ -355,8 +355,8 @@
       gap: 8px;
     }
 
-    @media (max-width: 1599px) {
-      .player-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    @media (max-width: 860px) {
+      .player-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 10px; }
       .player-controls-left { grid-column: 1; grid-row: 1; }
       .player-controls-right { grid-column: 2; grid-row: 1; }
       .player-controls-center { grid-column: 1 / -1; grid-row: 2; justify-self: center; }
@@ -402,6 +402,35 @@
       color: #fff;
     }
 
+    .history-controls {
+      display: inline-flex;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      padding: 2px;
+      margin-right: 8px;
+    }
+
+    .history-controls .btn {
+      padding: 4px 9px;
+      font-size: 11.5px;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      border-radius: 6px;
+    }
+
+    .history-controls .btn:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
+    }
+
+    .history-controls .btn:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+    }
+
     /* ========================================================= */
     /* 4. 彻底重构：分段卡片 3 阶段固定栅格，根治一切“不齐”与折行 */
     /* ========================================================= */
@@ -434,13 +463,17 @@
       border-radius: 12px;
     }
 
-    /* 卡片网格：最小宽度 310px，统一 stretch 等高拉伸 */
+    /* 卡片网格：固定 2 排栅格并支持纵向滚动，释放纵向高度 */
     .cards-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
-      gap: 16px;
+      grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+      gap: 12px;
       width: 100%;
       align-items: stretch;
+      max-height: 240px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-right: 4px;
     }
 
     /* 单张卡片：统一固定垂直结构，杜绝任何一行高度漂移！ */
@@ -448,11 +481,11 @@
       background: var(--bg-card);
       backdrop-filter: blur(10px);
       border: 1px solid var(--border-subtle);
-      border-radius: 14px;
-      padding: 14px 16px;
+      border-radius: 12px;
+      padding: 10px 14px;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 8px;
       transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
       position: relative;
       overflow: hidden;
@@ -612,6 +645,35 @@
 
     .btn-card-preview:hover {
       background: rgba(255, 255, 255, 0.12);
+    }
+
+    .btn-link-next {
+      padding: 4px 8px;
+      border-radius: 6px;
+      background: rgba(188, 140, 255, 0.1);
+      border: 1px dashed rgba(188, 140, 255, 0.35);
+      color: #d2a8ff;
+      font-size: 11px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      white-space: nowrap;
+      transition: all 0.2s ease;
+      margin-left: auto;
+    }
+
+    .btn-link-next:hover {
+      background: rgba(188, 140, 255, 0.22);
+      border-color: rgba(188, 140, 255, 0.6);
+      color: #fff;
+    }
+
+    .btn-link-next.active {
+      background: rgba(188, 140, 255, 0.28);
+      border: 1px solid #bc8cff;
+      color: #fff;
+      box-shadow: 0 0 8px rgba(188, 140, 255, 0.3);
     }
 
     /* 保留/丢弃双态一体切换胶囊 */
@@ -895,6 +957,48 @@
 
     .export-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
     .export-controls label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+
+    /* 高质感分段药丸选择器：彻底替代粗糙白底下拉框 */
+    .segmented-pill-group {
+      display: inline-flex;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.45);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      padding: 2px;
+      gap: 2px;
+    }
+
+    .segmented-pill-label {
+      font-size: 11px;
+      color: var(--text-dim);
+      padding: 0 6px 0 8px;
+      user-select: none;
+    }
+
+    .segmented-pill-item {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+      white-space: nowrap;
+    }
+
+    .segmented-pill-item:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .segmented-pill-item.active {
+      background: rgba(88, 166, 255, 0.2);
+      color: #58a6ff;
+      font-weight: 600;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    }
     .export-boundary { flex-basis: 100%; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
     #prototype-notice { margin: auto; padding: 24px; max-width: min(520px, calc(100vw - 32px)); color: #f0f6fc; background: #161b22; border: 1px solid #30363d; border-radius: 14px; }
     #prototype-notice::backdrop { background: #000b; }
@@ -1303,6 +1407,712 @@
       margin-left: 6px;
       cursor: pointer;
     }
+
+    /* ========================================================= */
+    /* V2 全新视频裁剪工作台 (高精对齐真实 React 客户端与新布局) */
+    /* ========================================================= */
+    /* 全局消除 V2 激活时的外层大滚动条，锁定为纯正桌面应用工作台 (Cockpit) */
+    body:has(#tab-page-cutter-v2.active) .app-main,
+    .app-main:has(#tab-page-cutter-v2.active) {
+      overflow-y: hidden !important;
+    }
+
+    .tab-page#tab-page-cutter-v2 {
+      height: calc(100vh - 56px);
+      max-height: calc(100vh - 56px);
+      padding: 8px 24px 10px 24px;
+      gap: 8px;
+      max-width: 1440px;
+      width: 100%;
+      box-sizing: border-box;
+      overflow: hidden;
+      flex-direction: column;
+    }
+
+    /* 1. 顶栏模式栏 */
+    .v2-mode-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 32px;
+      padding: 0 4px;
+      flex-shrink: 0;
+    }
+
+    .v2-mode-capsules {
+      display: inline-flex;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.45);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 10px;
+      padding: 2px;
+      gap: 3px;
+    }
+
+    .v2-mode-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .v2-mode-btn:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .v2-mode-btn.active {
+      background: rgba(88, 166, 255, 0.18);
+      border-color: rgba(88, 166, 255, 0.4);
+      color: #58a6ff;
+      font-weight: 600;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    }
+
+    .v2-mode-title { font-weight: 600; }
+    .v2-mode-sub { font-size: 11px; opacity: 0.65; }
+    .v2-mode-tip { font-size: 11.5px; color: var(--text-dim); }
+
+    /* 2. 主视窗与时间轴整合格子 */
+    .v2-player-card {
+      background: var(--bg-card);
+      backdrop-filter: blur(14px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      flex: 1;
+      min-height: 0;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+    }
+
+    .v2-video-viewport {
+      position: relative;
+      width: 100%;
+      flex: 1;
+      min-height: 140px;
+      background: #06080d;
+      border-radius: 10px;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    #v2-screen-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .v2-viewport-overlay {
+      position: absolute;
+      top: 12px;
+      left: 14px;
+      right: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      pointer-events: none;
+    }
+
+    .v2-badge-filename {
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(8px);
+      padding: 5px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-family: ui-monospace, monospace;
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .v2-overlay-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      pointer-events: auto;
+    }
+
+    .v2-badge-keyframe {
+      color: #3fb950;
+      font-size: 12px;
+      font-weight: 500;
+      background: rgba(35, 134, 54, 0.2);
+      border: 1px solid rgba(35, 134, 54, 0.4);
+      padding: 4px 10px;
+      border-radius: 8px;
+    }
+
+    .v2-pill-btn {
+      background: rgba(188, 140, 255, 0.2);
+      border: 1px solid rgba(188, 140, 255, 0.45);
+      color: #d2a8ff;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 4px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      backdrop-filter: blur(8px);
+      transition: all 0.2s;
+    }
+
+    .v2-pill-btn:hover {
+      background: rgba(188, 140, 255, 0.35);
+      color: #fff;
+    }
+
+    /* 3. 时间轴轨道 */
+    .v2-timeline-box {
+      width: 100%;
+      height: 44px;
+      background: #090c12;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      cursor: pointer;
+      overflow: hidden;
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    canvas#v2-timeline-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* 单行多合一控制栏 */
+    .v2-player-controls-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 34px;
+      gap: 12px;
+      padding: 0 2px;
+      flex-shrink: 0;
+    }
+
+    .v2-controls-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .v2-timecode {
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 13.5px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .v2-time-main { color: #fff; font-weight: 700; }
+    .v2-time-sep { color: var(--text-dim); }
+    .v2-time-sub { color: var(--text-muted); font-weight: 500; }
+
+    .v2-controls-center {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .v2-btn-icon {
+      padding: 4px 10px;
+      border-radius: 7px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #e6edf3;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.18s;
+    }
+
+    .v2-btn-icon:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: #fff;
+    }
+
+    .v2-btn-play {
+      padding: 5px 18px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #238636, #2ea043);
+      border: 1px solid rgba(46, 160, 67, 0.5);
+      color: #fff;
+      font-size: 12.5px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+      transition: all 0.2s;
+    }
+
+    .v2-btn-play:hover {
+      background: linear-gradient(135deg, #2ea043, #3fb950);
+      transform: translateY(-1px);
+    }
+
+    .v2-speed-capsule {
+      display: inline-flex;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      padding: 2px;
+      font-size: 12px;
+      color: #d4d4d8;
+    }
+
+    .v2-speed-capsule button {
+      background: transparent;
+      border: none;
+      color: #a1a1aa;
+      width: 22px;
+      height: 22px;
+      cursor: pointer;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
+    .v2-speed-capsule button:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    #v2-speed-val {
+      font-family: ui-monospace, monospace;
+      padding: 0 4px;
+      font-weight: 600;
+    }
+
+    .v2-controls-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .v2-mini-btn-group {
+      display: inline-flex;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.45);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      padding: 2px;
+      gap: 2px;
+    }
+
+    .v2-group-label {
+      font-size: 11px;
+      color: var(--text-dim);
+      padding: 0 4px 0 6px;
+    }
+
+    .v2-mini-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 11.5px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.18s;
+      white-space: nowrap;
+    }
+
+    .v2-mini-btn:hover:not(:disabled) {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .v2-mini-btn.active {
+      background: #1f6feb;
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .v2-mini-btn:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+    }
+
+    .v2-btn-cut {
+      background: linear-gradient(135deg, rgba(88, 166, 255, 0.2), rgba(31, 111, 235, 0.25));
+      border: 1px solid rgba(88, 166, 255, 0.45);
+      color: var(--accent-blue);
+      padding: 5px 12px;
+      font-size: 12.5px;
+      font-weight: 600;
+      border-radius: 8px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+      transition: all 0.2s;
+    }
+
+    .v2-btn-cut:hover {
+      background: linear-gradient(135deg, rgba(88, 166, 255, 0.35), rgba(31, 111, 235, 0.45));
+      border-color: #58a6ff;
+      color: #fff;
+    }
+
+    /* 4. 双排紧凑滚动分段流 (固定 108px，双排网格，两行刚好塞满，超量平滑滚动) */
+    .v2-segment-section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .v2-section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 22px;
+      padding: 0 4px;
+    }
+
+    .v2-section-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12.5px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .v2-counter-tag {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.08);
+      padding: 1px 8px;
+      border-radius: 10px;
+    }
+
+    .v2-output-summary-pill {
+      font-size: 11px;
+      font-weight: 600;
+      color: #d2a8ff;
+      background: rgba(188, 140, 255, 0.14);
+      border: 1px solid rgba(188, 140, 255, 0.3);
+      padding: 2px 10px;
+      border-radius: 10px;
+    }
+
+    /* 固定 108px 高度，双排滚动：第一行 50px + gap 8px + 第二行 50px = 108px！ */
+    .v2-cards-grid-scroll {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 8px;
+      height: 108px;
+      max-height: 108px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-right: 4px;
+    }
+
+    .v2-segment-card {
+      height: 50px;
+      box-sizing: border-box;
+      background: #141822;
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      border-radius: 8px;
+      padding: 5px 10px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+    }
+
+    .v2-segment-card:hover {
+      background: #1a202c;
+      border-color: rgba(255, 255, 255, 0.18);
+    }
+
+    .v2-segment-card.is-keep {
+      border-color: rgba(35, 134, 54, 0.45);
+    }
+
+    .v2-segment-card.is-keep::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 3px;
+      border-radius: 8px 0 0 8px;
+      background: #238636;
+    }
+
+    .v2-segment-card.is-discard {
+      border-color: rgba(218, 54, 51, 0.35);
+      background: rgba(26, 18, 20, 0.6);
+    }
+
+    .v2-segment-card.is-discard::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 3px;
+      border-radius: 8px 0 0 8px;
+      background: #da3633;
+    }
+
+    .v2-card-row-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+    }
+
+    .v2-card-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .v2-card-idx {
+      font-family: ui-monospace, monospace;
+      font-weight: 800;
+      font-size: 12.5px;
+    }
+
+    .v2-card-time {
+      font-family: ui-monospace, monospace;
+      font-size: 11.5px;
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .v2-card-toggle {
+      font-size: 10.5px;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+      border: 1px solid transparent;
+    }
+
+    .v2-card-toggle.keep {
+      background: rgba(35, 134, 54, 0.25);
+      color: #3fb950;
+      border-color: rgba(35, 134, 54, 0.4);
+    }
+
+    .v2-card-toggle.discard {
+      background: rgba(218, 54, 51, 0.25);
+      color: #f85149;
+      border-color: rgba(218, 54, 51, 0.4);
+    }
+
+    .v2-card-row-bottom {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      font-size: 10.5px;
+      color: var(--text-muted);
+    }
+
+    .v2-card-bottom-actions {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .v2-card-btn {
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #d4d4d8;
+      cursor: pointer;
+      font-size: 10.5px;
+    }
+
+    .v2-card-btn:hover {
+      background: rgba(255, 255, 255, 0.16);
+      color: #fff;
+    }
+
+    .v2-btn-link-next {
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: rgba(188, 140, 255, 0.1);
+      border: 1px dashed rgba(188, 140, 255, 0.35);
+      color: #d2a8ff;
+      font-size: 10.5px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      transition: all 0.18s;
+    }
+
+    .v2-btn-link-next:hover {
+      background: rgba(188, 140, 255, 0.25);
+      color: #fff;
+    }
+
+    .v2-btn-link-next.active {
+      background: rgba(188, 140, 255, 0.3);
+      border: 1px solid #bc8cff;
+      color: #fff;
+      font-weight: 600;
+    }
+
+    /* 5. 底部流式集成 Dock 栏 (彻底取消 fixed，杜绝遮挡卡片) */
+    .v2-dock-footer {
+      position: static;
+      margin-top: auto;
+      flex-shrink: 0;
+      width: 100%;
+      background: rgba(18, 22, 31, 0.95);
+      backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 12px;
+      padding: 7px 16px;
+      z-index: 10;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+      display: flex;
+      box-sizing: border-box;
+    }
+
+    .v2-dock-inner {
+      width: 100%;
+      max-width: 1400px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .v2-dock-stats {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 12.5px;
+      font-family: ui-monospace, monospace;
+    }
+
+    .v2-stat-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .v2-dot { width: 7px; height: 7px; border-radius: 50%; }
+    .v2-dot.green { background: #3fb950; }
+    .v2-dot.red { background: #f85149; }
+    .v2-dot.amber { background: #d29922; }
+
+    .v2-stat-lbl { color: var(--text-dim); }
+    .v2-stat-val { font-weight: 700; }
+    .text-green { color: #3fb950; }
+    .text-red { color: #f85149; }
+    .text-amber { color: #d29922; }
+    .text-sky { color: #58a6ff; }
+
+    .v2-dock-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .v2-pill-segmented {
+      display: inline-flex;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 9px;
+      padding: 2px;
+      gap: 2px;
+    }
+
+    .v2-pill-seg-lbl {
+      font-size: 11px;
+      color: var(--text-dim);
+      padding: 0 6px 0 8px;
+    }
+
+    .v2-seg-item {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 7px;
+      cursor: pointer;
+      transition: all 0.18s;
+      white-space: nowrap;
+    }
+
+    .v2-seg-item:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .v2-seg-item.active {
+      background: rgba(88, 166, 255, 0.22);
+      border: 1px solid rgba(88, 166, 255, 0.35);
+      color: #58a6ff;
+      font-weight: 600;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+    }
+
+    .v2-btn-secondary {
+      padding: 6px 14px;
+      border-radius: 9px;
+      background: #21262d;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.18s;
+    }
+
+    .v2-btn-secondary:hover {
+      background: #30363d;
+    }
+
+    .v2-btn-primary {
+      padding: 6px 18px;
+      border-radius: 9px;
+      background: linear-gradient(135deg, #1f6feb, #238636);
+      border: 1px solid rgba(88, 166, 255, 0.35);
+      color: #fff;
+      font-size: 12.5px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(31, 111, 235, 0.3);
+      transition: all 0.2s;
+    }
+
+    .v2-btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 18px rgba(31, 111, 235, 0.4);
+    }
   </style>
 </head>
 <body>
@@ -1320,7 +2130,12 @@
     </div>
 
     <div class="nav-tabs">
-      <div class="nav-item active" id="tab-btn-cutter" onclick="switchTab('cutter')" title="视频裁剪工作台">
+      <div class="nav-item active" id="tab-btn-cutter-v2" onclick="switchTab('cutter-v2')" title="全新视频裁剪工作台 (V2 布局)">
+        <span style="font-size: 15px;">✨</span>
+        <span style="position: absolute; bottom: 2px; font-size: 8.5px; font-weight: 800; color: #58a6ff; font-family: ui-monospace, monospace;">V2</span>
+      </div>
+
+      <div class="nav-item" id="tab-btn-cutter" onclick="switchTab('cutter')" title="视频裁剪工作台 (旧版 V1)">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="6" cy="6" r="3"></circle>
           <circle cx="6" cy="18" r="3"></circle>
@@ -1383,7 +2198,13 @@
 
         <div class="header-actions" id="header-cutter-actions">
           <input type="file" id="file-input" accept="video/*" style="display: none;" />
-          <button class="btn" onclick="document.getElementById('file-input').click()">
+          <button class="btn" onclick="showPrototypeNotice('输出目录示意', '桌面应用会打开产物目录；浏览器原型不会访问本地目录。')" title="演示桌面应用的输出目录入口">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2">
+              <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"></path>
+            </svg>
+            打开输出目录
+          </button>
+          <button class="btn btn-primary" onclick="document.getElementById('file-input').click()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"></path>
               <path d="M12 12v9"></path>
@@ -1391,27 +2212,167 @@
             </svg>
             载入视频
           </button>
-          <button class="btn" onclick="saveCurrentToPlans()">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
-              <polyline points="17 21 17 13 7 13 7 21"></polyline>
-              <polyline points="7 3 7 8 15 8"></polyline>
-            </svg>
-            存为方案
-          </button>
-          <button class="btn" onclick="openPlanModal()">查看方案示意</button>
-          <button class="btn btn-primary" id="header-export-button" onclick="triggerExecution()">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-              <polygon points="5 3 19 12 5 21 5 3"></polygon>
-            </svg>
-            实施剪辑
-          </button>
         </div>
       </div>
     </header>
 
-    <!-- Tab 1: 视频裁剪工作台 -->
-    <div class="tab-page active" id="tab-page-cutter">
+    <!-- Tab 0: 全新视频裁剪工作台 (V2 布局) -->
+    <div class="tab-page active" id="tab-page-cutter-v2">
+      <!-- 1. 工作台双模式栏 -->
+      <div class="v2-mode-bar">
+        <div class="v2-mode-capsules">
+          <button class="v2-mode-btn active" id="v2-mode-temporal" onclick="v2SwitchMode('temporal')">
+            <span>⏱️</span>
+            <span class="v2-mode-title">时间分段剪辑</span>
+            <span class="v2-mode-sub">· 精确切点与关键帧吸附</span>
+          </button>
+          <button class="v2-mode-btn" id="v2-mode-spatial" onclick="v2SwitchMode('spatial')">
+            <span>📐</span>
+            <span class="v2-mode-title">画面空间修饰</span>
+            <span class="v2-mode-sub">· 构图裁切与遮罩修补</span>
+          </button>
+        </div>
+        <div class="v2-mode-tip">
+          <span>💡 提示：时间剪辑与画面空间修饰完全解耦，所有修改统一汇聚存入同一方案</span>
+        </div>
+      </div>
+
+      <!-- 2. 主视窗与时间轴整合卡片 -->
+      <div class="v2-player-card">
+        <!-- 视频主视窗：大视野 480px 充裕高度！ -->
+        <div class="v2-video-viewport" id="v2-video-viewport">
+          <canvas id="v2-screen-canvas" width="960" height="480"></canvas>
+          <div class="v2-viewport-overlay">
+            <span class="v2-badge-filename">🎬 sample_video_4k.mp4</span>
+            <div class="v2-overlay-right">
+              <span class="v2-badge-keyframe">● 物理关键帧已索引 (42)</span>
+              <button class="v2-pill-btn" onclick="switchTab('compress')">🔍 画质对比 (A/B)</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. 时间轴轨道 -->
+        <div class="v2-timeline-box" id="v2-timeline-box" onclick="v2SeekByClick(event)">
+          <canvas id="v2-timeline-canvas"></canvas>
+        </div>
+
+        <!-- 单行多合一控制条：严格单行流，左时间、中播放、右撤销步长与切点 -->
+        <div class="v2-player-controls-row">
+          <div class="v2-controls-left">
+            <div class="v2-timecode">
+              <span id="v2-cur-time" class="v2-time-main">00:01:23.400</span>
+              <span class="v2-time-sep">/</span>
+              <span id="v2-total-time" class="v2-time-sub">00:02:30.000</span>
+            </div>
+          </div>
+
+          <div class="v2-controls-center">
+            <button class="v2-btn-icon" onclick="v2StepFrame(-1)" title="上一展示帧 (快捷键: ←)">◀ 逐帧</button>
+            <button class="v2-btn-play" id="v2-play-btn" onclick="v2TogglePlay()">
+              <span id="v2-play-icon">▶</span>
+              <span id="v2-play-text">播放</span>
+            </button>
+            <button class="v2-btn-icon" onclick="v2StepFrame(1)" title="下一展示帧 (快捷键: →)">逐帧 ▶</button>
+            <div class="v2-speed-capsule" role="group" aria-label="播放速度">
+              <button onclick="v2ChangeSpeed(-0.25)" title="降低倍速">−</button>
+              <span id="v2-speed-val">1.0×</span>
+              <button onclick="v2ChangeSpeed(0.25)" title="提升倍速">+</button>
+              <button onclick="v2ResetSpeed()" title="重置为 1.0×" style="opacity: 0.6;">↶</button>
+            </div>
+          </div>
+
+          <div class="v2-controls-right">
+            <!-- 历史撤销重做组 -->
+            <div class="v2-mini-btn-group">
+              <button class="v2-mini-btn" id="v2-btn-undo" onclick="v2Undo()" title="撤销操作 (Ctrl+Z)">↶ 撤销</button>
+              <button class="v2-mini-btn" id="v2-btn-redo" onclick="v2Redo()" title="重做操作 (Ctrl+Y)" disabled>↷ 重做</button>
+            </div>
+            <!-- 步长微调选择器：直接收纳在此，不占分段列表高度 -->
+            <div class="v2-mini-btn-group">
+              <span class="v2-group-label">步长:</span>
+              <button class="v2-mini-btn active" id="v2-step-100" onclick="v2SetStep(100)">0.1s</button>
+              <button class="v2-mini-btn" id="v2-step-1000" onclick="v2SetStep(1000)">1s</button>
+              <button class="v2-mini-btn" id="v2-step-5000" onclick="v2SetStep(5000)">5s</button>
+            </div>
+            <!-- 插入切点 -->
+            <button class="v2-btn-cut" onclick="v2InsertCut()" title="在当前播放位置切断插入切点 (快捷键: C)">
+              ✂ 插入切点 (按 C)
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. 全新·双排紧凑滚动分段流 (固定约 120px，双排网格，超量平滑滚动) -->
+      <section class="v2-segment-section">
+        <div class="v2-section-header">
+          <div class="v2-section-title">
+            <span class="v2-title-icon">✂️</span>
+            <span class="v2-title-text">分段列表</span>
+            <span class="v2-counter-tag" id="v2-segment-count">共 4 个片段</span>
+          </div>
+          <div class="v2-header-meta">
+            <span class="v2-output-summary-pill" id="v2-output-pill">
+              📦 预定输出 2 个文件
+            </span>
+          </div>
+        </div>
+
+        <!-- 双排网格滚动容器 -->
+        <div class="v2-cards-grid-scroll" id="v2-cards-container">
+          <!-- 由 v2RenderCards 动态渲染 -->
+        </div>
+      </section>
+
+      <!-- 5. 全新·悬浮毛玻璃 Dock 栏 (彻底消灭白底下拉框) -->
+      <div class="v2-dock-footer">
+        <div class="v2-dock-inner">
+          <div class="v2-dock-stats">
+            <div class="v2-stat-item">
+              <span class="v2-dot green"></span>
+              <span class="v2-stat-lbl">保留:</span>
+              <span class="v2-stat-val text-green" id="v2-stat-kept">01:50.000</span>
+            </div>
+            <div class="v2-stat-item">
+              <span class="v2-dot red"></span>
+              <span class="v2-stat-lbl">丢弃:</span>
+              <span class="v2-stat-val text-red" id="v2-stat-discarded">00:40.000</span>
+            </div>
+            <div class="v2-stat-item">
+              <span class="v2-dot amber"></span>
+              <span class="v2-stat-lbl">切点:</span>
+              <span class="v2-stat-val text-amber" id="v2-stat-cuts">3 个</span>
+            </div>
+            <div class="v2-stat-item v2-stat-preview" title="预定产物输出文件名">
+              <span class="v2-stat-lbl">预定:</span>
+              <span class="v2-stat-val text-sky">sample_video_4k_cut.mp4</span>
+            </div>
+          </div>
+
+          <div class="v2-dock-controls">
+            <!-- 输出方式分段药丸：彻底告别原生白底下拉框！ -->
+            <div class="v2-pill-segmented" role="group" aria-label="输出方式">
+              <span class="v2-pill-seg-lbl">输出方式:</span>
+              <button type="button" class="v2-seg-item" id="v2-out-separate" onclick="v2SetOutputMode('separate')">分别输出</button>
+              <button type="button" class="v2-seg-item active" id="v2-out-single" onclick="v2SetOutputMode('single')">全部合成</button>
+              <button type="button" class="v2-seg-item" id="v2-out-custom" onclick="v2SetOutputMode('custom')">自定义合并</button>
+            </div>
+
+            <!-- 导出模式分段药丸 -->
+            <div class="v2-pill-segmented" role="group" aria-label="导出模式">
+              <button type="button" class="v2-seg-item active" id="v2-mode-keyframe" onclick="v2SetExportMode('keyframe')">⚡ 快速无损</button>
+              <button type="button" class="v2-seg-item" id="v2-mode-precise" onclick="v2SetExportMode('precise')">🎯 精确导出</button>
+              <button type="button" class="v2-seg-item" id="v2-mode-compress" onclick="v2SetExportMode('compress')">📦 智能降码</button>
+            </div>
+
+            <button type="button" class="v2-btn-secondary" onclick="v2SavePlan()">存为方案</button>
+            <button type="button" class="v2-btn-primary" id="v2-btn-execute" onclick="v2Execute()">立即剪辑</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 1: 视频裁剪工作台 (旧版 V1) -->
+    <div class="tab-page" id="tab-page-cutter">
       <!-- 工作台顶栏双模式解耦控制栏 -->
       <div class="workbench-mode-bar">
         <div style="display: flex; align-items: center; justify-content: space-between;">
@@ -1487,7 +2448,6 @@
       <section class="player-section">
         <div class="video-viewport" id="cutter-video-viewport">
           <video id="real-video" style="display: none;" playsinline></video>
-          <details style="position:absolute;bottom:12px;left:12px;z-index:20;background:#161b22;padding:8px;border-radius:8px;font-size:12px;"><summary>播放失败状态示意</summary><p>此素材无法直接播放，可生成兼容预览。导出仍使用原片。</p><button class="btn" onclick="this.parentElement.querySelector('p').innerText='正在生成兼容预览 35%（示意）'">生成兼容预览</button><button class="btn" onclick="this.parentElement.querySelector('p').innerText='已取消生成，可重试播放或重新生成。'">取消生成</button></details>
           <canvas id="virtual-screen"></canvas>
 
           <!-- 空间修饰交互覆层 (选框拖拽与遮罩管理) -->
@@ -1564,6 +2524,10 @@
           </div>
 
           <div class="player-controls-right">
+            <div class="history-controls" style="display: flex; gap: 6px; margin-right: 8px;">
+              <button class="btn" id="btn-undo" onclick="undoOutputs()" title="撤销操作 (Ctrl+Z)" style="padding: 5px 9px; font-size: 12px;">↶ 撤销</button>
+              <button class="btn" id="btn-redo" onclick="redoOutputs()" title="重做操作 (Ctrl+Y)" style="padding: 5px 9px; font-size: 12px;" disabled>↷ 重做</button>
+            </div>
             <button class="btn btn-cut" onclick="insertCutAtCurrent()" title="快捷键: 按 C 键切断">
               ✂ 插入切点 (按 C)
             </button>
@@ -1571,23 +2535,23 @@
         </div>
       </section>
 
-      <!-- 分段卡片流：严格 3 行固定栅格，绝对齐平！ -->
+      <!-- 分段卡片流：双排紧凑栅格，支持滚动 -->
       <section class="segment-section">
         <div class="section-header">
           <div class="section-title">
             <span>分段管理流 (Segment Cards)</span>
             <span class="section-counter" id="segment-summary-count">共 4 个片段</span>
           </div>
-          <div style="font-size: 12px; color: var(--text-dim);">
-            三段式卡片栅格：元信息行、独立起止时间行、底端操作行；字字清晰，彻底杜绝折行与高低不齐。
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span class="output-summary-pill" id="output-summary-badge" style="font-size: 12px; font-weight: 600; color: #bc8cff; background: rgba(188, 140, 255, 0.12); border: 1px solid rgba(188, 140, 255, 0.3); padding: 3px 10px; border-radius: 12px;">
+              📦 预定输出 1 个文件
+            </span>
           </div>
         </div>
 
-        <div id="output-selection-toolbar" style="font-size:12px;margin-bottom:8px"></div>
         <div class="cards-grid" id="cards-container">
           <!-- 由 JS 动态渲染 -->
         </div>
-        <div id="output-file-list" style="font-size:12px;max-height:100px;overflow:auto;margin-top:8px"></div>
       </section>
     </div>
 
@@ -1964,16 +2928,27 @@
         </div>
 
         <div class="export-controls">
-          <label for="export-mode"><span>导出模式</span>
-            <select id="export-mode" class="select-input" onchange="setPrototypeExportMode(this.value)">
-              <option value="keyframe">快速无损</option><option value="compress">智能降码</option><option value="frame">精确导出</option>
-            </select>
-          </label>
-          <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); cursor: pointer;">
-            <span>输出方式</span>
-            <select id="output-mode" onchange="setOutputMode(this.value)"><option value="separate">分别输出</option><option value="single" selected>全部合成一个</option><option value="custom">自定义合并</option></select>
-          </label>
-          <button class="btn btn-primary" id="dock-export-button" onclick="triggerExecution()">立即导出</button>
+          <!-- 输出方式分段控制器：彻底替代粗糙白底下拉框 -->
+          <div class="segmented-pill-group" role="group" aria-label="输出方式">
+            <span class="segmented-pill-label">输出:</span>
+            <button type="button" class="segmented-pill-item" id="pill-out-separate" onclick="setOutputMode('separate')">分别输出</button>
+            <button type="button" class="segmented-pill-item active" id="pill-out-single" onclick="setOutputMode('single')">全部合成</button>
+            <button type="button" class="segmented-pill-item" id="pill-out-custom" onclick="setOutputMode('custom')">自定义合并</button>
+            <input type="hidden" id="output-mode" value="single" />
+          </div>
+
+          <!-- 导出模式分段控制器 -->
+          <div class="segmented-pill-group" role="group" aria-label="导出模式">
+            <span class="segmented-pill-label">模式:</span>
+            <button type="button" class="segmented-pill-item active" id="pill-mode-keyframe" onclick="setPrototypeExportMode('keyframe')">⚡ 快速无损</button>
+            <button type="button" class="segmented-pill-item" id="pill-mode-compress" onclick="setPrototypeExportMode('compress')">📦 智能降码</button>
+            <button type="button" class="segmented-pill-item" id="pill-mode-frame" onclick="setPrototypeExportMode('frame')">🎯 精确导出</button>
+            <input type="hidden" id="export-mode" value="keyframe" />
+          </div>
+
+          <!-- 存为方案与主执行按钮 -->
+          <button class="btn" onclick="saveCurrentToPlans()" style="padding: 6px 12px; font-size: 12px;">存为方案</button>
+          <button class="btn btn-primary" id="dock-export-button" onclick="triggerExecution()" style="padding: 7px 18px; font-size: 13px; font-weight: 700;">立即导出</button>
         </div>
         <p class="export-boundary" id="export-boundary" aria-live="polite"></p>
       </div>
@@ -2100,11 +3075,14 @@
       document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('.tab-page').forEach(el => el.classList.remove('active'));
 
-      document.getElementById(`tab-btn-${tabId}`).classList.add('active');
-      document.getElementById(`tab-page-${tabId}`).classList.add('active');
+      const btn = document.getElementById(`tab-btn-${tabId}`);
+      if (btn) btn.classList.add('active');
+      const page = document.getElementById(`tab-page-${tabId}`);
+      if (page) page.classList.add('active');
 
       const headings = {
-        cutter: '视频裁剪工作台',
+        'cutter-v2': '全新视频裁剪工作台 (V2 布局)',
+        cutter: '视频裁剪工作台 (旧版 V1)',
         plans: '方案管理中心 (Plan Manager)',
         settings: '系统配置与输出偏好',
         compress: '智能降码预设与画质双模对比实验室',
@@ -2113,10 +3091,11 @@
       };
       document.getElementById('page-heading').innerText = headings[tabId] || '视频裁剪工作台';
 
-      const isCutter = (tabId === 'cutter');
-      document.getElementById('header-cutter-actions').style.display = isCutter ? 'flex' : 'none';
-      document.getElementById('dock-footer').style.display = isCutter ? 'flex' : 'none';
+      const isOldCutter = (tabId === 'cutter');
+      document.getElementById('header-cutter-actions').style.display = (tabId === 'cutter' || tabId === 'cutter-v2') ? 'flex' : 'none';
+      document.getElementById('dock-footer').style.display = isOldCutter ? 'flex' : 'none';
 
+      if (tabId === 'cutter-v2') initV2Workbench();
       if (tabId === 'plans') renderPlansList();
       if (tabId === 'batch') renderBatch();
       if (tabId === 'compress') initCompressLab();
@@ -2155,7 +3134,7 @@
       return segments;
     }
 
-    let selectingOutput = false, selectedOutput = new Set(), outputHistory = [];
+    let outputHistory = [], outputRedoHistory = [];
     function outputFiles() {
       const result = new Map();
       getSegments().filter(s => s.decision === 'keep').forEach(s => {
@@ -2167,34 +3146,68 @@
     }
     function changeOutputs(change) {
       outputHistory.push({ mode: state.outputMode, groups: { ...state.outputGroups } });
-      change(); selectingOutput = false; selectedOutput.clear(); renderSegmentCards();
+      outputRedoHistory = [];
+      change();
+      renderSegmentCards();
     }
     function setOutputMode(mode) { changeOutputs(() => { state.outputMode = mode; state.outputGroups = {}; }); }
-    function combineOutputs() {
-      if (selectedOutput.size < 2) return;
-      changeOutputs(() => { state.outputMode = 'custom'; const group = `group_${Date.now()}`; selectedOutput.forEach(id => { state.outputGroups[id] = group; }); });
-    }
     function separateOutputs(ids) { changeOutputs(() => ids.forEach(id => { delete state.outputGroups[id]; })); }
     function undoOutputs() {
       const previous = outputHistory.pop(); if (!previous) return;
+      outputRedoHistory.push({ mode: state.outputMode, groups: { ...state.outputGroups } });
       state.outputMode = previous.mode; state.outputGroups = previous.groups; renderSegmentCards();
+    }
+    function redoOutputs() {
+      const next = outputRedoHistory.pop(); if (!next) return;
+      outputHistory.push({ mode: state.outputMode, groups: { ...state.outputGroups } });
+      state.outputMode = next.mode; state.outputGroups = next.groups; renderSegmentCards();
+    }
+    function toggleLinkKeepSegments(currentId, nextKeptId) {
+      const files = outputFiles();
+      const linkedTogether = files.some(fileMembers => fileMembers.some(m => m.id === currentId) && fileMembers.some(m => m.id === nextKeptId));
+      changeOutputs(() => {
+        state.outputGroups = {};
+        files.forEach((members, index) => members.forEach(member => { state.outputGroups[member.id] = `group_${index}`; }));
+        state.outputMode = 'custom';
+        if (linkedTogether) {
+          // 当前已连接在一起：断开连接（将 nextKeptId 移出当前组，单独输出）
+          delete state.outputGroups[nextKeptId];
+        } else {
+          // 未连接：合并为同一个输出文件（跳过中间所有丢弃段）
+          const targetGroup = state.outputGroups[currentId];
+          const sourceGroup = state.outputGroups[nextKeptId];
+          Object.keys(state.outputGroups).forEach(id => { if (state.outputGroups[id] === sourceGroup) state.outputGroups[id] = targetGroup; });
+        }
+      });
     }
     function renderOutputs() {
       const files = outputFiles();
-      document.getElementById('output-mode').value = state.outputMode;
-      document.getElementById('output-selection-toolbar').innerHTML = selectingOutput
-        ? `已选 ${selectedOutput.size} 段 <button class="btn" ${selectedOutput.size < 2 ? 'disabled' : ''} onclick="combineOutputs()">合成一个文件</button> <button class="btn" onclick="selectingOutput=false;selectedOutput.clear();renderSegmentCards()">取消选择</button> 选中片段合成一个文件，其余按输出清单处理`
-        : `<button class="btn" onclick="selectingOutput=true;renderSegmentCards()">选择合并片段</button> <button class="btn" ${outputHistory.length ? '' : 'disabled'} onclick="undoOutputs()">撤销合并操作</button>`;
-      document.getElementById('output-file-list').innerHTML = `将输出 ${files.length} 个文件（按原视频顺序拼接）` + files.map((members, index) => `<div>文件 ${index + 1}：${members.map(s => `第 ${s.index} 段${state.outputMode === 'custom' && members.length > 1 ? ` <button onclick="separateOutputs(['${s.id}'])" title="移出此段">×</button>` : ''}`).join(' → ')} ${state.outputMode === 'custom' && members.length > 1 ? `<button onclick='separateOutputs(${JSON.stringify(members.map(s => s.id))})'>拆开输出</button>` : ''}</div>`).join('');
+      const outputModeEl = document.getElementById('output-mode');
+      if (outputModeEl) outputModeEl.value = state.outputMode;
+      ['separate', 'single', 'custom'].forEach(m => {
+        const btn = document.getElementById(`pill-out-${m}`);
+        if (btn) btn.classList.toggle('active', state.outputMode === m);
+      });
+      const badge = document.getElementById('output-summary-badge');
+      if (badge) {
+        badge.innerText = `📦 预定输出 ${files.length} 个文件`;
+        badge.title = files.map((members, idx) => `文件 ${idx + 1}：${members.map(s => '#' + s.index).join(' + ')}`).join('\n');
+      }
+      const undoBtn = document.getElementById('btn-undo');
+      if (undoBtn) undoBtn.disabled = (outputHistory.length === 0);
+      const redoBtn = document.getElementById('btn-redo');
+      if (redoBtn) redoBtn.disabled = (outputRedoHistory.length === 0);
     }
 
     // ==========================================
-    // 渲染分段卡片：严格 3 行固定栅格架构
+    // 渲染分段卡片：双排紧凑栅格，支持滚动
     // ==========================================
     function renderSegmentCards() {
       const container = document.getElementById('cards-container');
       container.innerHTML = '';
       const segments = getSegments();
+      const keptSegments = segments.filter(s => s.decision === 'keep');
+      const files = outputFiles();
 
       document.getElementById('segment-summary-count').innerText = `共 ${segments.length} 个片段`;
 
@@ -2203,11 +3216,27 @@
         const card = document.createElement('div');
         card.className = `segment-card ${isKeep ? 'is-keep' : 'is-discard'}`;
 
+        // 核心交互：查找逻辑上的下一个保留段（自动跳过任何中间丢弃段！）
+        let linkBtnHtml = '';
+        if (isKeep) {
+          const keptIdx = keptSegments.findIndex(s => s.id === seg.id);
+          if (keptIdx >= 0 && keptIdx < keptSegments.length - 1) {
+            const nextKept = keptSegments[keptIdx + 1];
+            const isLinked = files.some(fileMembers => fileMembers.some(m => m.id === seg.id) && fileMembers.some(m => m.id === nextKept.id));
+            linkBtnHtml = `
+              <button class="btn-link-next ${isLinked ? 'active' : ''}"
+                onclick="toggleLinkKeepSegments('${seg.id}', '${nextKept.id}')"
+                title="${isLinked ? `已与 #${nextKept.index} 合并为一个输出文件（点击断开）` : `点击与下一个保留段 #${nextKept.index} 连结为一个输出文件（跳过中间丢弃段）`}">
+                ${isLinked ? `🔗 已连结 #${nextKept.index}` : `🔗 连结 #${nextKept.index}`}
+              </button>
+            `;
+          }
+        }
+
         card.innerHTML = `
           <!-- 行 1：元信息 (序号 + 决策徽章 | 时长胶囊) 永不折行 -->
           <div class="card-row-meta">
             <div class="meta-left">
-              ${selectingOutput ? `<input type="checkbox" aria-label="选择第 ${seg.index} 段合并" ${isKeep ? '' : 'disabled'} ${selectedOutput.has(seg.id) ? 'checked' : ''} onchange="this.checked?selectedOutput.add('${seg.id}'):selectedOutput.delete('${seg.id}');renderOutputs()">` : ''}
               <span class="card-id-text" style="color: ${isKeep ? '#3fb950' : '#f85149'};">#${seg.index}</span>
               <span class="decision-pill ${isKeep ? 'keep' : 'discard'}">
                 ${isKeep ? '✔ 保留' : '✖ 丢弃'}
@@ -2219,7 +3248,7 @@
                 </span>
               ` : ''}
             </div>
-            <span class="duration-pill">${isKeep && state.outputMode === 'custom' ? `文件 ${outputFiles().findIndex(members => members.some(s => s.id === seg.id)) + 1} · ` : ''}⏱ ${formatDuration(seg.durationMs)}</span>
+            <span class="duration-pill">${isKeep && state.outputMode === 'custom' ? `文件 ${files.findIndex(members => members.some(s => s.id === seg.id)) + 1} · ` : ''}⏱ ${formatDuration(seg.durationMs)}</span>
           </div>
 
           <!-- 行 2：专属独立起止时间行 (等宽大字体，箭头连接，绝对单行呈现！) -->
@@ -2234,7 +3263,7 @@
             <span class="time-val">${formatTime(seg.endMs)}</span>
           </div>
 
-          <!-- 行 3：底端操作按钮行 (底端吸附，整行卡片按钮绝对水平齐平) -->
+          <!-- 行 3：底端操作按钮行 (包含试听、切换、微调，以及连结至下一保留段) -->
           <div class="card-row-actions">
             <button class="btn-card-preview" onclick="previewSegment('${seg.id}', ${seg.startMs}, ${seg.endMs})">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
@@ -2256,6 +3285,8 @@
               <button class="btn-nudge" title="微调左侧切点 -0.1s" onclick="nudgeCut(${seg.index - 2}, -100)">-0.1s</button>
               <button class="btn-nudge" title="微调左侧切点 +0.1s" onclick="nudgeCut(${seg.index - 2}, 100)">+0.1s</button>
             </div>
+
+            ${linkBtnHtml}
           </div>
         `;
         container.appendChild(card);
@@ -2268,7 +3299,6 @@
     function setSegmentDecision(segmentId, decision) {
       state.decisions[segmentId] = decision;
       if (decision === 'discard') delete state.outputGroups[segmentId];
-      selectedOutput.clear();
       renderSegmentCards();
       drawTimeline();
       renderVirtualVideo();
@@ -2314,7 +3344,7 @@
         state.decisions[segment.id] = parent.decision;
         if (parent.group) state.outputGroups[segment.id] = parent.group;
       });
-      selectedOutput.clear(); outputHistory = [];
+      outputHistory = []; outputRedoHistory = [];
 
       renderSegmentCards();
       drawTimeline();
@@ -2515,7 +3545,7 @@
       state.cropConfig = structuredClone(plan.cropConfig || { x: 0, y: 0, width: 100, height: 100, ratio: 'free', locked: false });
       state.maskList = structuredClone(plan.maskList || []); state.durationMs = plan.totalDurationMs;
       renderSpatialOverlay(); updateExportModeIndicator();
-      selectedOutput.clear(); selectingOutput = false; outputHistory = [];
+      outputHistory = []; outputRedoHistory = [];
       state.currentVideoPath = plan.sourcePath;
       document.getElementById('video-name-tag').innerText = `${plan.title} (正在编辑)`;
 
@@ -2749,6 +3779,16 @@
     window.addEventListener('keydown', (e) => {
       if (e.defaultPrevented || isPrototypeModalOpen()) return;
       if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (document.getElementById('tab-page-cutter-v2').classList.contains('active')) {
+        if (e.code === 'Space') { e.preventDefault(); v2TogglePlay(); }
+        else if (e.code === 'KeyC') { e.preventDefault(); v2InsertCut(); }
+        else if (e.code === 'ArrowLeft') { e.preventDefault(); v2StepFrame(-1); }
+        else if (e.code === 'ArrowRight') { e.preventDefault(); v2StepFrame(1); }
+        else if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') { e.preventDefault(); e.shiftKey ? v2Redo() : v2Undo(); }
+        else if ((e.ctrlKey || e.metaKey) && e.code === 'KeyY') { e.preventDefault(); v2Redo(); }
+        return;
+      }
+      if (!document.getElementById('tab-page-cutter').classList.contains('active')) return;
       if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
       else if (e.code === 'KeyC') { e.preventDefault(); insertCutAtCurrent(); }
       else if (e.code === 'ArrowLeft') { e.preventDefault(); stepFrame(-1); }
@@ -3292,9 +4332,16 @@
       dot.style.background = mode === 'keyframe' ? '#58a6ff' : '#bc8cff';
       badge.textContent = mode === 'frame' ? '● 按显示帧边界导出' : '● 关键帧保全';
       document.getElementById('export-mode').value = mode;
+      ['keyframe', 'compress', 'frame'].forEach(m => {
+        const btn = document.getElementById(`pill-mode-${m}`);
+        if (btn) btn.classList.toggle('active', mode === m);
+      });
       document.getElementById('export-boundary').textContent = description;
       const buttonLabel = mode === 'frame' ? '精确导出' : prototypeModeLabel(mode) + '导出';
-      ['header-export-button', 'dock-export-button'].forEach(id => document.getElementById(id).textContent = buttonLabel);
+      ['header-export-button', 'dock-export-button'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = buttonLabel;
+      });
     }
 
     function hasPrototypeSpatial() {
@@ -3440,12 +4487,539 @@
       ctx.fillText('模拟电视台标在右上角 (delogo 区域) · 滚动字幕在底部', c.width / 2, c.height / 2 + 20);
     }
 
-    window.addEventListener('resize', resizeTimeline);
+    // =========================================================
+    // V2 全新工作台独立高精状态机与渲染引擎 (对齐真实客户端)
+    // =========================================================
+    const v2State = {
+      durationMs: 150000,
+      currentMs: 83400,
+      cuts: [25000, 70000, 110000],
+      decisions: { seg_0: 'keep', seg_1: 'discard', seg_2: 'keep', seg_3: 'keep' },
+      outputMode: 'custom',
+      outputGroups: { seg_0: 'group_1', seg_2: 'group_1' }, // 演示跨丢弃段 seg_1，将 seg_0 和 seg_2 成功连结合并为同一个文件！
+      exportMode: 'keyframe',
+      isPlaying: false,
+      playbackRate: 1.0,
+      stepMs: 100,
+      history: [],
+      future: [],
+      mode: 'temporal'
+    };
+
+    let v2PlayTimer = null;
+
+    function v2PushHistory() {
+      v2State.history.push({
+        cuts: [...v2State.cuts],
+        decisions: { ...v2State.decisions },
+        outputMode: v2State.outputMode,
+        outputGroups: { ...v2State.outputGroups }
+      });
+      v2State.future = [];
+      v2UpdateHistoryButtons();
+    }
+
+    function v2Undo() {
+      if (v2State.history.length === 0) return;
+      const prev = v2State.history.pop();
+      v2State.future.push({
+        cuts: [...v2State.cuts],
+        decisions: { ...v2State.decisions },
+        outputMode: v2State.outputMode,
+        outputGroups: { ...v2State.outputGroups }
+      });
+      v2State.cuts = prev.cuts;
+      v2State.decisions = prev.decisions;
+      v2State.outputMode = prev.outputMode;
+      v2State.outputGroups = prev.outputGroups;
+      v2RenderAll();
+    }
+
+    function v2Redo() {
+      if (v2State.future.length === 0) return;
+      const next = v2State.future.pop();
+      v2State.history.push({
+        cuts: [...v2State.cuts],
+        decisions: { ...v2State.decisions },
+        outputMode: v2State.outputMode,
+        outputGroups: { ...v2State.outputGroups }
+      });
+      v2State.cuts = next.cuts;
+      v2State.decisions = next.decisions;
+      v2State.outputMode = next.outputMode;
+      v2State.outputGroups = next.outputGroups;
+      v2RenderAll();
+    }
+
+    function v2UpdateHistoryButtons() {
+      const undoBtn = document.getElementById('v2-btn-undo');
+      if (undoBtn) undoBtn.disabled = v2State.history.length === 0;
+      const redoBtn = document.getElementById('v2-btn-redo');
+      if (redoBtn) redoBtn.disabled = v2State.future.length === 0;
+    }
+
+    function v2GetSegments() {
+      const sorted = [...v2State.cuts].sort((a, b) => a - b);
+      const pts = [0, ...sorted, v2State.durationMs];
+      const res = [];
+      for (let i = 0; i < pts.length - 1; i++) {
+        const id = `seg_${i}`;
+        const startMs = pts[i];
+        const endMs = pts[i + 1];
+        res.push({
+          id,
+          index: i + 1,
+          startMs,
+          endMs,
+          durationMs: endMs - startMs,
+          decision: v2State.decisions[id] || 'keep'
+        });
+      }
+      return res;
+    }
+
+    function v2GetOutputFiles() {
+      const kept = v2GetSegments().filter(s => s.decision === 'keep');
+      const groups = new Map();
+      kept.forEach(s => {
+        let key = s.id;
+        if (v2State.outputMode === 'single') key = 'single_all';
+        else if (v2State.outputMode === 'custom' && v2State.outputGroups[s.id]) key = v2State.outputGroups[s.id];
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(s);
+      });
+      return [...groups.values()];
+    }
+
+    function v2ToggleLink(curId, nextKeptId) {
+      v2PushHistory();
+      const files = v2GetOutputFiles();
+      const alreadyLinked = files.some(f => f.some(m => m.id === curId) && f.some(m => m.id === nextKeptId));
+      v2State.outputGroups = {};
+      files.forEach((members, index) => members.forEach(member => { v2State.outputGroups[member.id] = `v2_grp_${index}`; }));
+      v2State.outputMode = 'custom';
+      if (alreadyLinked) {
+        delete v2State.outputGroups[nextKeptId];
+      } else {
+        const target = v2State.outputGroups[curId];
+        const source = v2State.outputGroups[nextKeptId];
+        Object.keys(v2State.outputGroups).forEach(id => { if (v2State.outputGroups[id] === source) v2State.outputGroups[id] = target; });
+      }
+      v2RenderAll();
+    }
+
+    function v2ToggleDecision(id) {
+      v2PushHistory();
+      const cur = v2State.decisions[id] || 'keep';
+      v2State.decisions[id] = (cur === 'keep' ? 'discard' : 'keep');
+      if (v2State.decisions[id] === 'discard') {
+        delete v2State.outputGroups[id];
+      }
+      v2RenderAll();
+    }
+
+    function v2Nudge(cutIdx, delta) {
+      if (cutIdx < 0 || cutIdx >= v2State.cuts.length) return;
+      v2PushHistory();
+      const lower = cutIdx > 0 ? v2State.cuts[cutIdx - 1] : 0;
+      const upper = cutIdx + 1 < v2State.cuts.length ? v2State.cuts[cutIdx + 1] : v2State.durationMs;
+      v2State.cuts[cutIdx] = Math.max(lower + 1, Math.min(upper - 1, v2State.cuts[cutIdx] + delta));
+      v2RenderAll();
+    }
+
+    function v2Seek(ms) {
+      v2State.currentMs = Math.max(0, Math.min(v2State.durationMs, ms));
+      v2UpdatePlaybackUI();
+      v2DrawTimeline();
+      v2DrawScreen();
+    }
+
+    function v2SeekByClick(e) {
+      const box = document.getElementById('v2-timeline-box');
+      if (!box) return;
+      const rect = box.getBoundingClientRect();
+      const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+      const ratio = x / rect.width;
+      v2Seek(ratio * v2State.durationMs);
+    }
+
+    function v2StepFrame(dir) {
+      const frameMs = 1000 / 30; // 30fps
+      v2Seek(v2State.currentMs + dir * frameMs);
+    }
+
+    function v2SetStep(ms) {
+      v2State.stepMs = ms;
+      [100, 1000, 5000].forEach(s => {
+        const btn = document.getElementById(`v2-step-${s}`);
+        if (btn) btn.classList.toggle('active', s === ms);
+      });
+    }
+
+    function v2TogglePlay() {
+      v2State.isPlaying = !v2State.isPlaying;
+      const icon = document.getElementById('v2-play-icon');
+      const txt = document.getElementById('v2-play-text');
+      if (v2State.isPlaying) {
+        if (icon) icon.innerText = '⏸';
+        if (txt) txt.innerText = '暂停';
+        let lastTime = performance.now();
+        clearInterval(v2PlayTimer);
+        v2PlayTimer = setInterval(() => {
+          const now = performance.now();
+          const delta = (now - lastTime) * v2State.playbackRate;
+          lastTime = now;
+          if (v2State.currentMs >= v2State.durationMs) {
+            v2State.currentMs = 0;
+          } else {
+            v2State.currentMs += delta;
+          }
+          v2UpdatePlaybackUI();
+          v2DrawTimeline();
+          v2DrawScreen();
+        }, 33);
+      } else {
+        if (icon) icon.innerText = '▶';
+        if (txt) txt.innerText = '播放';
+        clearInterval(v2PlayTimer);
+      }
+    }
+
+    function v2ChangeSpeed(delta) {
+      let r = Math.round((v2State.playbackRate + delta) * 100) / 100;
+      r = Math.max(0.5, Math.min(4.0, r));
+      v2State.playbackRate = r;
+      const el = document.getElementById('v2-speed-val');
+      if (el) el.innerText = `${r.toFixed(1)}×`;
+    }
+
+    function v2ResetSpeed() {
+      v2State.playbackRate = 1.0;
+      const el = document.getElementById('v2-speed-val');
+      if (el) el.innerText = '1.0×';
+    }
+
+    function v2InsertCut() {
+      const ms = Math.round(v2State.currentMs);
+      if (ms <= 0 || ms >= v2State.durationMs || v2State.cuts.includes(ms)) return;
+      v2PushHistory();
+      const previous = v2GetSegments().map(segment => ({ ...segment, group: v2State.outputGroups[segment.id] }));
+      v2State.cuts.push(ms);
+      v2State.cuts.sort((a, b) => a - b);
+      v2State.decisions = {}; v2State.outputGroups = {};
+      v2GetSegments().forEach(segment => {
+        const parent = previous.find(old => segment.startMs >= old.startMs && segment.endMs <= old.endMs);
+        v2State.decisions[segment.id] = parent.decision;
+        if (parent.group) v2State.outputGroups[segment.id] = parent.group;
+      });
+      v2RenderAll();
+    }
+
+    function v2SwitchMode(mode) {
+      if (mode === 'spatial' && v2State.isPlaying) v2TogglePlay();
+      v2State.mode = mode;
+      const btnT = document.getElementById('v2-mode-temporal');
+      const btnS = document.getElementById('v2-mode-spatial');
+      if (btnT) btnT.classList.toggle('active', mode === 'temporal');
+      if (btnS) btnS.classList.toggle('active', mode === 'spatial');
+      v2DrawScreen();
+    }
+
+    function v2SetOutputMode(mode) {
+      v2PushHistory();
+      v2State.outputMode = mode;
+      if (mode !== 'custom') v2State.outputGroups = {};
+      v2RenderAll();
+    }
+
+    function v2SetExportMode(mode) {
+      v2State.exportMode = mode;
+      ['keyframe', 'precise', 'compress'].forEach(m => {
+        const btn = document.getElementById(`v2-mode-${m}`);
+        if (btn) btn.classList.toggle('active', m === mode);
+      });
+      const btnExec = document.getElementById('v2-btn-execute');
+      if (btnExec) {
+        if (mode === 'keyframe') btnExec.innerText = '快速无损剪辑';
+        else if (mode === 'precise') btnExec.innerText = '开始精确导出';
+        else btnExec.innerText = '智能降码导出';
+      }
+    }
+
+    function v2SavePlan() {
+      showPrototypeNotice('保存方案示意', '此 V2 页面只演示布局，不会保存本地方案；真实保存请在桌面应用中操作。');
+    }
+
+    function v2Execute() {
+      showPrototypeNotice('导出示意', `当前设置将输出 ${v2GetOutputFiles().length} 个文件；浏览器原型不会处理媒体或生成文件。`);
+    }
+
+    function v2UpdatePlaybackUI() {
+      const cur = document.getElementById('v2-cur-time');
+      if (cur) cur.innerText = formatTime(v2State.currentMs);
+      const total = document.getElementById('v2-total-time');
+      if (total) total.innerText = formatTime(v2State.durationMs);
+    }
+
+    function v2DrawScreen() {
+      const cvs = document.getElementById('v2-screen-canvas');
+      if (!cvs) return;
+      const box = document.getElementById('v2-video-viewport');
+      if (box && box.clientWidth && box.clientHeight) {
+        if (cvs.width !== box.clientWidth || cvs.height !== box.clientHeight) {
+          cvs.width = box.clientWidth;
+          cvs.height = box.clientHeight;
+        }
+      }
+      const ctx = cvs.getContext('2d');
+      const w = cvs.width, h = cvs.height;
+      if (!w || !h) return;
+
+      // 1. 底层沉浸背景
+      ctx.fillStyle = '#06080d';
+      ctx.fillRect(0, 0, w, h);
+
+      // 2. 计算 16:9 真实画幅框 (解决不对称偏心与单侧黑边)
+      const targetAspect = 16 / 9;
+      let vidW = w;
+      let vidH = w / targetAspect;
+      if (vidH > h) {
+        vidH = h;
+        vidW = h * targetAspect;
+      }
+      const vidX = Math.round((w - vidW) / 2);
+      const vidY = Math.round((h - vidH) / 2);
+
+      // 3. 绘制 16:9 视窗内容
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(vidX, vidY, vidW, vidH);
+      ctx.clip();
+
+      const grad = ctx.createLinearGradient(vidX, vidY, vidX + vidW, vidY + vidH);
+      grad.addColorStop(0, '#0c1017');
+      grad.addColorStop(0.5, '#162030');
+      grad.addColorStop(1, '#080a0f');
+      ctx.fillStyle = grad;
+      ctx.fillRect(vidX, vidY, vidW, vidH);
+
+      ctx.strokeStyle = 'rgba(88, 166, 255, 0.08)';
+      ctx.lineWidth = 1;
+      const gridSize = Math.max(36, Math.round(vidW / 24));
+      for (let x = vidX; x <= vidX + vidW; x += gridSize) {
+        ctx.beginPath(); ctx.moveTo(x, vidY); ctx.lineTo(x, vidY + vidH); ctx.stroke();
+      }
+      for (let y = vidY; y <= vidY + vidH; y += gridSize) {
+        ctx.beginPath(); ctx.moveTo(vidX, y); ctx.lineTo(vidX + vidW, y); ctx.stroke();
+      }
+
+      const ratio = v2State.currentMs / v2State.durationMs;
+      const spotX = vidX + vidW * 0.2 + vidW * 0.6 * ratio;
+      const spotY = vidY + vidH * 0.45;
+      const spotGrad = ctx.createRadialGradient(spotX, spotY, 10, spotX, spotY, vidW * 0.35);
+      spotGrad.addColorStop(0, 'rgba(88, 166, 255, 0.38)');
+      spotGrad.addColorStop(1, 'transparent');
+      ctx.fillStyle = spotGrad;
+      ctx.fillRect(vidX, vidY, vidW, vidH);
+
+      ctx.fillStyle = '#ffffff';
+      const fontSize = Math.max(16, Math.min(26, Math.round(vidW / 38)));
+      ctx.font = `bold ${fontSize}px ui-monospace, monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText('4K 超清画面模拟 (3840 × 2160)', vidX + vidW / 2, vidY + vidH / 2 - 14);
+
+      ctx.fillStyle = '#8b949e';
+      ctx.font = `${Math.max(11, fontSize - 11)}px sans-serif`;
+      ctx.fillText(`当前时刻: ${formatTime(v2State.currentMs)} · 帧率: 30.00 fps`, vidX + vidW / 2, vidY + vidH / 2 + 16);
+
+      if (v2State.mode === 'spatial') {
+        ctx.strokeStyle = '#bc8cff';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 6]);
+        const padX = vidW * 0.08, padY = vidH * 0.08;
+        ctx.strokeRect(vidX + padX, vidY + padY, vidW - padX * 2, vidH - padY * 2);
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#bc8cff';
+        ctx.font = 'bold 12px monospace';
+        ctx.fillText('📐 空间修饰激活：全画幅构图裁切框 (16:9)', vidX + vidW / 2, vidY + padY + 20);
+      }
+
+      ctx.restore();
+
+      // 4. 画幅 1px 细描边
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(vidX, vidY, vidW, vidH);
+    }
+
+    function v2DrawTimeline() {
+      const box = document.getElementById('v2-timeline-box');
+      const cvs = document.getElementById('v2-timeline-canvas');
+      if (!box || !cvs) return;
+      if (cvs.width !== box.clientWidth || cvs.height !== box.clientHeight) {
+        cvs.width = box.clientWidth;
+        cvs.height = box.clientHeight;
+      }
+      const ctx = cvs.getContext('2d');
+      const w = cvs.width, h = cvs.height;
+      if (!w || !h) return;
+
+      ctx.fillStyle = '#0a0d14';
+      ctx.fillRect(0, 0, w, h);
+
+      const segments = v2GetSegments();
+      segments.forEach(seg => {
+        const x1 = (seg.startMs / v2State.durationMs) * w;
+        const x2 = (seg.endMs / v2State.durationMs) * w;
+        const isKeep = (seg.decision === 'keep');
+        ctx.fillStyle = isKeep ? 'rgba(35, 134, 54, 0.35)' : 'rgba(218, 54, 51, 0.35)';
+        ctx.fillRect(x1, 0, x2 - x1, h);
+
+        ctx.fillStyle = isKeep ? 'rgba(56, 178, 80, 0.9)' : 'rgba(248, 81, 73, 0.9)';
+        ctx.font = 'bold 10px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(`#${seg.index}`, x1 + 6, 16);
+      });
+
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+      ctx.lineWidth = 1;
+      const secStep = 10;
+      for (let s = 0; s <= v2State.durationMs / 1000; s += secStep) {
+        const x = (s * 1000 / v2State.durationMs) * w;
+        ctx.beginPath(); ctx.moveTo(x, h - 8); ctx.lineTo(x, h); ctx.stroke();
+      }
+
+      v2State.cuts.forEach(cutMs => {
+        const x = (cutMs / v2State.durationMs) * w;
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+
+        ctx.fillStyle = '#f59e0b';
+        ctx.beginPath();
+        ctx.moveTo(x - 5, 0); ctx.lineTo(x + 5, 0); ctx.lineTo(x, 7);
+        ctx.fill();
+      });
+
+      const curX = (v2State.currentMs / v2State.durationMs) * w;
+      ctx.strokeStyle = '#ef4444';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(curX, 0); ctx.lineTo(curX, h); ctx.stroke();
+
+      ctx.fillStyle = '#ef4444';
+      ctx.beginPath();
+      ctx.moveTo(curX - 6, 0); ctx.lineTo(curX + 6, 0); ctx.lineTo(curX, 8);
+      ctx.fill();
+    }
+
+    function v2RenderCards() {
+      const container = document.getElementById('v2-cards-container');
+      if (!container) return;
+      container.innerHTML = '';
+      const segments = v2GetSegments();
+      const keptSegments = segments.filter(s => s.decision === 'keep');
+      const files = v2GetOutputFiles();
+
+      const segCountEl = document.getElementById('v2-segment-count');
+      if (segCountEl) segCountEl.innerText = `共 ${segments.length} 个片段`;
+
+      const pillEl = document.getElementById('v2-output-pill');
+      if (pillEl) {
+        pillEl.innerText = `📦 预定输出 ${files.length} 个文件`;
+        pillEl.title = files.map((f, i) => `文件 ${i + 1}: ${f.map(s => '#' + s.index).join(' + ')}`).join('\n');
+      }
+
+      segments.forEach((seg, idx) => {
+        const isKeep = (seg.decision === 'keep');
+        const card = document.createElement('div');
+        card.className = `v2-segment-card ${isKeep ? 'is-keep' : 'is-discard'}`;
+
+        let linkBtnHtml = '';
+        if (isKeep) {
+          const kIdx = keptSegments.findIndex(s => s.id === seg.id);
+          if (kIdx >= 0 && kIdx < keptSegments.length - 1) {
+            const nextKept = keptSegments[kIdx + 1];
+            const isLinked = files.some(f => f.some(m => m.id === seg.id) && f.some(m => m.id === nextKept.id));
+            linkBtnHtml = `
+              <button class="v2-btn-link-next ${isLinked ? 'active' : ''}"
+                onclick="event.stopPropagation(); v2ToggleLink('${seg.id}', '${nextKept.id}')"
+                title="${isLinked ? `已与 #${nextKept.index} 连结为同一个输出文件 (点击拆开)` : `点击与下一保留段 #${nextKept.index} 连结为一个输出文件 (自动跳过中间丢弃段)`}">
+                ${isLinked ? `🔗 已连结 #${nextKept.index}` : `🔗 连结 #${nextKept.index}`}
+              </button>
+            `;
+          }
+        }
+
+        const fileIdx = files.findIndex(f => f.some(m => m.id === seg.id));
+        const fileLabel = isKeep && v2State.outputMode === 'custom' ? `[文件 ${fileIdx + 1}] · ` : '';
+
+        card.innerHTML = `
+          <div class="v2-card-row-top" onclick="v2Seek(${seg.startMs})">
+            <div class="v2-card-left">
+              <span class="v2-card-idx" style="color: ${isKeep ? '#3fb950' : '#f85149'};">#${seg.index}</span>
+              <span class="v2-card-time">${formatTime(seg.startMs)} → ${formatTime(seg.endMs)}</span>
+            </div>
+            <button class="v2-card-toggle ${isKeep ? 'keep' : 'discard'}" onclick="event.stopPropagation(); v2ToggleDecision('${seg.id}')">
+              ${isKeep ? '✔ 保留' : '✖ 丢弃'}
+            </button>
+          </div>
+          <div class="v2-card-row-bottom">
+            <span>${fileLabel}⏱ ${formatDuration(seg.durationMs)}</span>
+            <div class="v2-card-bottom-actions">
+              <button class="v2-card-btn" onclick="event.stopPropagation(); v2Seek(${seg.startMs}); if(!v2State.isPlaying) v2TogglePlay();">🔊 试听</button>
+              <button class="v2-card-btn" onclick="event.stopPropagation(); v2Nudge(${idx - 1}, -v2State.stepMs)">◀</button>
+              <button class="v2-card-btn" onclick="event.stopPropagation(); v2Nudge(${idx - 1}, v2State.stepMs)">▶</button>
+              ${linkBtnHtml}
+            </div>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+
+      let keptMs = 0, discardedMs = 0;
+      segments.forEach(s => {
+        if (s.decision === 'keep') keptMs += s.durationMs;
+        else discardedMs += s.durationMs;
+      });
+      const keptEl = document.getElementById('v2-stat-kept');
+      if (keptEl) keptEl.innerText = formatTime(keptMs);
+      const discEl = document.getElementById('v2-stat-discarded');
+      if (discEl) discEl.innerText = formatTime(discardedMs);
+      const cutsEl = document.getElementById('v2-stat-cuts');
+      if (cutsEl) cutsEl.innerText = `${v2State.cuts.length} 个`;
+
+      ['separate', 'single', 'custom'].forEach(m => {
+        const btn = document.getElementById(`v2-out-${m}`);
+        if (btn) btn.classList.toggle('active', m === v2State.outputMode);
+      });
+
+      v2UpdateHistoryButtons();
+    }
+
+    function v2RenderAll() {
+      v2UpdatePlaybackUI();
+      v2DrawTimeline();
+      v2DrawScreen();
+      v2RenderCards();
+    }
+
+    function initV2Workbench() {
+      setTimeout(() => {
+        v2RenderAll();
+      }, 30);
+    }
+
+    window.addEventListener('resize', () => {
+      resizeTimeline();
+      v2DrawTimeline();
+      v2DrawScreen();
+    });
     resizeTimeline();
     renderSegmentCards();
     updateUI();
     renderSpatialOverlay();
     updateExportModeIndicator();
+    switchTab('cutter-v2');
     new ResizeObserver(entries => document.documentElement.style.setProperty('--dock-height', entries[0].target.offsetHeight + 'px')).observe(document.getElementById('dock-footer'));
   </script>
 </body>
