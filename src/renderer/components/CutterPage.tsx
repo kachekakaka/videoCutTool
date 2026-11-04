@@ -13,6 +13,7 @@ import { makeEven, hasSpatialEffects } from '../../shared/spatialFiltergraph';
 import { useAppData } from '../AppDataContext';
 import { TimelineRepairConfirmation, TimelineRepairProgress } from '../../shared/timelineRepair';
 import { TimelineRepairDialog } from './TimelineRepairDialog';
+import { usePlaybackVolume } from '../media/usePlaybackVolume';
 import {
   Film,
   Scissors,
@@ -177,6 +178,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   // 执行与提示状态
   const [executing, setExecuting] = useState(false);
   const [notice, setNotice] = useState<{ type: 'success' | 'error' | 'warning'; message: string } | null>(null);
+  const playbackAudio = usePlaybackVolume(message => setNotice({ type: 'error', message }));
 
   // 当前绑定方案状态与保存模态框
   const [currentPlanId, setCurrentPlanId] = useState<string | null>(null);
@@ -1334,6 +1336,8 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             <VideoPlayer
               ref={playerRef}
               playbackRate={playbackRate}
+              volume={playbackAudio.volume}
+              muted={playbackAudio.muted}
               videoPath={metadata.filePath}
               timeOriginMs={metadata.timeOrigin ? Number(metadata.timeOrigin.numerator) / Number(metadata.timeOrigin.denominator) * 1000 : 0}
               durationMs={metadata.durationMs}
@@ -1427,6 +1431,11 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             isPlaying={isPlaying}
             playbackRate={playbackRate}
             onPlaybackRateChange={setPlaybackRate}
+            volume={playbackAudio.volume}
+            muted={playbackAudio.muted}
+            onVolumeChange={playbackAudio.change}
+            onVolumeCommit={playbackAudio.commit}
+            onToggleMute={playbackAudio.toggleMuted}
             isActive={isActive}
             playbackEnabled={mainViewportMode === 'player' && !isLoading}
             aspectRatioMode={aspectRatioMode}

@@ -10,6 +10,8 @@ export interface AppConfig {
   autoConcatSingleFile: boolean;
   stripOriginalCover: boolean;
   notifyOnExportComplete: boolean;
+  /** 预览播放音量百分比；静音状态不持久化。 */
+  playbackVolume: number;
   ffmpegPath: string;
   ffprobePath: string;
   plansStoragePath: string;
@@ -21,6 +23,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   autoConcatSingleFile: true,
   stripOriginalCover: true,
   notifyOnExportComplete: true,
+  playbackVolume: 5,
   ffmpegPath: 'D:/Tools/ffmpeg/ffmpeg.exe',
   ffprobePath: 'D:/Tools/ffmpeg/ffprobe.exe',
   plansStoragePath: './plans',

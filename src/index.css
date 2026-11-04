@@ -43,12 +43,28 @@ body {
   background: rgba(255, 255, 255, 0.28);
 }
 
-/* 时间轴按自身可用宽度排布，不因窗口断点过早挤成两排。 */
+/* 两侧按内容保留最小宽度；空间充裕时等宽，收窄时让播放按钮自然左移，始终单行。 */
 .timeline-shell { container: timeline / inline-size; }
-.timeline-toolbar { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+.timeline-toolbar { grid-template-columns: minmax(max-content, 1fr) auto minmax(max-content, 1fr); }
 .timeline-playback { grid-column: 2; grid-row: 1; }
-.timeline-actions { grid-column: 3; grid-row: 1; }
+.timeline-right { grid-column: 3; grid-row: 1; min-width: max-content; }
 .timeline-legend-compact { display: none; }
+.timeline-volume-slider {
+  appearance: none;
+  width: 80px;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--volume-color) var(--volume-percent), #3f3f46 var(--volume-percent));
+  cursor: pointer;
+}
+.timeline-volume-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #e4e4e7;
+}
+.timeline-volume-slider:focus-visible { outline: 2px solid #60a5fa; outline-offset: 4px; }
 
 @container timeline (max-width: 1249px) {
   .timeline-legend-full, .timeline-control-label { display: none; }
@@ -56,10 +72,7 @@ body {
 }
 @container timeline (max-width: 1099px) {
   .timeline-legend-compact { display: none; }
-}
-@container timeline (max-width: 919px) {
-  .timeline-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .timeline-playback { grid-column: 1 / -1; grid-row: 2; }
-  .timeline-actions { grid-column: 2; }
+  .timeline-volume-slider { width: 56px; }
+  .timeline-toolbar, .timeline-right, .timeline-playback-settings, .timeline-actions { gap: 4px; }
 }
 

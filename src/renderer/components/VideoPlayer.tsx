@@ -1,5 +1,6 @@
-import { useRef, useEffect, useState, forwardRef, useImperativeHandle } from 'react';
+import { useRef, useEffect, useLayoutEffect, useState, forwardRef, useImperativeHandle } from 'react';
 import { useStreamPlayback } from '../media/useStreamPlayback';
+import { DEFAULT_APP_CONFIG } from '../../shared/types';
 
 export interface VideoPlayerRef {
   seekTo: (timeMs: number) => void; play: () => void; pause: () => void; togglePlay: () => void;
@@ -9,6 +10,8 @@ export interface VideoPlayerRef {
 interface VideoPlayerProps {
   onStreamOpenSettled?: () => void;
   playbackRate?: number;
+  volume?: number;
+  muted?: boolean;
   timeOriginMs?: number;
   videoPath: string; durationMs: number; fps?: number; isActive?: boolean; shortcutsEnabled?: boolean;
   videoWidth?: number; videoHeight?: number; displayAspectRatio?: number; children?: React.ReactNode;
@@ -18,7 +21,7 @@ interface VideoPlayerProps {
 export { formatTimecode, parseTimecodeToMs } from '../../shared/timeUtils';
 
 export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
-  videoPath, durationMs, fps = 30, timeOriginMs = 0, playbackRate = 1, isActive = true, shortcutsEnabled = true, videoWidth, videoHeight, displayAspectRatio, children, onTimeUpdate, onPlayStateChange, onInsertCut, aspectRatioMode = 'auto', auditionRange, onAuditionEnd, onStreamOpenSettled,
+  videoPath, durationMs, fps = 30, timeOriginMs = 0, playbackRate = 1, volume = DEFAULT_APP_CONFIG.playbackVolume, muted = true, isActive = true, shortcutsEnabled = true, videoWidth, videoHeight, displayAspectRatio, children, onTimeUpdate, onPlayStateChange, onInsertCut, aspectRatioMode = 'auto', auditionRange, onAuditionEnd, onStreamOpenSettled,
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement | null>(null), position = useRef(0), navigationEpoch = useRef(0), navigation = useRef(Promise.resolve());
   const presented = useRef<{ ms: number; at: number } | null>(null), navigating = useRef(false), wantsPlayback = useRef(false), callbacks = useRef({ onTimeUpdate, auditionRange, onAuditionEnd });
@@ -65,6 +68,11 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     if (video) { video.defaultPlaybackRate = playbackRate; video.playbackRate = playbackRate; video.preservesPitch = true; }
   };
   useEffect(applyPlaybackRate, [playbackRate, playbackPath]);
+  const applyAudio = () => {
+    const video = videoRef.current;
+    if (video) { video.volume = volume / 100; video.muted = muted; }
+  };
+  useLayoutEffect(applyAudio, [volume, muted, playbackPath]);
   useEffect(() => {
     const video = videoRef.current; if (!video || stream.route !== 'native') return;
     let id = 0, stopped = false, announcedAt = 0;
@@ -184,7 +192,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
         style={{ width: contentWidth, height: contentWidth / ratio }}
         className="relative flex-none flex items-center justify-center max-h-full max-w-full"
       >
-        <video ref={videoRef} src={source} onLoadedMetadata={() => { applyPlaybackRate(); if (stream.route === 'native') void seek(position.current); }} onPlay={() => onPlayStateChange?.(true)} onPause={() => onPlayStateChange?.(false)} onEnded={() => { wantsPlayback.current = false; stream.controller.current?.pause(); }} onClick={togglePlay} onError={() => {
+        <video ref={videoRef} src={source} muted={muted} onLoadedMetadata={() => { applyPlaybackRate(); applyAudio(); if (stream.route === 'native') void seek(position.current); }} onPlay={() => onPlayStateChange?.(true)} onPause={() => onPlayStateChange?.(false)} onEnded={() => { wantsPlayback.current = false; stream.controller.current?.pause(); }} onClick={togglePlay} onError={() => {
           if (stream.route !== 'native') return;
           navigationEpoch.current++; pause(); navigating.current = false; presented.current = null;
           setNavigationError(''); setError('当前素材播放失败，请重试播放或手动生成兼容预览。');

@@ -42,6 +42,9 @@
 拖动切点时显示目标时刻的独立缩略预览，不驱动主播放器定位。
 避免：Video hover tooltip、slice popup、mini player。
 
+### Playback Volume
+工作台预览播放时的声音大小，不改变原素材或导出音轨。音量数值跨应用启动保留，与静音状态独立；每次启动默认静音，同次运行换片或切页沿用当前声音状态。
+
 ### Spatial Crop
 以矩形选择保留画面区域，裁掉区域外画面并改变输出尺寸；比例锁定约束该矩形缩放时的宽高比。
 避免：Video crop、region cut、picture cut、frame slice。

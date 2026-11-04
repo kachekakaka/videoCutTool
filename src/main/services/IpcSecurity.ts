@@ -24,6 +24,7 @@ export function validateConfigPatch(patch: Partial<AppConfig>) {
   for (const [key, value] of Object.entries(patch)) {
     if (booleans.includes(key)) { if (typeof value !== 'boolean') throw new Error('配置开关无效'); }
     else if (paths.includes(key)) { if (value !== '') localPath(value); }
+    else if (key === 'playbackVolume') { if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 100) throw new Error('播放音量必须为 0～100 的整数'); }
     else throw new Error(`不允许通过页面修改配置字段：${key}`);
   }
 }

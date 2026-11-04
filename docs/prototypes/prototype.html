@@ -300,7 +300,6 @@
     }
 
     .playback-speed-control {
-      position: absolute; left: 100%; top: 50%; transform: translateY(-50%); margin-left: 8px;
       display: flex; align-items: center; flex-shrink: 0; padding: 2px;
       background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px;
     }
@@ -312,6 +311,13 @@
     .playback-speed-control button:disabled { opacity: 0.2; cursor: not-allowed; }
     .playback-speed-control output { width: 32px; text-align: center; font: bold 10px monospace; color: white; }
     .playback-speed-control button:last-child { margin-left: 2px; border-left: 1px solid rgba(255, 255, 255, 0.1); }
+
+    .playback-volume-control { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; padding: 2px; border: 1px solid #ffffff1a; border-radius: 8px; background: #0008; }
+    .playback-volume-control button { width: 22px; height: 22px; border: 0; border-radius: 4px; background: transparent; cursor: pointer; color: #d4d4d8; }
+    .playback-volume-control button:hover { background: #ffffff1a; }
+    .playback-volume-control input { width: 80px; height: 4px; margin: 0; accent-color: #60a5fa; cursor: pointer; }
+    .playback-volume-control output { width: 32px; text-align: center; font: 10px monospace; color: #f0f6fc; }
+    .playback-volume-control[data-muted="true"] { opacity: 0.65; }
 
     .timeline-container {
       position: relative;
@@ -330,10 +336,10 @@
       display: block;
     }
 
-    /* 两侧等宽，倍速不参与播放按钮的居中计算。 */
+    /* 所有控件保持一行，按内容分配空间，避免窄窗口遮挡。 */
     .player-controls {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+      grid-template-columns: minmax(max-content, 1fr) auto minmax(max-content, 1fr);
       gap: 8px;
       align-items: center;
       padding: 0 4px;
@@ -355,11 +361,11 @@
       gap: 8px;
     }
 
-    @media (max-width: 860px) {
-      .player-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 10px; }
-      .player-controls-left { grid-column: 1; grid-row: 1; }
-      .player-controls-right { grid-column: 2; grid-row: 1; }
-      .player-controls-center { grid-column: 1 / -1; grid-row: 2; justify-self: center; }
+    @media (max-width: 1200px) {
+      .player-controls, .player-controls-center { gap: 4px; }
+      .player-controls .btn { padding: 4px 6px !important; font-size: 11px; }
+      .player-controls .time-display { font-size: 12px; }
+      .playback-volume-control input { width: 56px; }
     }
 
     .player-controls-right {
@@ -1704,6 +1710,16 @@
       flex-shrink: 0;
     }
 
+    @media (max-width: 1200px) {
+      .v2-player-controls-row, .v2-controls-center, .v2-controls-right { gap: 4px; }
+      .v2-controls-center { flex-shrink: 0; }
+      .v2-controls-center .v2-btn-icon { padding: 4px; font-size: 11px; }
+      .v2-controls-center .v2-btn-play { padding: 5px 8px; }
+      .v2-controls-left .v2-timecode { font-size: 11px; }
+      .v2-controls-right .v2-mini-btn { padding: 3px 4px; font-size: 11px; }
+      .v2-controls-right .v2-group-label { display: none; }
+    }
+
     .v2-mini-btn-group {
       display: inline-flex;
       align-items: center;
@@ -2279,6 +2295,11 @@
               <button onclick="v2ChangeSpeed(0.25)" title="提升倍速">+</button>
               <button onclick="v2ResetSpeed()" title="重置为 1.0×" style="opacity: 0.6;">↶</button>
             </div>
+            <div class="playback-volume-control" role="group" aria-label="播放音量" data-muted="true">
+              <button type="button" data-volume-toggle aria-label="恢复声音" aria-pressed="true" onclick="togglePlaybackMute()">🔇</button>
+              <input data-volume-slider type="range" min="0" max="100" step="1" value="5" aria-label="播放音量" oninput="setPlaybackVolume(Number(this.value))">
+              <output data-volume-value>5%</output>
+            </div>
           </div>
 
           <div class="v2-controls-right">
@@ -2447,7 +2468,7 @@
 
       <section class="player-section">
         <div class="video-viewport" id="cutter-video-viewport">
-          <video id="real-video" style="display: none;" playsinline></video>
+          <video id="real-video" style="display: none;" muted playsinline></video>
           <canvas id="virtual-screen"></canvas>
 
           <!-- 空间修饰交互覆层 (选框拖拽与遮罩管理) -->
@@ -2520,6 +2541,11 @@
               <output id="playback-speed-value" aria-label="当前播放倍速">1×</output>
               <button id="playback-speed-up" aria-label="提高播放速度" title="提高播放速度（每次 0.25×，最高 6×）" onclick="setPlaybackRate(state.playbackRate + 0.25)">+</button>
               <button id="playback-speed-reset" aria-label="重置播放速度" title="重置播放速度为 1×" onclick="setPlaybackRate(1)" disabled>↶</button>
+            </div>
+            <div class="playback-volume-control" role="group" aria-label="播放音量" data-muted="true">
+              <button type="button" data-volume-toggle aria-label="恢复声音" aria-pressed="true" onclick="togglePlaybackMute()">🔇</button>
+              <input data-volume-slider type="range" min="0" max="100" step="1" value="5" aria-label="播放音量" oninput="setPlaybackVolume(Number(this.value))">
+              <output data-volume-value>5%</output>
             </div>
           </div>
 
@@ -2996,6 +3022,45 @@
   </dialog>
 
   <script>
+    const playbackAudio = { volume: 5, muted: true, lastNonzero: 5 };
+    try {
+      const saved = localStorage.getItem('prototype-playback-volume');
+      const value = saved === null ? 5 : Number(saved);
+      if (Number.isInteger(value) && value >= 0 && value <= 100) playbackAudio.volume = value;
+      if (playbackAudio.volume > 0) playbackAudio.lastNonzero = playbackAudio.volume;
+    } catch {}
+    function syncPlaybackAudio() {
+      const { volume, muted } = playbackAudio;
+      const video = document.getElementById('real-video');
+      video.volume = volume / 100; video.muted = muted;
+      document.querySelectorAll('.playback-volume-control').forEach(group => {
+        group.dataset.muted = String(muted);
+        const button = group.querySelector('[data-volume-toggle]');
+        button.textContent = muted || volume === 0 ? '🔇' : volume < 50 ? '🔉' : '🔊';
+        button.setAttribute('aria-label', muted || volume === 0 ? '恢复声音' : '静音');
+        button.setAttribute('aria-pressed', String(muted || volume === 0));
+        button.title = muted ? '恢复声音' : '静音（保留音量数值）';
+        const slider = group.querySelector('[data-volume-slider]');
+        slider.value = volume;
+        slider.setAttribute('aria-valuetext', `${volume}%${muted ? '（已静音）' : ''}`);
+        group.querySelector('[data-volume-value]').textContent = `${volume}%`;
+      });
+    }
+    function setPlaybackVolume(value) {
+      playbackAudio.volume = Math.max(0, Math.min(100, Math.round(value)));
+      playbackAudio.muted = playbackAudio.volume === 0;
+      if (playbackAudio.volume > 0) playbackAudio.lastNonzero = playbackAudio.volume;
+      try { localStorage.setItem('prototype-playback-volume', playbackAudio.volume); } catch {}
+      syncPlaybackAudio();
+    }
+    function togglePlaybackMute() {
+      if (playbackAudio.volume === 0) setPlaybackVolume(playbackAudio.lastNonzero);
+      else { playbackAudio.muted = !playbackAudio.muted; syncPlaybackAudio(); }
+    }
+    document.querySelectorAll('.playback-volume-control').forEach(group => group.addEventListener('keydown', event => event.stopPropagation()));
+    document.getElementById('real-video').addEventListener('loadedmetadata', syncPlaybackAudio);
+    syncPlaybackAudio();
+
     const prototypeCropRects = {
       source: { x: 10, y: 10, width: 80, height: 80 },
       '9:16': { x: 32, y: 5, width: 36, height: 90 },

@@ -16,6 +16,9 @@ import {
   Minus,
   Plus,
   Trash2,
+  Volume1,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 
 interface CutDragState {
@@ -61,6 +64,11 @@ interface TimelineProps {
   playbackEnabled?: boolean;
   playbackRate?: number;
   onPlaybackRateChange?: (rate: number) => void;
+  volume?: number;
+  muted?: boolean;
+  onVolumeChange?: (volume: number) => void;
+  onVolumeCommit?: () => void;
+  onToggleMute?: () => void;
 }
 
 export const Timeline: React.FC<TimelineProps> = ({
@@ -87,6 +95,11 @@ export const Timeline: React.FC<TimelineProps> = ({
   playbackEnabled = true,
   playbackRate = 1,
   onPlaybackRateChange,
+  volume = 5,
+  muted = true,
+  onVolumeChange,
+  onVolumeCommit,
+  onToggleMute,
 }) => {
   const timelineRootRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -780,7 +793,7 @@ export const Timeline: React.FC<TimelineProps> = ({
 
   return (
     <div ref={timelineRootRef} className="timeline-shell w-full flex flex-col gap-1 px-3 py-1.5 rounded-xl bg-[#161b22]/90 border border-white/10 shadow-xl backdrop-blur-md">
-      {/* 依据容器空间收起次要信息；两侧等宽，倍速不参与播放按钮居中计算。 */}
+      {/* 始终保持一行；宽时播放按钮居中，窄时按两侧实际内容让出空间。 */}
       <div className="timeline-toolbar relative grid items-center gap-2 px-1 min-h-[28px]" aria-label="时间轴控制区">
         {/* 左侧：时间码与比例切换 + 紧凑内联图例 */}
         <div className="col-start-1 row-start-1 justify-self-start flex items-center gap-2 shrink-0 z-0">
@@ -837,7 +850,7 @@ export const Timeline: React.FC<TimelineProps> = ({
           </div>
         </div>
 
-        {/* 倍速控件放在对称播放按钮组旁边，不参与居中宽度计算。 */}
+        {/* 播放按钮独立成组，倍速和音量紧随其右侧。 */}
         <div className="timeline-playback relative justify-self-center flex items-center justify-center gap-1.5 shrink-0 z-10 pointer-events-auto">
           {playbackEnabled && onStepSeconds && (
             <button
@@ -888,8 +901,12 @@ export const Timeline: React.FC<TimelineProps> = ({
               <FastForward className="w-3.5 h-3.5" />
             </button>
           )}
+        </div>
+
+        <div className="timeline-right flex items-center justify-between gap-2">
+          <div className="timeline-playback-settings flex items-center gap-2 shrink-0">
           {playbackEnabled && onPlaybackRateChange && (
-            <div role="group" aria-label="播放速度" title="播放倍速：仅改变播放速度" className="absolute left-full top-1/2 -translate-y-1/2 ml-2 flex shrink-0 items-center bg-black/50 border border-white/10 rounded-lg p-0.5 text-[10px]">
+            <div role="group" aria-label="播放速度" title="播放倍速：仅改变播放速度" className="flex shrink-0 items-center bg-black/50 border border-white/10 rounded-lg p-0.5 text-[10px]">
               <span className="timeline-control-label px-1 text-zinc-400 whitespace-nowrap">倍速</span>
               <button
                 onClick={() => onPlaybackRateChange(Math.max(0.5, playbackRate - 0.25))}
@@ -917,7 +934,31 @@ export const Timeline: React.FC<TimelineProps> = ({
               </button>
             </div>
           )}
-        </div>
+          {playbackEnabled && onVolumeChange && onToggleMute && (
+            <div role="group" aria-label="播放音量" onKeyDown={event => event.stopPropagation()} className="timeline-volume flex shrink-0 items-center gap-1 bg-black/50 border border-white/10 rounded-lg p-0.5 text-[10px]">
+              <button
+                type="button"
+                onClick={onToggleMute}
+                aria-label={muted || volume === 0 ? '恢复声音' : '静音'}
+                aria-pressed={muted || volume === 0}
+                title={muted || volume === 0 ? '恢复声音' : '静音（保留音量数值）'}
+                className={`p-1 rounded hover:bg-white/10 transition-colors ${muted || volume === 0 ? 'text-zinc-500' : 'text-zinc-300 hover:text-white'}`}
+              >
+                {muted || volume === 0 ? <VolumeX className="w-3.5 h-3.5" /> : volume < 50 ? <Volume1 className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+              </button>
+              <input
+                type="range" min="0" max="100" step="1" value={volume}
+                aria-label="播放音量" aria-valuetext={`${volume}%${muted ? '（已静音）' : ''}`}
+                title="播放音量：调到正数时恢复声音"
+                onChange={event => onVolumeChange(Number(event.target.value))}
+                onPointerUp={onVolumeCommit} onKeyUp={onVolumeCommit} onBlur={onVolumeCommit}
+                className="timeline-volume-slider"
+                style={{ '--volume-percent': `${volume}%`, '--volume-color': muted ? '#71717a' : '#60a5fa' } as React.CSSProperties}
+              />
+              <output aria-label="当前播放音量" className={`w-8 text-center font-mono tabular-nums select-none ${muted ? 'text-zinc-500' : 'text-white'}`}>{volume}%</output>
+            </div>
+          )}
+          </div>
 
         {/* 右侧：缩放控制器与插入切点 */}
         <div className="timeline-actions justify-self-end flex items-center gap-2 shrink-0 z-0">
@@ -979,6 +1020,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               <kbd className="bg-black/30 border border-white/20 px-1 py-0.2 rounded text-[10px] text-blue-200">C</kbd>
             </button>
           )}
+        </div>
         </div>
       </div>
 
