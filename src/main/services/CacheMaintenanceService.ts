@@ -187,7 +187,10 @@ export class CacheMaintenanceService {
         if (count <= 1) { entry.released = this.now(); await this.save(root, entry); }
         else if (this.now() - (this.persisted.get(key(this.recordPath(root, entry)))?.time ?? 0) >= 30000) await this.save(root, entry);
       }
-    }).catch(e => this.report(file, e));
+    }).catch(e => {
+      this.report(file, e);
+      throw e;
+    });
     this.schedule();
     return task;
   }

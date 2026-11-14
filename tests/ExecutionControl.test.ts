@@ -519,10 +519,12 @@ describe('任务执行停止、队列暂停与手动优先调度 (ExecutionContr
       await ctx.planManager.savePlan(planA);
 
       let abortSignaled = false;
+      const snapshotStarted = deferred<void>();
       vi.spyOn(ctx.engine as any, 'executionSnapshot').mockImplementation((_tracker: any, onTaskDir?: any) => {
         return {
           ffprobePath: 'ffprobe',
           executeSnapshot: async (_data: any, signal?: AbortSignal) => {
+            snapshotStarted.resolve();
             const managedRoot = path.join(ctx.slices, 'managed');
             const taskDir = await ctx.maintenance.create(managedRoot, 'task', '');
             onTaskDir?.(taskDir);
@@ -533,18 +535,14 @@ describe('任务执行停止、队列暂停与手动优先调度 (ExecutionContr
             signal?.addEventListener('abort', () => {
               abortSignaled = true;
             });
-            await new Promise(r => setTimeout(r, 20));
+            await new Promise(r => setTimeout(r, 50));
             throw new Error('操作已取消');
           },
         };
       });
 
       const execPromise = ctx.planManager.executePlan(planA.id);
-      // 等待任务进入 active 执行状态
-      for (let i = 0; i < 50; i++) {
-        if (ctx.engine.getActivePlanId() === planA.id) break;
-        await new Promise(r => setTimeout(r, 10));
-      }
+      await snapshotStarted.promise;
       const cancelResult = await ctx.planManager.cancelPlan(planA.id);
       await execPromise.catch(() => {});
 
@@ -984,5 +982,314 @@ describe('任务执行停止、队列暂停与手动优先调度 (ExecutionContr
       (ctx.engine as any).active = null;
       await ctx.cleanup();
     }
+  });
+
+  describe('最后一轮并发与持久化缺陷定向专项测试 (Required P0 Tests)', () => {
+    it('专项 1: active 已赋值但生命周期 Promise 尚未创建时触发停止，验证竞态已消除', async () => {
+      const ctx = await createFixture();
+      try {
+        const planA = ctx.makeRecord('plan-race-active', '竞态生命周期任务');
+        await ctx.planManager.savePlan(planA);
+
+        const persistProcessingStarted = deferred<void>();
+        const persistProcessingContinue = deferred<void>();
+
+        const originalPersist = (ctx.engine as any).persist.bind(ctx.engine);
+        vi.spyOn(ctx.engine as any, 'persist').mockImplementation(async (record: any) => {
+          if (record.id === planA.id && record.status === 'processing') {
+            persistProcessingStarted.resolve();
+            await persistProcessingContinue.promise;
+          }
+          return originalPersist(record);
+        });
+
+        // 触发执行
+        void ctx.planManager.executePlan(planA.id);
+        await persistProcessingStarted.promise;
+
+        // 此时 active 已经同步赋值，且 activeRunPromise 已经同步创建
+        expect(ctx.engine.getActivePlanId()).toBe(planA.id);
+        expect((ctx.engine as any).activeRunPromise).not.toBeNull();
+
+        // 触发停止
+        const cancelPromise = ctx.planManager.cancelPlan(planA.id);
+
+        // 放行 persist(processing)
+        persistProcessingContinue.resolve();
+
+        const cancelResult = await cancelPromise;
+        expect(cancelResult.success).toBe(true);
+
+        // 验证方案状态恢复为 ready，没有被旧执行流写回 failed
+        const record = await ctx.planManager.getPlan(planA.id);
+        expect(record?.status).toBe('ready');
+        expect(ctx.engine.getActivePlanId()).toBeNull();
+      } finally {
+        await ctx.cleanup();
+      }
+    });
+
+    it('专项 2: 素材探测阶段触发停止', async () => {
+      const ctx = await createFixture();
+      try {
+        const planA = ctx.makeRecord('plan-probe-cancel', '探测中停止任务');
+        await ctx.planManager.savePlan(planA);
+
+        const probeStarted = deferred<void>();
+        const probeAbortDeferred = deferred<void>();
+
+        (ctx.prober as any).probe = vi.fn().mockImplementation(async (_source: string, signal?: AbortSignal) => {
+          probeStarted.resolve();
+          if (signal) {
+            signal.addEventListener('abort', () => probeAbortDeferred.resolve());
+          }
+          await probeAbortDeferred.promise;
+          throw new Error('操作已取消');
+        });
+
+        void ctx.planManager.executePlan(planA.id);
+        await probeStarted.promise;
+        expect(ctx.engine.getActivePlanId()).toBe(planA.id);
+
+        const cancelResult = await ctx.planManager.cancelPlan(planA.id);
+        expect(cancelResult.success).toBe(true);
+
+        expect(ctx.engine.getActivePlanId()).toBeNull();
+        const record = await ctx.planManager.getPlan(planA.id);
+        expect(record?.status).toBe('ready');
+        expect(record?.error).toBeUndefined();
+      } finally {
+        await ctx.cleanup();
+      }
+    });
+
+    it('专项 3: queue_state.json 写入失败时提交任务，验证不丢失任务', async () => {
+      const ctx = await createFixture();
+      try {
+        const planA = ctx.makeRecord('plan-submit-fail', '快照写入失败任务');
+        await ctx.planManager.savePlan(planA);
+
+        // 暂停队列，使得提交任务会留在排队中并触发快照持久化
+        await ctx.planManager.pauseQueue();
+
+        // 模拟 saveQueueState 写入失败
+        vi.spyOn(ctx.planManager, 'saveQueueState').mockRejectedValue(new Error('EIO: queue_state.json 写入失败'));
+
+        const res = await ctx.planManager.executePlan(planA.id);
+        expect(res.success).toBe(false);
+        expect(res.message).toContain('队列快照持久化未完成');
+
+        // 验证方案状态回滚为 ready
+        const record = await ctx.planManager.getPlan(planA.id);
+        expect(record?.status).toBe('ready');
+
+        // 验证引擎内存队列中没有残留
+        expect(ctx.engine.getState().queuedIds).not.toContain(planA.id);
+        expect(ctx.engine.isAccepted(planA.id)).toBe(false);
+      } finally {
+        await ctx.cleanup();
+      }
+    });
+
+    it('专项 4: 全部停止时快照写入失败，验证返回部分失败', async () => {
+      const ctx = await createFixture();
+      try {
+        const planA = ctx.makeRecord('plan-all-p1', '任务 1');
+        const planB = ctx.makeRecord('plan-all-p2', '任务 2');
+        await ctx.planManager.savePlan(planA);
+        await ctx.planManager.savePlan(planB);
+
+        await ctx.planManager.pauseQueue();
+        await ctx.planManager.executePlan(planA.id);
+        await ctx.planManager.executePlan(planB.id);
+
+        // 模拟排队方案恢复 ready 成功，但在 cancelAll 最后的 saveQueueState 失败
+        const originalSaveState = ctx.planManager.saveQueueState.bind(ctx.planManager);
+        vi.spyOn(ctx.planManager, 'saveQueueState').mockImplementation(async (state: any) => {
+          if (state.queuedIds.length === 0) {
+            throw new Error('EIO: 磁盘故障导致快照写入失败');
+          }
+          return originalSaveState(state);
+        });
+
+        const result = await ctx.planManager.cancelAllPlans();
+        // 必须返回部分失败 (success: false)
+        expect(result.success).toBe(false);
+        expect(result.failedPlanIds).toContain('queue_state');
+        expect(result.errors?.some(e => e.includes('快照写入失败'))).toBe(true);
+      } finally {
+        await ctx.cleanup();
+      }
+    });
+
+    it('专项 5: 排队任务方案记录保存成功但快照写入失败，验证跨文件恢复一致性', async () => {
+      const ctx = await createFixture();
+      try {
+        const p1 = ctx.makeRecord('p-cross-1', '任务 1');
+        const p2 = ctx.makeRecord('p-cross-2', '任务 2');
+        const p3 = ctx.makeRecord('p-cross-3', '任务 3');
+        await ctx.planManager.savePlan(p1);
+        await ctx.planManager.savePlan(p2);
+        await ctx.planManager.savePlan(p3);
+
+        await ctx.planManager.pauseQueue();
+        (ctx.engine as any).active = { record: { id: 'busy' } };
+        await ctx.planManager.executePlan(p1.id);
+        await ctx.planManager.executePlan(p2.id);
+        await ctx.planManager.executePlan(p3.id);
+
+        await ctx.planManager.setPriorityPlan(p2.id);
+        expect(ctx.engine.getState().queuedIds).toEqual([p1.id, p2.id, p3.id]);
+        expect(ctx.engine.getPriorityPlanId()).toBe(p2.id);
+
+        // 模拟方案记录保存成功（store.save正常），但在 persistQueueState 阶段失败
+        vi.spyOn(ctx.planManager, 'saveQueueState').mockRejectedValue(new Error('EIO: 快照写入失败'));
+
+        const cancelRes = await ctx.planManager.cancelPlan(p2.id);
+        expect(cancelRes.success).toBe(false);
+        expect(cancelRes.message).toContain('移出队列失败');
+
+        // 验证跨文件一致性恢复：
+        // 1. 磁盘上 p2 的方案记录必须被补偿恢复为 queued！
+        const p2Record = await ctx.planManager.getPlan(p2.id);
+        expect(p2Record?.status).toBe('queued');
+
+        // 2. 内存队列中 p2 恢复回原位置（索引 1）
+        expect(ctx.engine.getState().queuedIds).toEqual([p1.id, p2.id, p3.id]);
+
+        // 3. accepted 和 priorityPlanId 恢复
+        expect(ctx.engine.isAccepted(p2.id)).toBe(true);
+        expect(ctx.engine.getPriorityPlanId()).toBe(p2.id);
+      } finally {
+        (ctx.engine as any).active = null;
+        await ctx.cleanup();
+      }
+    });
+
+    it('专项 6: CacheMaintenanceService.release() 内部持久化失败，验证错误能够向上抛出', async () => {
+      const ctx = await createFixture();
+      try {
+        const managedRoot = path.join(ctx.slices, 'managed');
+        const taskDir = await ctx.maintenance.create(managedRoot, 'task', '');
+
+        // 模拟 save 失败
+        vi.spyOn(ctx.maintenance as any, 'save').mockRejectedValue(new Error('EIO: 注册表写入失败'));
+
+        // 验证 releaseAsync 向上抛出错误，严禁吞噬
+        await expect(ctx.maintenance.releaseAsync(taskDir)).rejects.toThrow('注册表写入失败');
+      } finally {
+        await ctx.cleanup();
+      }
+    });
+
+    it('专项 7: 资源释放失败时禁止继续物理清理并报告成功', async () => {
+      const ctx = await createFixture();
+      try {
+        const planA = ctx.makeRecord('plan-release-fail', '释放失败任务');
+        await ctx.planManager.savePlan(planA);
+
+        const taskDirCreated = deferred<string>();
+        const runDeferred = deferred<void>();
+
+        vi.spyOn(ctx.engine as any, 'executionSnapshot').mockImplementation((_tracker: any, onTaskDir?: any) => {
+          return {
+            ffprobePath: 'ffprobe',
+            executeSnapshot: async (_data: any, signal?: AbortSignal) => {
+              const managedRoot = path.join(ctx.slices, 'managed');
+              const taskDir = await ctx.maintenance.create(managedRoot, 'task', '');
+              onTaskDir?.(taskDir);
+              taskDirCreated.resolve(taskDir);
+              if (signal) {
+                signal.addEventListener('abort', () => runDeferred.resolve());
+              }
+              await runDeferred.promise;
+              return { success: false, error: 'canceled' };
+            },
+          };
+        });
+
+        // 拦截 releaseAsync 让其抛错
+        vi.spyOn(ctx.maintenance, 'releaseAsync').mockRejectedValue(new Error('EBUSY: 资源句柄占用无法释放'));
+
+        void ctx.planManager.executePlan(planA.id);
+        await taskDirCreated.promise;
+
+        const cancelResult = await ctx.planManager.cancelPlan(planA.id);
+        // 严禁报告成功！
+        expect(cancelResult.success).toBe(false);
+        expect(cancelResult.message).toContain('临时资产目录物理清理失败');
+
+        // 方案记录为 failed，保留错误信息
+        const record = await ctx.planManager.getPlan(planA.id);
+        expect(record?.status).toBe('failed');
+        expect(record?.error).toContain('临时文件清理未完成');
+        expect(ctx.engine.getActivePlanId()).toBeNull();
+      } finally {
+        await ctx.cleanup();
+      }
+    });
+
+    it('专项 8: 停止旧任务后立即重新执行同一方案，验证旧回调不影响新任务', async () => {
+      const ctx = await createFixture();
+      try {
+        const planA = ctx.makeRecord('plan-re-run', '重复执行任务');
+        await ctx.planManager.savePlan(planA);
+
+        let runCount = 0;
+        const firstRunStarted = deferred<void>();
+        const firstRunFinish = deferred<void>();
+        const secondRunFinish = deferred<void>();
+
+        vi.spyOn(ctx.engine as any, 'executionSnapshot').mockImplementation(() => {
+          return {
+            ffprobePath: 'ffprobe',
+            executeSnapshot: async (_data: any, signal?: AbortSignal) => {
+              runCount++;
+              if (runCount === 1) {
+                firstRunStarted.resolve();
+                if (signal) {
+                  signal.addEventListener('abort', () => {});
+                }
+                await firstRunFinish.promise;
+                return { success: false, error: 'canceled' };
+              } else {
+                secondRunFinish.resolve();
+                return { success: true, outputPath: path.join(ctx.directory, 'plan-re-run.mp4') };
+              }
+            },
+          };
+        });
+
+        // 第一次执行
+        void ctx.planManager.executePlan(planA.id);
+        await firstRunStarted.promise;
+
+        // 停止第一次执行
+        const cancelPromise = ctx.planManager.cancelPlan(planA.id);
+        // 延迟放行第一次执行的收尾
+        firstRunFinish.resolve();
+        const cancelResult = await cancelPromise;
+        expect(cancelResult.success).toBe(true);
+        expect((await ctx.planManager.getPlan(planA.id))?.status).toBe('ready');
+
+        // 立即重新执行同一方案
+        void ctx.planManager.executePlan(planA.id);
+        await secondRunFinish.promise;
+
+        // 轮询等待第二次执行持久化完成
+        for (let i = 0; i < 50; i++) {
+          const rec = await ctx.planManager.getPlan(planA.id);
+          if (rec?.status === 'completed') break;
+          await new Promise(r => setTimeout(r, 20));
+        }
+
+        // 验证第二次执行成功完成为 completed，旧回调完全不影响新任务
+        const record = await ctx.planManager.getPlan(planA.id);
+        expect(record?.status).toBe('completed');
+        expect(runCount).toBe(2);
+      } finally {
+        await ctx.cleanup();
+      }
+    });
   });
 });

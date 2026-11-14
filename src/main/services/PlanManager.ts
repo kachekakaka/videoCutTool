@@ -187,15 +187,15 @@ export class PlanManager {
   async deletePlan(id: string) {
     if (this.deleting.has(id)) throw new Error('方案正在删除');
     this.deleting.add(id);
-    let removed: ReturnType<MediaCuttingEngine['removeQueued']>;
+    let removed: Awaited<ReturnType<MediaCuttingEngine['removeQueued']>>;
     try {
-      removed = this.engine.removeQueued(id);
+      removed = await this.engine.removeQueued(id);
       await this.ready;
       return await this.serial(async () => {
         const deleted = await this.store.delete(id);
         this.records.delete(id); this.listener?.({ deletedId: id }); return deleted;
       });
-    } catch (error) { if (removed!) this.engine.restoreQueued(removed); throw error; }
+    } catch (error) { if (removed) await this.engine.restoreQueued(removed).catch(() => {}); throw error; }
     finally { this.deleting.delete(id); }
   }
   async submitDraft(record: PlanRecord, saveContent = true) {
