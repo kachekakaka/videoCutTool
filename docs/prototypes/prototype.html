@@ -1995,7 +1995,7 @@
       font-weight: 600;
     }
 
-    /* 5. 底部流式集成 Dock 栏 (彻底取消 fixed，杜绝遮挡卡片) */
+    /* 5. 底部流式集成 Dock 栏 (高度紧凑，彻底杜绝臃肿) */
     .v2-dock-footer {
       position: static;
       margin-top: auto;
@@ -2004,8 +2004,8 @@
       background: rgba(18, 22, 31, 0.95);
       backdrop-filter: blur(20px);
       border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 12px;
-      padding: 7px 16px;
+      border-radius: 10px;
+      padding: 4px 12px;
       z-index: 10;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
       display: flex;
@@ -2331,10 +2331,25 @@
             <span class="v2-title-text">分段列表</span>
             <span class="v2-counter-tag" id="v2-segment-count">共 4 个片段</span>
           </div>
-          <div class="v2-header-meta">
-            <span class="v2-output-summary-pill" id="v2-output-pill">
+          <div class="v2-header-meta" style="display: flex; align-items: center; gap: 12px; font-family: ui-monospace, monospace; font-size: 11.5px;">
+            <div class="v2-stat-item"><span class="v2-dot green"></span><span class="v2-stat-lbl">保留:</span><span class="v2-stat-val text-green" id="v2-stat-kept">01:50.000</span></div>
+            <div class="v2-stat-item"><span class="v2-dot red"></span><span class="v2-stat-lbl">丢弃:</span><span class="v2-stat-val text-red" id="v2-stat-discarded">00:40.000</span></div>
+            <div class="v2-stat-item"><span class="v2-dot amber"></span><span class="v2-stat-lbl">切点:</span><span class="v2-stat-val text-amber" id="v2-stat-cuts">3 个</span></div>
+            <span class="v2-output-summary-pill" id="v2-output-pill" style="font-family: inherit;">
               📦 预定输出 2 个文件
             </span>
+          </div>
+        </div>
+
+        <!-- 紧凑单行合并片段工具栏 -->
+        <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0 6px 0; font-size: 11px;">
+          <button type="button" style="padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.05); color: #e6edf3; cursor: pointer;">选择合并片段</button>
+          <div style="display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 6px; background: rgba(188, 140, 255, 0.1); border: 1px solid rgba(188, 140, 255, 0.25); color: #d2a8ff;">
+            <span>文件 1:</span>
+            <span style="background: rgba(255,255,255,0.08); padding: 1px 4px; border-radius: 4px; font-size: 10.5px;">第 1 段 ×</span>
+            <span>→</span>
+            <span style="background: rgba(255,255,255,0.08); padding: 1px 4px; border-radius: 4px; font-size: 10.5px;">第 3 段 ×</span>
+            <button type="button" style="border: none; background: rgba(188,140,255,0.2); color: #fff; font-size: 10px; border-radius: 4px; padding: 1px 4px; cursor: pointer;">全部拆开</button>
           </div>
         </div>
 
@@ -2344,33 +2359,18 @@
         </div>
       </section>
 
-      <!-- 5. 全新·悬浮毛玻璃 Dock 栏 (彻底消灭白底下拉框) -->
+      <!-- 5. 全新·精简悬浮毛玻璃 Dock 栏 (高度紧凑，消除大按钮与多余行) -->
       <div class="v2-dock-footer">
         <div class="v2-dock-inner">
           <div class="v2-dock-stats">
-            <div class="v2-stat-item">
-              <span class="v2-dot green"></span>
-              <span class="v2-stat-lbl">保留:</span>
-              <span class="v2-stat-val text-green" id="v2-stat-kept">01:50.000</span>
-            </div>
-            <div class="v2-stat-item">
-              <span class="v2-dot red"></span>
-              <span class="v2-stat-lbl">丢弃:</span>
-              <span class="v2-stat-val text-red" id="v2-stat-discarded">00:40.000</span>
-            </div>
-            <div class="v2-stat-item">
-              <span class="v2-dot amber"></span>
-              <span class="v2-stat-lbl">切点:</span>
-              <span class="v2-stat-val text-amber" id="v2-stat-cuts">3 个</span>
-            </div>
             <div class="v2-stat-item v2-stat-preview" title="预定产物输出文件名">
               <span class="v2-stat-lbl">预定:</span>
               <span class="v2-stat-val text-sky">sample_video_4k_cut.mp4</span>
             </div>
           </div>
 
-          <div class="v2-dock-controls">
-            <!-- 输出方式分段药丸：彻底告别原生白底下拉框！ -->
+          <div class="v2-dock-controls" style="display: flex; align-items: center; gap: 8px;">
+            <!-- 输出方式分段药丸 -->
             <div class="v2-pill-segmented" role="group" aria-label="输出方式">
               <span class="v2-pill-seg-lbl">输出方式:</span>
               <button type="button" class="v2-seg-item" id="v2-out-separate" onclick="v2SetOutputMode('separate')">分别输出</button>
@@ -2385,8 +2385,13 @@
               <button type="button" class="v2-seg-item" id="v2-mode-compress" onclick="v2SetExportMode('compress')">📦 智能降码</button>
             </div>
 
-            <button type="button" class="v2-btn-secondary" onclick="v2SavePlan()">存为方案</button>
-            <button type="button" class="v2-btn-primary" id="v2-btn-execute" onclick="v2Execute()">立即剪辑</button>
+            <!-- 微型边界提示气泡 -->
+            <div style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 6px; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.25); color: #7dd3fc; font-size: 11px; cursor: help;" title="快速无损边界提示：按当前关键帧估算，各保留段起点最多提前 1.55 秒（覆盖所有保留段的最大值）；片尾可能扩出。需精准请选精确导出。">
+              <span>最多提前 ~1.55s ⓘ</span>
+            </div>
+
+            <button type="button" class="v2-btn-secondary" style="padding: 4px 10px; font-size: 12px; border-radius: 6px;" onclick="v2SavePlan()">存为方案</button>
+            <button type="button" class="v2-btn-primary" style="padding: 4px 12px; font-size: 12px; border-radius: 6px;" id="v2-btn-execute" onclick="v2Execute()">立即剪辑</button>
           </div>
         </div>
       </div>
@@ -3215,7 +3220,17 @@
       change();
       renderSegmentCards();
     }
-    function setOutputMode(mode) { changeOutputs(() => { state.outputMode = mode; state.outputGroups = {}; }); }
+    async function confirmOutputModeChange(current, target, files) {
+      if (current === target) return false;
+      const count = files.filter(members => members.length > 1).length;
+      if (current !== 'custom' || target === 'custom' || !count) return true;
+      return showPrototypeNotice('切换输出方式将清空自定义分组',
+        `当前存在 ${count} 组自定义合并分组。切换为「${target === 'single' ? '全部合成' : '分别输出'}」后，这些分组会被重置（切换后仍可通过撤销恢复）。`, true, '确认切换');
+    }
+    async function setOutputMode(mode) {
+      if (!await confirmOutputModeChange(state.outputMode, mode, outputFiles())) return;
+      changeOutputs(() => { state.outputMode = mode; state.outputGroups = {}; });
+    }
     function separateOutputs(ids) { changeOutputs(() => ids.forEach(id => { delete state.outputGroups[id]; })); }
     function undoOutputs() {
       const previous = outputHistory.pop(); if (!previous) return;
@@ -3858,6 +3873,8 @@
       else if (e.code === 'KeyC') { e.preventDefault(); insertCutAtCurrent(); }
       else if (e.code === 'ArrowLeft') { e.preventDefault(); stepFrame(-1); }
       else if (e.code === 'ArrowRight') { e.preventDefault(); stepFrame(1); }
+      else if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') { e.preventDefault(); e.shiftKey ? redoOutputs() : undoOutputs(); }
+      else if ((e.ctrlKey || e.metaKey) && e.code === 'KeyY') { e.preventDefault(); redoOutputs(); }
     });
 
     function openPlanModal() {
@@ -3892,14 +3909,15 @@
       showPrototypeNotice('已加入演示队列', prototypeModeLabel(mode) + '：' + document.getElementById('export-boundary').textContent + '\n\n可在方案中心查看模拟进度。本原型不会处理媒体或生成文件。');
     }
 
-    function showPrototypeNotice(title, message, confirm = false) {
+    function showPrototypeNotice(title, message, confirm = false, confirmLabel = '确认删除') {
       const dialog = document.getElementById('prototype-notice');
       document.getElementById('prototype-notice-title').textContent = title;
       document.getElementById('prototype-notice-message').textContent = message;
       document.getElementById('prototype-notice-cancel').hidden = !confirm;
-      document.getElementById('prototype-notice-confirm').textContent = confirm ? '确认删除' : '知道了';
+      document.getElementById('prototype-notice-confirm').textContent = confirm ? confirmLabel : '知道了';
       dialog.returnValue = '';
       dialog.showModal();
+      document.getElementById(confirm ? 'prototype-notice-cancel' : 'prototype-notice-confirm').focus();
       return new Promise(resolve => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true }));
     }
 
@@ -4790,7 +4808,8 @@
       v2DrawScreen();
     }
 
-    function v2SetOutputMode(mode) {
+    async function v2SetOutputMode(mode) {
+      if (!await confirmOutputModeChange(v2State.outputMode, mode, v2GetOutputFiles())) return;
       v2PushHistory();
       v2State.outputMode = mode;
       if (mode !== 'custom') v2State.outputGroups = {};

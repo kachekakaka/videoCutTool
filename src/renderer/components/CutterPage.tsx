@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { MediaMetadata, RetentionDecision, PlanRecord, CompressConfig, SpatialCropBox, SpatialMaskItem, OutputMode } from '../../shared/types';
 import { COMPRESS_PRESETS } from '../../shared/compressPresets';
 import { CompressionSettings } from './CompressionSettings';
@@ -30,6 +30,8 @@ import {
   Settings,
   Sparkles,
   Eye,
+  Keyboard,
+  Info,
 } from 'lucide-react';
 
 export type CutterLoadRequest = Readonly<{
@@ -189,6 +191,19 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   const [planTitleInput, setPlanTitleInput] = useState('');
   const [saveMode, setSaveMode] = useState<'update' | 'new'>('update');
   const [showNoCutWarningModal, setShowNoCutWarningModal] = useState(false);
+  const [confirmOutputModeSwitch, setConfirmOutputModeSwitch] = useState<'separate' | 'single' | null>(null);
+  const outputModeDialogRef = useRef<HTMLDialogElement | null>(null);
+  const cancelOutputModeRef = useRef<HTMLButtonElement | null>(null);
+  useLayoutEffect(() => {
+    if (!confirmOutputModeSwitch) return;
+    const dialog = outputModeDialogRef.current;
+    if (!dialog) return;
+    const trigger = document.activeElement as HTMLElement | null;
+    // 原生模态层阻止背景接收焦点和点击，关闭时回到触发按钮。
+    dialog.showModal();
+    cancelOutputModeRef.current?.focus();
+    return () => { dialog.close(); if (trigger?.isConnected) trigger.focus(); };
+  }, [confirmOutputModeSwitch]);
   const boundPlanBusy = plans.some(plan => plan.id === currentPlanId && (plan.status === 'queued' || plan.status === 'processing'));
 
   // 降码设置面板与就地画质对比视窗状态
@@ -428,7 +443,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     // 只释放已完成的准备；播放器尚未启用时，正在分析的会话仍由加载流程持有。
     if (!mainPlayerActive) preparedStream?.release();
   }, [mainPlayerActive, preparedStream]);
-  const shortcutsEnabled = isActive && selectionReady && !repairConfirmation && !isLoading && !showSaveModal && !showNoCutWarningModal && !showCompressSettings && workbenchMode === 'temporal';
+  const shortcutsEnabled = isActive && selectionReady && !repairConfirmation && !isLoading && !showSaveModal && !showNoCutWarningModal && !confirmOutputModeSwitch && !showCompressSettings && workbenchMode === 'temporal';
   useEffect(() => { if (!isActive || mainViewportMode !== 'player') { playerRef.current?.pause(); setAuditionRange(null); } }, [isActive, mainViewportMode]);
 
   // 提交草稿操作变更至撤销栈
@@ -474,6 +489,11 @@ export const CutterPage: React.FC<CutterPageProps> = ({
       if (!isActive || e.defaultPrevented || (e.target as HTMLElement).closest('input, textarea, select, [contenteditable="true"]')) return;
 
       if (e.key === 'Escape') {
+        if (confirmOutputModeSwitch) {
+          e.preventDefault();
+          setConfirmOutputModeSwitch(null);
+          return;
+        }
         if (showNoCutWarningModal) {
           e.preventDefault();
           setShowNoCutWarningModal(false);
@@ -506,7 +526,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUndo, handleRedo, showNoCutWarningModal, showSaveModal, showCompressSettings, shortcutsEnabled, isActive]);
+  }, [handleUndo, handleRedo, showNoCutWarningModal, confirmOutputModeSwitch, showSaveModal, showCompressSettings, shortcutsEnabled, isActive]);
 
   // 双保险文件选择唤起逻辑 (Electron 原生对话框 + HTML5 文件选择器兜底)
   const handleChooseFile = async (e?: React.MouseEvent) => {
@@ -796,6 +816,10 @@ export const CutterPage: React.FC<CutterPageProps> = ({
   };
 
   const handleOutputMode = (mode: OutputMode) => {
+    if (mode !== 'custom' && outputMode === 'custom' && outputs.some(output => output.segmentIds.length > 1)) {
+      setConfirmOutputModeSwitch(mode);
+      return;
+    }
     commitDraftChange(d => d.setOutputMode(mode));
   };
 
@@ -1553,45 +1577,151 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             </div>
           </div>
 
-          {/* 右侧：快捷键指示栏，响应式平滑收缩，严禁折行 */}
-          <div
-            className="hidden md:flex items-center gap-1.5 min-w-0 justify-end overflow-hidden whitespace-nowrap text-[11px] text-zinc-400 shrink"
-            title="常用快捷键：空格 播放/暂停 · C 插入切点 · 长按切点拖拽微调 · 双击切点就地修改时间 · ←/→ 逐帧微调 · Del 移除切点 · Ctrl+Z 撤销 · 点击卡片切换保留"
-          >
-            <span className="flex items-center gap-1 shrink-0">
-              <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px] font-mono">空格</kbd> 播放
-            </span>
-            <span className="text-zinc-600 shrink-0">·</span>
-            <span className="flex items-center gap-1 shrink-0">
-              <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px] font-mono">C</kbd> 切点
-            </span>
-            <span className="hidden lg:inline text-zinc-600 shrink-0">·</span>
-            <span className="hidden lg:flex items-center gap-1 shrink-0">
-              <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px] font-mono">←</kbd>
-              <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px] font-mono">→</kbd> 逐帧
-            </span>
-            <span className="hidden xl:inline text-zinc-600 shrink-0">·</span>
-            <span className="hidden xl:flex items-center gap-1 shrink-0">
-              <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px] font-mono">Del</kbd> 删切点
-            </span>
-            <span className="hidden 2xl:inline text-zinc-600 shrink-0">·</span>
-            <span className="hidden 2xl:flex items-center gap-1 shrink-0">
-              <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px] font-mono">Ctrl+Z</kbd> 撤销
-            </span>
-            <span className="hidden 2xl:inline text-zinc-600 shrink-0">·</span>
-            <span className="text-zinc-400 hidden 2xl:inline shrink-0">点击卡片切换保留</span>
+          {/* 右侧：统计指标与快捷键悬停帮助 */}
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0 justify-end overflow-visible whitespace-nowrap text-xs font-mono shrink">
+            <div className="whitespace-nowrap hidden xl:block">
+              <span className="text-zinc-400">原片:</span>{' '}
+              <span className="text-white font-bold">{formatTimecode(metadata.durationMs, false)}</span>
+            </div>
+            <div className="whitespace-nowrap">
+              <span className="text-zinc-400">保留:</span>{' '}
+              <span className="text-emerald-400 font-bold">{formatTimecode(keptDurationMs, false)}</span>
+            </div>
+            <div className="whitespace-nowrap">
+              <span className="text-zinc-400">丢弃:</span>{' '}
+              <span className="text-rose-400 font-bold">{formatTimecode(discardedDurationMs, false)}</span>
+            </div>
+            <div className="whitespace-nowrap">
+              <span className="text-zinc-400">切点:</span>{' '}
+              <span className="text-amber-400 font-bold">{cuts.length}</span>
+              <span className="hidden sm:inline text-amber-400"> 个</span>
+            </div>
+
+            {/* 快捷键悬停提示图标与浮层 */}
+            <div className="relative group shrink-0">
+              <button
+                type="button"
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 text-[11px] font-sans transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-blue-400"
+                title="查看常用快捷键"
+              >
+                <Keyboard className="w-3.5 h-3.5" />
+                <span className="hidden md:inline">快捷键</span>
+              </button>
+              <div className="absolute right-0 top-full mt-1.5 hidden group-hover:block group-focus-within:block z-50 w-64 p-3 rounded-xl bg-[#161a24]/95 border border-white/15 shadow-2xl backdrop-blur-md text-[11px] text-zinc-300 pointer-events-none">
+                <div className="font-semibold text-white mb-2 pb-1.5 border-b border-white/10 flex items-center justify-between font-sans">
+                  <span>常用快捷键</span>
+                  <span className="text-[10px] text-zinc-400 font-normal">悬停速查</span>
+                </div>
+                <div className="space-y-1.5 font-mono">
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-400 font-sans">播放 / 暂停</span>
+                    <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px]">空格</kbd>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-400 font-sans">插入切点</span>
+                    <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px]">C</kbd>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-400 font-sans">逐帧微调</span>
+                    <div className="flex gap-1">
+                      <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px]">←</kbd>
+                      <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px]">→</kbd>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-400 font-sans">删除当前切点</span>
+                    <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px]">Del</kbd>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-400 font-sans">撤销</span>
+                    <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px]">Ctrl+Z</kbd>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-400 font-sans">重做</span>
+                    <kbd className="bg-white/10 text-zinc-200 px-1 py-0.5 rounded text-[10px]">Ctrl+Y</kbd>
+                  </div>
+                  <div className="text-[10px] text-zinc-400 pt-1.5 border-t border-white/5 font-sans leading-relaxed">
+                    长按切点可拖动 · 双击就地改时间 · 点击卡片切换保留
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 text-xs shrink-0" aria-label="合并片段工具栏">
+        <div className="flex flex-wrap items-center gap-2 text-xs shrink-0 min-h-[28px]" aria-label="合并片段工具栏">
           {!selectingOutputs ? (
-            <button disabled={segments.filter(segment => segment.decision === 'keep').length < 2} onClick={() => setSelectingOutputs(true)} className="px-3 py-1.5 rounded-lg border border-white/20 text-zinc-200 hover:bg-white/10 disabled:opacity-40" title="任意选择保留片段，合成一个输出文件">选择合并片段</button>
-          ) : <>
-            <span className="text-violet-200">已选 {selectedOutputSegments.length} 段</span>
-            <button disabled={selectedOutputSegments.length < 2} title={selectedOutputSegments.length < 2 ? '至少选择两个保留片段' : '仅将选中片段合成一个文件'} onClick={handleCombineOutputs} className="px-3 py-1.5 rounded-lg bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-40">合成一个文件</button>
-            <button onClick={() => { setSelectingOutputs(false); setSelectedOutputSegments([]); }} className="px-3 py-1.5 rounded-lg text-zinc-300 hover:bg-white/10">取消选择</button>
-            <span className="text-zinc-400">{outputMode === 'single' ? '选中片段合成一个文件，其余片段分别输出' : '按原视频顺序拼接，丢弃片段不参与'}</span>
-          </>}
+            <button
+              disabled={segments.filter(segment => segment.decision === 'keep').length < 2}
+              onClick={() => setSelectingOutputs(true)}
+              className="px-2.5 py-1 rounded-lg border border-white/20 text-zinc-200 hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              title={
+                segments.filter(segment => segment.decision === 'keep').length < 2
+                  ? '至少需要 2 个保留片段才可合并'
+                  : '任意选择保留片段，合成一个输出文件'
+              }
+            >
+              选择合并片段
+            </button>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="text-violet-200">已选 {selectedOutputSegments.length} 段</span>
+              <button
+                disabled={selectedOutputSegments.length < 2}
+                title={selectedOutputSegments.length < 2 ? '至少选择两个保留片段' : '仅将选中片段合成一个文件'}
+                onClick={handleCombineOutputs}
+                className="px-2.5 py-1 rounded-lg bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-40 transition-colors"
+              >
+                合成一个文件
+              </button>
+              <button
+                onClick={() => { setSelectingOutputs(false); setSelectedOutputSegments([]); }}
+                className="px-2.5 py-1 rounded-lg text-zinc-300 hover:bg-white/10 transition-colors"
+              >
+                取消选择
+              </button>
+              <span className="text-zinc-400 hidden sm:inline">
+                {outputMode === 'single' ? '选中片段合成一个文件，其余片段分别输出' : '按原视频顺序拼接，丢弃片段不参与'}
+              </span>
+            </div>
+          )}
+
+          {/* 自定义合并时的片段拆解管理清单（直接平铺展示在工具栏后方，彻底消除原卡片下方独立面板） */}
+          {outputMode === 'custom' && outputs.some(output => output.segmentIds.length > 1) && (
+            <div className="flex-1 basis-[320px] min-w-0 max-h-[76px] overflow-y-auto space-y-1.5" aria-label="已合并文件清单">
+              {outputs.map((output, index) => output.segmentIds.length > 1 ? (
+                <div key={output.segmentIds.join(',')} className="flex w-full min-w-0 items-center gap-1 px-2 py-0.5 rounded-lg bg-purple-950/40 border border-purple-500/30 text-xs text-zinc-300">
+                  <span className="text-violet-300 font-medium shrink-0 whitespace-nowrap">文件 {index + 1}:</span>
+                  <div className="flex flex-1 min-w-0 items-center gap-1 overflow-x-auto py-0.5" tabIndex={0} aria-label={`文件 ${index + 1} 的合并片段`}>
+                  {output.segmentIds.map((id, memberIndex) => (
+                    <React.Fragment key={id}>
+                      {memberIndex > 0 && <span aria-hidden="true" className="text-zinc-500 text-[10px]">→</span>}
+                      <span className="inline-flex shrink-0 whitespace-nowrap items-center gap-0.5 bg-white/10 px-1 py-0.5 rounded text-[11px]">
+                        第 {segments.find(segment => segment.id === id)?.index} 段
+                        <button
+                          aria-label={`从文件 ${index + 1} 移出第 ${segments.find(segment => segment.id === id)?.index} 段`}
+                          title="移出此段，单独输出"
+                          onClick={() => commitDraftChange(d => d.separateSegments([id]))}
+                          className="px-0.5 rounded hover:bg-white/20 text-zinc-400 hover:text-white"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    </React.Fragment>
+                  ))}
+                  </div>
+                  <button
+                    onClick={() => commitDraftChange(d => d.separateSegments(output.segmentIds))}
+                    className="shrink-0 whitespace-nowrap ml-1 px-1.5 py-0.5 rounded bg-purple-500/20 hover:bg-purple-500/30 text-violet-300 text-[10px] border border-purple-500/30 transition-colors"
+                    aria-label={`将文件 ${index + 1} 拆开输出`}
+                    title="将本组所有片段拆开，分别输出"
+                  >
+                    全部拆开
+                  </button>
+                </div>
+              ) : null)}
+            </div>
+          )}
         </div>
 
         {/* 4. 精炼双行分段卡片流 */}
@@ -1620,74 +1750,13 @@ export const CutterPage: React.FC<CutterPageProps> = ({
           />
         </div>
 
-        {/* 自定义合并时的片段拆解管理面板（仅在有合并多段时显示，其余情况零占空间） */}
-        {outputMode === 'custom' && outputs.some(output => output.segmentIds.length > 1) && (
-          <div className="shrink-0 rounded-lg border border-purple-500/20 bg-purple-950/20 px-3 py-1.5 text-xs animate-in fade-in" aria-label="输出文件清单">
-            <div className="text-purple-200 font-medium flex items-center justify-between" role="status">
-              <span>已自定义合并 {outputs.filter(o => o.segmentIds.length > 1).length} 组文件</span>
-              <span className="text-zinc-400 text-[11px]">按原视频顺序拼接</span>
-            </div>
-            <div className="max-h-[56px] overflow-y-auto mt-1 space-y-1">
-              {outputs.map((output, index) => output.segmentIds.length > 1 ? (
-                <div key={output.segmentIds.join(',')} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-zinc-300">
-                  <span className="text-violet-200">文件 {index + 1}：</span>
-                  {output.segmentIds.map((id, memberIndex) => (
-                    <React.Fragment key={id}>
-                      {memberIndex > 0 && <span aria-hidden="true" className="text-zinc-500">→</span>}
-                      <span className="inline-flex items-center gap-1 bg-white/5 px-1.5 py-0.5 rounded text-[11px]">
-                        第 {segments.find(segment => segment.id === id)?.index} 段
-                        <button
-                          aria-label={`从文件 ${index + 1} 移出第 ${segments.find(segment => segment.id === id)?.index} 段`}
-                          title="移出此段，单独输出"
-                          onClick={() => commitDraftChange(d => d.separateSegments([id]))}
-                          className="px-1 py-0.5 rounded hover:bg-white/15 text-zinc-400 hover:text-white"
-                        >
-                          ×
-                        </button>
-                      </span>
-                    </React.Fragment>
-                  ))}
-                  <button
-                    onClick={() => commitDraftChange(d => d.separateSegments(output.segmentIds))}
-                    className="px-2 py-0.5 rounded bg-purple-500/10 hover:bg-purple-500/20 text-violet-300 text-[11px] border border-purple-500/20 transition-colors"
-                    aria-label={`将文件 ${index + 1} 拆开输出`}
-                  >
-                    全部拆开
-                  </button>
-                </div>
-              ) : null)}
-            </div>
-          </div>
-        )}
-
         {/* 5. 底部固定状态 Dock 栏 (建立顶级 relative z-50 层叠上下文，彻底杜绝任何下层视窗横穿切断弹窗) */}
-        <div className="mt-auto shrink-0 pt-1 pb-1 relative z-50">
-          <div className="px-3 py-2 rounded-2xl bg-[#161b22]/95 border border-white/10 shadow-2xl backdrop-blur-md flex flex-wrap 2xl:flex-nowrap items-center justify-between gap-2 min-w-0">
-            {/* 左侧：统计指标与预定产物名 */}
-            <div className="flex items-center gap-2 sm:gap-2.5 text-xs font-mono shrink min-w-0">
-              <div className="whitespace-nowrap hidden 2xl:block">
-                <span className="text-zinc-400">原片:</span>{' '}
-                <span className="text-white font-bold">{formatTimecode(metadata.durationMs, false)}</span>
-              </div>
-              <div className="whitespace-nowrap">
-                <span className="text-zinc-400">保留:</span>{' '}
-                <span className="text-emerald-400 font-bold">{formatTimecode(keptDurationMs, false)}</span>
-              </div>
-              <div className="whitespace-nowrap">
-                <span className="text-zinc-400">丢弃:</span>{' '}
-                <span className="text-rose-400 font-bold">{formatTimecode(discardedDurationMs, false)}</span>
-              </div>
-              <div className="whitespace-nowrap">
-                <span className="text-zinc-400">切点:</span>{' '}
-                <span className="text-amber-400 font-bold">{cuts.length}</span>
-                <span className="hidden sm:inline text-amber-400"> 个</span>
-              </div>
-
-              {/* 实时预定产物文件名预览与目录控制胶囊 */}
-              {safeOutputPath && (
-                <div
-                  className="flex items-center bg-black/40 px-2.5 py-1 rounded-xl border border-white/10 shrink min-w-0 gap-1.5 group hover:border-white/25 transition-all"
-                >
+        <div className="mt-auto shrink-0 pt-0.5 pb-0.5 relative z-50">
+          <div className="px-3 py-1 rounded-xl bg-[#161b22]/95 border border-white/10 shadow-xl backdrop-blur-md flex flex-wrap 2xl:flex-nowrap items-center justify-between gap-2 min-w-0">
+            {/* 左侧：实时预定产物文件名预览与目录控制胶囊 */}
+            <div className="flex items-center shrink min-w-0">
+              {safeOutputPath ? (
+                <div className="flex items-center bg-black/40 px-2 py-0.5 rounded-lg border border-white/10 shrink min-w-0 gap-1.5 group hover:border-white/25 transition-all">
                   <button
                     onClick={handleOpenOutputFolder}
                     className="flex items-center gap-1.5 text-xs font-mono text-zinc-300 hover:text-white transition-colors truncate focus-visible:outline-none"
@@ -1695,22 +1764,24 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                   >
                     <FolderOpen className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                     <span className="text-zinc-400 shrink-0">预定:</span>
-                    <span className="text-sky-300 font-bold max-w-[90px] sm:max-w-[140px] 2xl:max-w-[220px] truncate">
+                    <span className="text-sky-300 font-bold max-w-[140px] sm:max-w-[220px] 2xl:max-w-[320px] truncate">
                       {safeOutputPath.split(/[\\/]/).pop()}
                     </span>
                   </button>
                 </div>
+              ) : (
+                <span className="text-zinc-500 text-xs font-mono select-none">未选择保存路径</span>
               )}
             </div>
 
             {/* 中间：输出方式平铺胶囊组（彻底去除原生白底下拉框） */}
-            <div className="flex items-center bg-black/40 border border-white/10 p-0.5 rounded-xl text-xs font-medium select-none shrink-0 mx-0.5" role="group" aria-label="输出方式">
-              <span className="text-[11px] text-zinc-400 pl-2 pr-1 shrink-0">输出:</span>
+            <div className="flex items-center bg-black/40 border border-white/10 p-0.5 rounded-lg text-xs font-medium select-none shrink-0 mx-0.5" role="group" aria-label="输出方式">
+              <span className="text-[11px] text-zinc-400 pl-1.5 pr-1 shrink-0">输出:</span>
               <button
                 type="button"
                 onClick={() => handleOutputMode('separate')}
                 aria-pressed={outputMode === 'separate'}
-                className={`px-2.5 py-1 rounded-lg text-xs transition-all whitespace-nowrap ${
+                className={`px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-md text-xs transition-all whitespace-nowrap ${
                   outputMode === 'separate'
                     ? 'bg-blue-600/30 text-blue-300 font-bold border border-blue-500/40 shadow-sm'
                     : 'text-zinc-400 hover:text-white hover:bg-white/5'
@@ -1723,7 +1794,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                 type="button"
                 onClick={() => handleOutputMode('single')}
                 aria-pressed={outputMode === 'single'}
-                className={`px-2.5 py-1 rounded-lg text-xs transition-all whitespace-nowrap ${
+                className={`px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-md text-xs transition-all whitespace-nowrap ${
                   outputMode === 'single'
                     ? 'bg-blue-600/30 text-blue-300 font-bold border border-blue-500/40 shadow-sm'
                     : 'text-zinc-400 hover:text-white hover:bg-white/5'
@@ -1736,7 +1807,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                 type="button"
                 onClick={() => handleOutputMode('custom')}
                 aria-pressed={outputMode === 'custom'}
-                className={`px-2.5 py-1 rounded-lg text-xs transition-all whitespace-nowrap ${
+                className={`px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-md text-xs transition-all whitespace-nowrap ${
                   outputMode === 'custom'
                     ? 'bg-blue-600/30 text-blue-300 font-bold border border-blue-500/40 shadow-sm'
                     : 'text-zinc-400 hover:text-white hover:bg-white/5'
@@ -1752,20 +1823,20 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               {/* 空间编辑转码升轨状态指示 */}
               {hasSpatialActive && !isPreciseMode && (
                 <div
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-purple-500/15 border border-purple-500/30 text-purple-300 text-xs font-mono font-medium"
+                  className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-purple-500/15 border border-purple-500/30 text-purple-300 text-xs font-mono font-medium"
                   title="检测到已配置画面空间修饰（裁切/遮罩），系统已自动升轨为智能转码，确保滤镜生效，同时保持无损原声音频"
                 >
                   <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
-                  <span className="hidden sm:inline">智能转码升轨 (-vf 空间滤镜)</span>
-                  <span className="sm:hidden">智能转码升轨</span>
+                  <span className="hidden sm:inline">智能转码升轨</span>
+                  <span className="sm:hidden">转码</span>
                 </div>
               )}
 
-              {/* 模式选择胶囊：无损秒切 vs 智能降码 */}
-              <div className="flex items-center bg-black/40 border border-white/10 p-0.5 rounded-xl text-xs font-medium">
+              {/* 模式选择胶囊：快速无损 vs 精确导出 vs 智能降码 */}
+              <div className="flex items-center bg-black/40 border border-white/10 p-0.5 rounded-lg text-xs font-medium">
                 <button
                   onClick={() => handleToggleExportMode('lossless')}
-                  className={`px-2.5 py-1 rounded-lg flex items-center gap-1 transition-all ${
+                  className={`px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-md flex items-center gap-1 transition-all ${
                     !isCompressMode && !isPreciseMode
                       ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/30 shadow-sm'
                       : 'text-zinc-400 hover:text-white'
@@ -1775,14 +1846,19 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                   <Zap className="w-3.5 h-3.5 text-cyan-400" />
                   <span>快速无损</span>
                 </button>
-                <button onClick={() => handleToggleExportMode('precise')} aria-pressed={isPreciseMode}
-                  className={`px-2.5 py-1 rounded-lg transition-all ${isPreciseMode ? 'bg-blue-500/20 text-blue-200 border border-blue-500/30' : 'text-zinc-400 hover:text-white'}`}
-                  title="按所选画面区间导出 MP4，视频和音频重新编码；更慢，非严格无损">
+                <button
+                  onClick={() => handleToggleExportMode('precise')}
+                  aria-pressed={isPreciseMode}
+                  className={`px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-md transition-all ${
+                    isPreciseMode ? 'bg-blue-500/20 text-blue-200 border border-blue-500/30 font-bold' : 'text-zinc-400 hover:text-white'
+                  }`}
+                  title="按所选画面区间导出 MP4，视频和音频重新编码；更慢，非严格无损"
+                >
                   精确导出
                 </button>
                 <button
                   onClick={() => handleToggleExportMode('compress')}
-                  className={`px-2.5 py-1 rounded-lg flex items-center gap-1 transition-all ${
+                  className={`px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-md flex items-center gap-1 transition-all ${
                     isCompressMode
                       ? 'bg-purple-500/20 text-purple-300 font-bold border border-purple-500/30 shadow-sm'
                       : 'text-zinc-400 hover:text-white'
@@ -1794,11 +1870,67 @@ export const CutterPage: React.FC<CutterPageProps> = ({
                 </button>
               </div>
 
+              {/* 边界提示微型气泡胶囊（快速无损/智能降码模式下展示关键帧提前量，悬停或键盘聚焦弹出完整说明） */}
+              {!isPreciseMode ? (
+                <div className="relative group shrink-0">
+                  <div
+                    tabIndex={0}
+                    className="flex items-center gap-1 px-1.5 py-1 rounded-lg bg-zinc-800/80 hover:bg-zinc-700/80 border border-white/10 text-xs text-zinc-300 cursor-help transition-colors select-none focus:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400"
+                    role="note"
+                    data-testid="export-boundary-note"
+                    title="悬停或键盘聚焦查看关键帧边界详情"
+                  >
+                    <Info className="w-3 h-3 text-cyan-400 shrink-0" />
+                    <span className="font-mono text-cyan-300 text-[11px] whitespace-nowrap">
+                      {metadata.keyframes.length ? `最多提前 ~${(boundaryLeadMs / 1000).toFixed(2)}s` : '边界估算中'}
+                    </span>
+                  </div>
+                  {/* 悬停/聚焦浮层卡片 */}
+                  <div className="absolute right-0 bottom-full mb-2 hidden group-hover:block group-focus-within:block z-50 w-72 p-2.5 rounded-xl bg-[#161a24]/95 border border-white/15 shadow-2xl backdrop-blur-md text-[11px] text-zinc-300 leading-relaxed pointer-events-none">
+                    <div className="font-semibold text-white mb-1 flex items-center gap-1 text-cyan-300">
+                      <Info className="w-3.5 h-3.5" />
+                      <span>{isCompressMode ? '智能降码边界提示' : '快速无损边界提示'}</span>
+                    </div>
+                    <div>
+                      {metadata.keyframes.length
+                        ? `按当前关键帧估算，各保留段起点最多提前 ${(boundaryLeadMs / 1000).toFixed(3)} 秒（覆盖所有保留段的最大值）；片尾可能扩出，具体余量以产物为准，不保证固定上限。`
+                        : '关键帧索引就绪后显示各保留段最大起点提前量；片尾可能扩出，具体余量以产物为准。'}
+                      {isCompressMode || hasSpatialActive ? ' 转码仍沿用此范围。' : ''}
+                      <span className="text-amber-300 block mt-1">需准确帧边界请点击切换“精确导出”。</span>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="relative group shrink-0">
+                  <div
+                    tabIndex={0}
+                    className="flex items-center gap-1 px-1.5 py-1 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 text-xs text-blue-300 cursor-help transition-colors select-none shrink-0 focus:outline-none focus-visible:ring-1 focus-visible:ring-blue-400"
+                    role="note"
+                    data-testid="export-boundary-note"
+                    title="悬停或键盘聚焦查看精确导出说明"
+                  >
+                    <Info className="w-3 h-3 text-blue-400 shrink-0" />
+                    <span className="text-[11px] whitespace-nowrap">逐帧精确重编</span>
+                  </div>
+                  {/* 悬停/聚焦浮层卡片 */}
+                  <div className="absolute right-0 bottom-full mb-2 hidden group-hover:block group-focus-within:block z-50 w-72 p-2.5 rounded-xl bg-[#161a24]/95 border border-white/15 shadow-2xl backdrop-blur-md text-[11px] text-zinc-300 leading-relaxed pointer-events-none">
+                    <div className="font-semibold text-white mb-1 flex items-center gap-1 text-blue-300">
+                      <Info className="w-3.5 h-3.5" />
+                      <span>精确导出说明</span>
+                    </div>
+                    <div>
+                      精确导出采用逐帧重新编码，保留起点画面，不包含终点画面；手输时间落在帧间时对齐下一帧。
+                      <span className="text-blue-300 block mt-1">视频与音频重新编码为 MP4，耗时较无损秒切长，请耐心等待。</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* 若开启了智能降码，显示设置按钮 */}
               {isCompressMode && (
                 <button
                   onClick={() => setShowCompressSettings(!showCompressSettings)}
-                  className={`p-1.5 rounded-xl border text-xs flex items-center gap-1 transition-all active:scale-95 ${
+                  className={`p-1 rounded-lg border text-xs flex items-center gap-1 transition-all active:scale-95 ${
                     showCompressSettings
                       ? 'bg-purple-600 text-white border-purple-400 shadow-md shadow-purple-600/30'
                       : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white border-white/10'
@@ -1812,7 +1944,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               {/* 智能降码渐进式参数面板 Popover */}
               {isCompressMode && showCompressSettings && (
                 <div
-                  className="absolute bottom-12 right-0 z-50 w-[380px] max-h-[calc(100vh-140px)] overflow-y-auto bg-[#161a24] border border-white/15 rounded-2xl shadow-2xl p-4 flex flex-col gap-3.5 backdrop-blur-xl animate-in fade-in zoom-in-95 select-none"
+                  className="absolute bottom-11 right-0 z-50 w-[380px] max-h-[calc(100vh-140px)] overflow-y-auto bg-[#161a24] border border-white/15 rounded-2xl shadow-2xl p-4 flex flex-col gap-3.5 backdrop-blur-xl animate-in fade-in zoom-in-95 select-none"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <div className="flex items-center justify-between pb-2 border-b border-white/10">
@@ -1846,7 +1978,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
 
               {/* 首帧封面开关微型胶囊 */}
               <label
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-zinc-800/80 hover:bg-zinc-700/80 border border-white/10 text-xs text-zinc-300 hover:text-white cursor-pointer select-none transition-colors shrink-0"
+                className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-zinc-800/80 hover:bg-zinc-700/80 border border-white/10 text-xs text-zinc-300 hover:text-white cursor-pointer select-none transition-colors shrink-0"
                 title="勾选后剥离原片固定封面，让切片视频自动展示各段首帧画面，防止所有切片封面雷同"
               >
                 <input
@@ -1861,7 +1993,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               {/* 存为方案按钮 */}
               <button
                 onClick={handleOpenSaveModal}
-                className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-all border border-white/10 active:scale-95 shadow-md focus-visible:ring-2 focus-visible:ring-blue-500"
+                className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-all border border-white/10 active:scale-95 shadow-md focus-visible:ring-2 focus-visible:ring-blue-500"
                 title={currentPlanId ? `保存或另存当前方案 (当前: ${currentPlanTitle})` : '将当前切点与决策保存为待批处理方案'}
               >
                 <Save className="w-3.5 h-3.5 text-zinc-300" />
@@ -1872,7 +2004,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               <button
                 disabled={executing || boundPlanBusy || isLoading || keptDurationMs === 0}
                 onClick={() => handleExecuteCut()}
-                className={`px-2.5 sm:px-3 py-1.5 rounded-xl text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-lg active:scale-95 shrink-0 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
+                className={`px-3 py-1 rounded-lg text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-lg active:scale-95 shrink-0 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
                   isCompressMode
                     ? 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 shadow-purple-500/20 border border-purple-400/30 focus-visible:ring-purple-400'
                     : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-emerald-500/20 border border-emerald-400/30 focus-visible:ring-emerald-400'
@@ -1898,11 +2030,6 @@ export const CutterPage: React.FC<CutterPageProps> = ({
               </button>
             </div>
           </div>
-          <p role="note" className="mt-2 text-xs text-zinc-300 leading-relaxed" data-testid="export-boundary-note">
-            {isPreciseMode
-              ? '精确导出：保留起点画面，不包含终点画面；手输时间落在帧间时对齐下一帧。视频与音频重新编码为 MP4，耗时更长、非严格无损。'
-              : `边界提示：${metadata.keyframes.length ? `按当前关键帧估算，起点最多提前 ${(boundaryLeadMs / 1000).toFixed(3)} 秒` : '关键帧索引就绪后显示起点提前量'}；片尾可能扩出，具体余量以产物为准，不保证固定上限。${isCompressMode || hasSpatialActive ? '转码仍沿用此范围。' : ''}需准确边界请选择精确导出。`}
-          </p>
         </div>
       </div>
 
@@ -2116,6 +2243,72 @@ export const CutterPage: React.FC<CutterPageProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* 9. 切换输出方式清空自定义分组确认弹窗 */}
+      {confirmOutputModeSwitch && (
+        <dialog
+          ref={outputModeDialogRef}
+          aria-modal="true"
+          aria-labelledby="output-mode-dialog-title"
+          aria-describedby="output-mode-dialog-description"
+          className="m-auto w-full max-w-lg border-0 bg-transparent p-4 overflow-visible backdrop:bg-black/75 backdrop:backdrop-blur-sm"
+          onCancel={event => { event.preventDefault(); setConfirmOutputModeSwitch(null); }}
+          onKeyDown={event => {
+            event.stopPropagation();
+            if (event.key !== 'Tab') return;
+            const buttons = event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not([disabled])');
+            const first = buttons[0], last = buttons[buttons.length - 1];
+            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+          }}
+          onClick={event => { if (event.target === event.currentTarget) setConfirmOutputModeSwitch(null); }}
+        >
+          <div
+            className="w-full max-w-md bg-[#161b22] border border-amber-500/30 rounded-2xl p-6 shadow-2xl animate-in zoom-in-95 select-none"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-4">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                <AlertCircle className="w-5 h-5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 id="output-mode-dialog-title" className="text-base font-bold text-white mb-1.5">
+                  切换输出方式将清空自定义分组
+                </h3>
+                <p id="output-mode-dialog-description" className="text-xs text-zinc-300 leading-relaxed">
+                  当前存在 {outputs.filter(output => output.segmentIds.length > 1).length} 组自定义合并分组。切换为「
+                  <span className="text-white font-semibold">
+                    {confirmOutputModeSwitch === 'single' ? '全部合成' : '分别输出'}
+                  </span>
+                  」后，这些分组会被重置（切换后仍可通过撤销恢复）。
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                ref={cancelOutputModeRef}
+                onClick={() => setConfirmOutputModeSwitch(null)}
+                className="px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white text-xs font-semibold transition-all active:scale-95"
+              >
+                取消 (Esc)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const targetMode = confirmOutputModeSwitch;
+                  setConfirmOutputModeSwitch(null);
+                  commitDraftChange(d => d.setOutputMode(targetMode));
+                }}
+                className="px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold transition-all shadow-lg shadow-amber-600/25 active:scale-95"
+              >
+                确认切换
+              </button>
+            </div>
+          </div>
+        </dialog>
       )}
 
 

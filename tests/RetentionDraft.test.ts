@@ -142,4 +142,18 @@ describe('RetentionDraft 核心领域深模块不变量验证', () => {
     expect(headCollisionOk).toBe(false);
     expect(draft.getCuts()[0]).toBe(4500); // 维持原值
   });
+
+  it('切换 outputMode 为 separate 或 single 时清空自定义合并分组', () => {
+    const draft = new RetentionDraft('/test/video.mp4', 10000);
+    draft.addCut(2000);
+    draft.addCut(4000);
+    draft.addCut(6000);
+    draft.setOutputMode('custom');
+    draft.combineSegments(['seg_0', 'seg_1']);
+    expect(draft.getOutputs().some(o => o.segmentIds.length > 1)).toBe(true);
+
+    draft.setOutputMode('separate');
+    expect(draft.outputMode).toBe('separate');
+    expect(draft.getOutputs().every(o => o.segmentIds.length === 1)).toBe(true);
+  });
 });

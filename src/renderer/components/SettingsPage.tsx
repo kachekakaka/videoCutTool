@@ -62,16 +62,9 @@ export const SettingsPage: React.FC = () => {
               )}
             </h1>
             <p className="text-xs text-zinc-400 mt-1">
-              配置自愈生效中，启动时自动从可执行文件同级的 <code className="text-blue-400 font-mono">config.json</code> 加载与同步
+              配置改动即时生效，当前保存位置见下方路径
             </p>
           </div>
-
-          <button
-            onClick={() => persistConfig(draftPatch)}
-            className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center gap-1.5 transition-all shadow-md shadow-blue-500/20 active:scale-95"
-          >
-            <Check className="w-4 h-4" /> 保存所有配置
-          </button>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
