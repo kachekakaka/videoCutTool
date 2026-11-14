@@ -1541,4 +1541,194 @@ describe('任务执行停止、队列暂停与手动优先调度 (ExecutionContr
       }
     });
   });
+
+  describe('任务停止清理失败后的状态恢复补强测试 (Cleanup Failure Recovery Tests)', () => {
+    it('补强 1: 临时目录清理失败，failed 状态成功保存，任务保持可诊断状态', async () => {
+      const ctx = await createFixture();
+      try {
+        const planA = ctx.makeRecord('plan-clean-diag', '清理失败诊断任务');
+        await ctx.planManager.savePlan(planA);
+
+        const taskDirCreated = deferred<string>();
+        const runDeferred = deferred<void>();
+
+        vi.spyOn(ctx.engine as any, 'executionSnapshot').mockImplementation((_tracker: any, onTaskDir?: any) => {
+          return {
+            ffprobePath: 'ffprobe',
+            executeSnapshot: async (_data: any, signal?: AbortSignal) => {
+              const managedRoot = path.join(ctx.slices, 'managed');
+              const taskDir = await ctx.maintenance.create(managedRoot, 'task', '');
+              onTaskDir?.(taskDir);
+              taskDirCreated.resolve(taskDir);
+              if (signal) {
+                signal.addEventListener('abort', () => runDeferred.resolve());
+              }
+              await runDeferred.promise;
+              return { success: false, error: 'canceled' };
+            },
+          };
+        });
+
+        // 模拟物理清理失败
+        vi.spyOn(ctx.maintenance, 'abandonAndSweep').mockResolvedValue(false);
+
+        // 启动执行
+        void ctx.planManager.executePlan(planA.id);
+        await taskDirCreated.promise;
+        expect(ctx.engine.getActivePlanId()).toBe(planA.id);
+
+        // 触发停止
+        const cancelResult = await ctx.planManager.cancelPlan(planA.id);
+
+        // 1. 验证严禁返回停止成功
+        expect(cancelResult.success).toBe(false);
+        expect(cancelResult.message).toContain('临时资产目录物理清理失败');
+
+        // 2. 验证方案状态被持久化为 failed，保留真实错误诊断
+        const record = await ctx.planManager.getPlan(planA.id);
+        expect(record?.status).toBe('failed');
+        expect(record?.error).toContain('临时文件清理未完成，请重试');
+
+        // 3. 验证未被错误重置为 ready
+        expect(record?.status).not.toBe('ready');
+
+        // 4. 验证执行上下文被干净释放
+        expect(ctx.engine.getActivePlanId()).toBeNull();
+        expect(ctx.engine.getCurrentRunId()).toBeNull();
+      } finally {
+        await ctx.cleanup();
+      }
+    });
+
+    it('补强 2: 临时目录清理失败且 failed 状态持久化失败，验证进入存储保护且保留恢复记录', async () => {
+      const ctx = await createFixture();
+      try {
+        const planA = ctx.makeRecord('plan-clean-persist-fail', '清理且落盘双失败任务');
+        await ctx.planManager.savePlan(planA);
+
+        const taskDirCreated = deferred<string>();
+        const runDeferred = deferred<void>();
+
+        vi.spyOn(ctx.engine as any, 'executionSnapshot').mockImplementation((_tracker: any, onTaskDir?: any) => {
+          return {
+            ffprobePath: 'ffprobe',
+            executeSnapshot: async (_data: any, signal?: AbortSignal) => {
+              const managedRoot = path.join(ctx.slices, 'managed');
+              const taskDir = await ctx.maintenance.create(managedRoot, 'task', '');
+              onTaskDir?.(taskDir);
+              taskDirCreated.resolve(taskDir);
+              if (signal) {
+                signal.addEventListener('abort', () => runDeferred.resolve());
+              }
+              await runDeferred.promise;
+              return { success: false, error: 'canceled' };
+            },
+          };
+        });
+
+        // 1. 模拟物理清理失败
+        vi.spyOn(ctx.maintenance, 'abandonAndSweep').mockResolvedValue(false);
+
+        // 2. 模拟持久化 failRecord 失败
+        const originalSave = (ctx.planManager as any).store.save.bind((ctx.planManager as any).store);
+        vi.spyOn((ctx.planManager as any).store, 'save').mockImplementation(async (rec: any) => {
+          if (rec.id === planA.id && rec.status === 'failed') {
+            throw new Error('EIO: 磁盘写入失败，无法保存 failed 记录');
+          }
+          return originalSave(rec);
+        });
+
+        // 启动执行
+        void ctx.planManager.executePlan(planA.id);
+        await taskDirCreated.promise;
+        expect(ctx.engine.getActivePlanId()).toBe(planA.id);
+
+        // 触发停止
+        const cancelResult = await ctx.planManager.cancelPlan(planA.id);
+
+        // 验证停止失败并包含完整诊断
+        expect(cancelResult.success).toBe(false);
+        expect(cancelResult.message).toContain('临时资产目录物理清理失败且方案状态保存失败');
+
+        // 验证引擎进入存储保护状态
+        const state = ctx.engine.getState();
+        expect(state.storageError).not.toBeNull();
+        expect(state.storageError).toContain('临时资产清理未完成，且方案状态持久化为 failed 失败');
+
+        // 验证活动执行上下文已被安全释放
+        expect(ctx.engine.getActivePlanId()).toBeNull();
+        expect(ctx.engine.getCurrentRunId()).toBeNull();
+
+        // 验证自动派发被禁止
+        expect(ctx.engine.getState().activePlanId).toBeNull();
+      } finally {
+        await ctx.cleanup();
+      }
+    });
+
+    it('补强 3: 恢复磁盘写入后调用 retryPendingWrites()，验证状态正确恢复且不自动重复执行未清理任务', async () => {
+      const ctx = await createFixture();
+      try {
+        const planA = ctx.makeRecord('plan-clean-retry-rec', '清理重试恢复任务');
+        await ctx.planManager.savePlan(planA);
+
+        const taskDirCreated = deferred<string>();
+        const runDeferred = deferred<void>();
+
+        vi.spyOn(ctx.engine as any, 'executionSnapshot').mockImplementation((_tracker: any, onTaskDir?: any) => {
+          return {
+            ffprobePath: 'ffprobe',
+            executeSnapshot: async (_data: any, signal?: AbortSignal) => {
+              const managedRoot = path.join(ctx.slices, 'managed');
+              const taskDir = await ctx.maintenance.create(managedRoot, 'task', '');
+              onTaskDir?.(taskDir);
+              taskDirCreated.resolve(taskDir);
+              if (signal) {
+                signal.addEventListener('abort', () => runDeferred.resolve());
+              }
+              await runDeferred.promise;
+              return { success: false, error: 'canceled' };
+            },
+          };
+        });
+
+        // 1. 模拟物理清理失败
+        vi.spyOn(ctx.maintenance, 'abandonAndSweep').mockResolvedValue(false);
+
+        // 2. 模拟初次持久化 failed 失败
+        let failFailedSave = true;
+        const originalSave = (ctx.planManager as any).store.save.bind((ctx.planManager as any).store);
+        vi.spyOn((ctx.planManager as any).store, 'save').mockImplementation(async (rec: any) => {
+          if (failFailedSave && rec.id === planA.id && rec.status === 'failed') {
+            throw new Error('EIO: 磁盘损坏无法保存 failed');
+          }
+          return originalSave(rec);
+        });
+
+        // 启动执行并停止
+        void ctx.planManager.executePlan(planA.id);
+        await taskDirCreated.promise;
+        const cancelResult = await ctx.planManager.cancelPlan(planA.id);
+        expect(cancelResult.success).toBe(false);
+        expect(ctx.engine.getState().storageError).not.toBeNull();
+
+        // 3. 恢复磁盘写入环境
+        failFailedSave = false;
+        await ctx.engine.retryPendingWrites();
+
+        // 4. 验证存储保护清空
+        expect(ctx.engine.getState().storageError).toBeNull();
+
+        // 5. 验证方案状态最终成功落盘为 failed（包含诊断错误），绝不被误置为 ready
+        const record = await ctx.planManager.getPlan(planA.id);
+        expect(record?.status).toBe('failed');
+        expect(record?.error).toContain('临时文件清理未完成，请重试');
+
+        // 6. 验证没有自动重复执行未清理任务（active 为 null，任务保持 failed，没有变成 completed）
+        expect(ctx.engine.getActivePlanId()).toBeNull();
+      } finally {
+        await ctx.cleanup();
+      }
+    });
+  });
 });

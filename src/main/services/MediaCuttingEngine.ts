@@ -58,6 +58,7 @@ export class MediaCuttingEngine {
   private drainingBarrier: Promise<void> | null = null;
   private pendingReadyCompensations = new Map<string, PlanRecord>();
   private pendingCancelReady: PlanRecord | null = null;
+  private pendingCleanupFailed = new Map<string, PlanRecord>();
   private onQueueStateChange?: (state: { queuePaused: boolean; priorityPlanId: string | null; queuedIds: string[] }) => void;
   private saveQueueStateFn?: (state: PersistedQueueState) => Promise<void>;
   private inputProvider?: InputProvider;
@@ -391,9 +392,7 @@ export class MediaCuttingEngine {
         status: 'failed',
         error: '停止后临时文件清理未完成，请重试',
       };
-      await this.persist(failRecord).catch(() => {});
       this.accepted.delete(id);
-      this.notify(failRecord);
       this.clearProgress();
 
       this.active = null;
@@ -401,6 +400,22 @@ export class MediaCuttingEngine {
       this.currentRunId = null;
       this.activeTaskDir = null;
       this.cancelledActiveId = null;
+
+      try {
+        await this.persist(failRecord);
+        this.notify(failRecord);
+      } catch (persistErr) {
+        this.pendingCleanupFailed.set(id, failRecord);
+        const diag = `方案 ${id} 临时资产清理未完成，且方案状态持久化为 failed 失败：${persistErr instanceof Error ? persistErr.message : String(persistErr)}`;
+        this.blockStorage(new Error(diag));
+        this.stateChanged();
+        this.notifyQueueState();
+        return {
+          success: false,
+          message: `临时资产目录物理清理失败且方案状态保存失败，引擎已进入存储保护：${diag}`,
+        };
+      }
+
       this.stateChanged();
       this.notifyQueueState();
 
@@ -457,7 +472,7 @@ export class MediaCuttingEngine {
 
     try {
       // 1. 独立检查 pendingFinal 与待重试保存状态，不依赖 active 是否存在
-      if (this.pendingFinal || this.pendingCancelReady || this.pendingReadyCompensations.size > 0) {
+      if (this.pendingFinal || this.pendingCancelReady || this.pendingReadyCompensations.size > 0 || this.pendingCleanupFailed.size > 0) {
         pendingFinalPreserved = true;
       }
 
@@ -706,6 +721,7 @@ export class MediaCuttingEngine {
     const pending = this.pendingFinal;
     const pendingCancel = this.pendingCancelReady;
     const pendingCompensations = [...this.pendingReadyCompensations.values()];
+    const pendingFailed = [...this.pendingCleanupFailed.values()];
 
     this.retryTask = (async () => {
       if (pending) {
@@ -727,6 +743,11 @@ export class MediaCuttingEngine {
       for (const rec of pendingCompensations) {
         await this.persist(rec);
         this.pendingReadyCompensations.delete(rec.id);
+        this.notify(rec);
+      }
+      for (const rec of pendingFailed) {
+        await this.persist(rec);
+        this.pendingCleanupFailed.delete(rec.id);
         this.notify(rec);
       }
       this.storageError = null;
