@@ -1292,4 +1292,253 @@ describe('任务执行停止、队列暂停与手动优先调度 (ExecutionContr
       }
     });
   });
+
+  describe('任务执行控制最终缺陷定向修复专项测试 (Final P0 Tests)', () => {
+    it('最终专项 1: tempReady 尚未完成时触发停止，不得继续创建临时目录', async () => {
+      const ctx = await createFixture();
+      try {
+        const planA = ctx.makeRecord('plan-tempready-stop', 'tempReady未完成停止任务');
+        await ctx.planManager.savePlan(planA);
+
+        const tempReadyDeferred = deferred<void>();
+        // 替换 engine 内部的 tempReady 为可控的未完成 Promise
+        (ctx.engine as any).tempReady = tempReadyDeferred.promise;
+
+        let createCalled = false;
+        const originalCreate = ctx.maintenance.create.bind(ctx.maintenance);
+        vi.spyOn(ctx.maintenance, 'create').mockImplementation(async (dir, kind, label) => {
+          createCalled = true;
+          return originalCreate(dir, kind, label);
+        });
+
+        // 启动任务执行
+        void ctx.planManager.executePlan(planA.id);
+
+        // 轮询等待任务被置为 active（正在等待 tempReady）
+        for (let i = 0; i < 50; i++) {
+          if (ctx.engine.getActivePlanId() === planA.id) break;
+          await new Promise(r => setTimeout(r, 10));
+        }
+        expect(ctx.engine.getActivePlanId()).toBe(planA.id);
+
+        // 在 tempReady 尚未 resolve 前触发停止
+        const cancelPromise = ctx.planManager.cancelPlan(planA.id);
+
+        // 停止触发后（controller.signal 已 aborted），再 resolve tempReady
+        tempReadyDeferred.resolve();
+
+        const cancelResult = await cancelPromise;
+        expect(cancelResult.success).toBe(true);
+
+        // 验证：由于在 tempReady 结束后检查了 signal.aborted，maintenance.create 绝未被调用！
+        expect(createCalled).toBe(false);
+
+        // 方案安全重置为 ready
+        expect(ctx.engine.getActivePlanId()).toBeNull();
+        const record = await ctx.planManager.getPlan(planA.id);
+        expect(record?.status).toBe('ready');
+      } finally {
+        await ctx.cleanup();
+      }
+    });
+
+    it('最终专项 2: 临时目录创建与停止操作同时发生时，不得留下目录或资产登记', async () => {
+      const ctx = await createFixture();
+      try {
+        const planA = ctx.makeRecord('plan-dir-race', '目录创建并发停止任务');
+        await ctx.planManager.savePlan(planA);
+
+        const dirCreated = deferred<string>();
+
+        // 监听 maintenance.create，记录临时目录
+        const originalCreate = ctx.maintenance.create.bind(ctx.maintenance);
+        vi.spyOn(ctx.maintenance, 'create').mockImplementation(async (dir, kind, label) => {
+          const result = await originalCreate(dir, kind, label);
+          dirCreated.resolve(result);
+          return result;
+        });
+
+        // 模拟执行，挂起等待取消
+        const runDeferred = deferred<void>();
+        vi.spyOn(ctx.engine as any, 'executionSnapshot').mockImplementation((_tracker: any, onTaskDir?: any) => {
+          return {
+            ffprobePath: 'ffprobe',
+            executeSnapshot: async (_data: any, signal?: AbortSignal) => {
+              const managedRoot = path.join(ctx.slices, 'managed');
+              const taskDir = await ctx.maintenance.create(managedRoot, 'task', '');
+              onTaskDir?.(taskDir);
+              if (signal?.aborted) {
+                throw new Error('操作已取消');
+              }
+              if (signal) {
+                signal.addEventListener('abort', () => runDeferred.resolve());
+              }
+              await runDeferred.promise;
+              return { success: false, error: 'canceled' };
+            },
+          };
+        });
+
+        // 触发执行
+        void ctx.planManager.executePlan(planA.id);
+        const taskDir = await dirCreated.promise;
+        expect(fs.existsSync(taskDir)).toBe(true);
+
+        // 此时临时目录刚刚创建，同时触发取消
+        const cancelResult = await ctx.planManager.cancelPlan(planA.id);
+        expect(cancelResult.success).toBe(true);
+
+        // 验证：停止收尾准确捕获了最终登记的任务目录并完成物理删除（核验 ENOENT）
+        let exists = true;
+        try {
+          await fs.promises.stat(taskDir);
+        } catch (err: any) {
+          if (err.code === 'ENOENT') exists = false;
+        }
+        expect(exists).toBe(false);
+
+        // 验证方案状态重置为 ready
+        const record = await ctx.planManager.getPlan(planA.id);
+        expect(record?.status).toBe('ready');
+        expect(ctx.engine.getActivePlanId()).toBeNull();
+      } finally {
+        await ctx.cleanup();
+      }
+    });
+
+    it('最终专项 3: queue_state.json 写入失败且方案记录补偿再次失败，引擎进入存储保护且修复后可恢复', async () => {
+      const ctx = await createFixture();
+      try {
+        const planA = ctx.makeRecord('plan-comp-fail', '补偿失败测试方案');
+        await ctx.planManager.savePlan(planA);
+
+        // 暂停队列以确保提交需要持久化快照
+        await ctx.planManager.pauseQueue();
+
+        // 1. 模拟 queue_state.json 写入失败
+        vi.spyOn(ctx.planManager, 'saveQueueState').mockRejectedValue(new Error('EIO: 磁盘故障快照写入失败'));
+
+        // 2. 模拟方案补偿写回 ready 时再次失败
+        let failReadySave = true;
+        const originalSave = (ctx.planManager as any).store.save.bind((ctx.planManager as any).store);
+        vi.spyOn((ctx.planManager as any).store, 'save').mockImplementation(async (rec: any) => {
+          if (failReadySave && rec.id === planA.id && rec.status === 'ready') {
+            throw new Error('EIO: 磁盘故障补偿写回 ready 失败');
+          }
+          return originalSave(rec);
+        });
+
+        // 提交方案执行，断言抛错
+        const submitResult = await ctx.planManager.executePlan(planA.id);
+        expect(submitResult.success).toBe(false);
+        expect(submitResult.message).toContain('存储保护');
+
+        // 验证引擎进入存储保护状态
+        const state = ctx.engine.getState();
+        expect(state.storageError).not.toBeNull();
+        expect(state.storageError).toContain('补偿回滚方案记录为 ready 失败');
+
+        // 验证任务不会意外派发
+        expect(ctx.engine.getActivePlanId()).toBeNull();
+
+        // 验证在存储保护恢复前，新增调度操作被拒绝
+        const priRes = await ctx.planManager.setPriorityPlan(planA.id);
+        expect(priRes.success).toBe(false);
+        expect(priRes.message).toContain('方案保存尚未恢复');
+
+        // 3. 恢复存储环境并重试
+        failReadySave = false;
+        await ctx.engine.retryPendingWrites();
+
+        // 验证存储保护已解除
+        expect(ctx.engine.getState().storageError).toBeNull();
+
+        // 验证方案状态最终成功恢复为 ready
+        const record = await ctx.planManager.getPlan(planA.id);
+        expect(record?.status).toBe('ready');
+      } finally {
+        await ctx.cleanup();
+      }
+    });
+
+    it('最终专项 4: 临时目录清理成功但 ready 写入失败，释放活动上下文、进入存储保护且支持重试恢复', async () => {
+      const ctx = await createFixture();
+      try {
+        const planA = ctx.makeRecord('plan-ready-fail', 'ready写入失败任务');
+        await ctx.planManager.savePlan(planA);
+
+        const taskDirCreated = deferred<string>();
+        const runDeferred = deferred<void>();
+
+        vi.spyOn(ctx.engine as any, 'executionSnapshot').mockImplementation((_tracker: any, onTaskDir?: any) => {
+          return {
+            ffprobePath: 'ffprobe',
+            executeSnapshot: async (_data: any, signal?: AbortSignal) => {
+              const managedRoot = path.join(ctx.slices, 'managed');
+              const taskDir = await ctx.maintenance.create(managedRoot, 'task', '');
+              onTaskDir?.(taskDir);
+              taskDirCreated.resolve(taskDir);
+              if (signal) {
+                signal.addEventListener('abort', () => runDeferred.resolve());
+              }
+              await runDeferred.promise;
+              return { success: false, error: 'canceled' };
+            },
+          };
+        });
+
+        // 模拟方案状态持久化为 ready 时抛错
+        let failReadySave = true;
+        const originalSave = (ctx.planManager as any).store.save.bind((ctx.planManager as any).store);
+        vi.spyOn((ctx.planManager as any).store, 'save').mockImplementation(async (rec: any) => {
+          if (failReadySave && rec.id === planA.id && rec.status === 'ready') {
+            throw new Error('EIO: 磁盘损坏无法保存 ready');
+          }
+          return originalSave(rec);
+        });
+
+        // 启动执行
+        void ctx.planManager.executePlan(planA.id);
+        const taskDir = await taskDirCreated.promise;
+        expect(ctx.engine.getActivePlanId()).toBe(planA.id);
+
+        // 触发取消
+        const cancelResult = await ctx.planManager.cancelPlan(planA.id);
+
+        // 1. 验证停止结果返回失败（不能假报成功）
+        expect(cancelResult.success).toBe(false);
+        expect(cancelResult.message).toContain('方案状态保存为 ready 失败');
+
+        // 2. 验证临时目录已被物理删除
+        let exists = true;
+        try {
+          await fs.promises.stat(taskDir);
+        } catch (e: any) {
+          if (e.code === 'ENOENT') exists = false;
+        }
+        expect(exists).toBe(false);
+
+        // 3. 验证执行上下文已被干净释放（没有遗留 active，没有残留 runId）
+        expect(ctx.engine.getActivePlanId()).toBeNull();
+        expect(ctx.engine.getCurrentRunId()).toBeNull();
+
+        // 4. 验证引擎进入存储保护状态且不自动派发
+        expect(ctx.engine.getState().storageError).not.toBeNull();
+
+        // 5. 验证方案记录未被错误篡改为 failed，保留 ready 语义
+        expect((await ctx.planManager.getPlan(planA.id))?.status).not.toBe('failed');
+
+        // 6. 恢复存储后调用 retryPendingWrites
+        failReadySave = false;
+        await ctx.engine.retryPendingWrites();
+
+        // 7. 验证存储保护清空，方案最终正确恢复为 ready
+        expect(ctx.engine.getState().storageError).toBeNull();
+        const record = await ctx.planManager.getPlan(planA.id);
+        expect(record?.status).toBe('ready');
+      } finally {
+        await ctx.cleanup();
+      }
+    });
+  });
 });

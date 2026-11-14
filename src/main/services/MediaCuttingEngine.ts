@@ -56,6 +56,8 @@ export class MediaCuttingEngine {
   private queuePaused = false;
   private priorityPlanId: string | null = null;
   private drainingBarrier: Promise<void> | null = null;
+  private pendingReadyCompensations = new Map<string, PlanRecord>();
+  private pendingCancelReady: PlanRecord | null = null;
   private onQueueStateChange?: (state: { queuePaused: boolean; priorityPlanId: string | null; queuedIds: string[] }) => void;
   private saveQueueStateFn?: (state: PersistedQueueState) => Promise<void>;
   private inputProvider?: InputProvider;
@@ -130,6 +132,7 @@ export class MediaCuttingEngine {
     this.notifyQueueState();
   }
   async pauseQueue(): Promise<void> {
+    if (this.storageError) throw new Error('方案保存尚未恢复，请在方案中心重试保存后再操作');
     if (this.queuePaused) return;
     this.queuePaused = true;
     try {
@@ -144,6 +147,7 @@ export class MediaCuttingEngine {
     this.notifyQueueState();
   }
   async resumeQueue(): Promise<void> {
+    if (this.storageError) throw new Error('方案保存尚未恢复，请在方案中心重试保存后再操作');
     if (!this.queuePaused) return;
     const prevPaused = this.queuePaused;
     const prevPriority = this.priorityPlanId;
@@ -176,6 +180,9 @@ export class MediaCuttingEngine {
   }
   isQueuePaused(): boolean { return this.queuePaused; }
   async setPriorityPlan(planId: string): Promise<{ success: boolean; message?: string }> {
+    if (this.storageError) {
+      return { success: false, message: '方案保存尚未恢复，请在方案中心重试保存后再操作' };
+    }
     if (this.drainingBarrier) {
       return { success: false, message: '当前正在执行全部停止，未接受优先任务设置' };
     }
@@ -233,8 +240,17 @@ export class MediaCuttingEngine {
         this.queue = this.queue.filter(j => j.record.id !== record.id);
         this.accepted.delete(record.id);
         const rolledBack: PlanRecord = { ...snapshot, status: 'ready', error: undefined };
-        await this.persist(rolledBack).catch(e => console.warn('提交快照失败后补偿回滚方案记录失败：', e));
-        this.notify(rolledBack);
+        try {
+          await this.persist(rolledBack);
+          this.notify(rolledBack);
+        } catch (compensateErr) {
+          const diag = `任务提交快照持久化失败 (${queueErr instanceof Error ? queueErr.message : String(queueErr)})，且补偿回滚方案记录为 ready 失败 (${compensateErr instanceof Error ? compensateErr.message : String(compensateErr)})`;
+          this.pendingReadyCompensations.set(record.id, rolledBack);
+          this.blockStorage(new Error(diag));
+          this.stateChanged();
+          this.notifyQueueState();
+          throw new Error(`任务提交失败且方案补偿未完成，引擎已进入存储保护：${diag}`);
+        }
         this.stateChanged();
         this.notifyQueueState();
         throw new Error(`任务提交失败，队列快照持久化未完成：${queueErr instanceof Error ? queueErr.message : String(queueErr)}`);
@@ -338,7 +354,6 @@ export class MediaCuttingEngine {
     }
     const job = this.active;
     this.cancelledActiveId = id;
-    const targetTaskDir = this.activeTaskDir;
 
     // 1 & 2: 发送中止信号
     this.controller?.abort();
@@ -347,6 +362,9 @@ export class MediaCuttingEngine {
     if (this.activeRunPromise) {
       await this.activeRunPromise.catch(() => {});
     }
+
+    // 等待完整执行生命周期结束后，读取最终登记的任务目录
+    const targetTaskDir = this.activeTaskDir;
 
     // 5 & 6: 确保临时目录物理清理并核验 ENOENT
     let cleanupSuccess = true;
@@ -392,19 +410,32 @@ export class MediaCuttingEngine {
       };
     }
 
-    // 7: 清理成功后持久化为 ready
+    // 7: 物理清理成功后，执行上下文已彻底终结，必须先释放 active 执行上下文，防止状态泄露
     const readyRecord: PlanRecord = { ...job.record, status: 'ready', error: undefined };
-    await this.persist(readyRecord);
     this.accepted.delete(id);
-    this.notify(readyRecord);
     this.clearProgress();
 
-    // 8: 条件派发与收尾
     this.active = null;
     this.controller = null;
     this.currentRunId = null;
     this.activeTaskDir = null;
     this.cancelledActiveId = null;
+
+    try {
+      await this.persist(readyRecord);
+      this.notify(readyRecord);
+    } catch (persistErr) {
+      this.pendingCancelReady = readyRecord;
+      this.blockStorage(new Error(`方案 ${id} 停止成功且临时文件已清理，但状态持久化为 ready 失败：${persistErr instanceof Error ? persistErr.message : String(persistErr)}`));
+      this.stateChanged();
+      this.notifyQueueState();
+      return {
+        success: false,
+        message: `任务已停止且临时资产已清理，但方案状态保存为 ready 失败，引擎已进入存储保护：${persistErr instanceof Error ? persistErr.message : String(persistErr)}`,
+      };
+    }
+
+    // 8: 条件派发与收尾
     this.stateChanged();
     this.notifyQueueState();
 
@@ -425,8 +456,8 @@ export class MediaCuttingEngine {
     const errors: string[] = [];
 
     try {
-      // 1. 独立检查 pendingFinal，不依赖 active 是否存在
-      if (this.pendingFinal) {
+      // 1. 独立检查 pendingFinal 与待重试保存状态，不依赖 active 是否存在
+      if (this.pendingFinal || this.pendingCancelReady || this.pendingReadyCompensations.size > 0) {
         pendingFinalPreserved = true;
       }
 
@@ -673,13 +704,34 @@ export class MediaCuttingEngine {
   retryPendingWrites(): Promise<void> {
     if (this.retryTask) return this.retryTask;
     const pending = this.pendingFinal;
+    const pendingCancel = this.pendingCancelReady;
+    const pendingCompensations = [...this.pendingReadyCompensations.values()];
+
     this.retryTask = (async () => {
       if (pending) {
         await this.persist(pending);
-        if (this.pendingFinal !== pending) return;
-        this.accepted.delete(pending.id); this.notify(pending); this.pendingFinal = null; this.clearProgress();
+        if (this.pendingFinal === pending) {
+          this.accepted.delete(pending.id);
+          this.notify(pending);
+          this.pendingFinal = null;
+          this.clearProgress();
+        }
       }
-      this.storageError = null; this.stateChanged(); this.startDrain();
+      if (pendingCancel) {
+        await this.persist(pendingCancel);
+        if (this.pendingCancelReady === pendingCancel) {
+          this.notify(pendingCancel);
+          this.pendingCancelReady = null;
+        }
+      }
+      for (const rec of pendingCompensations) {
+        await this.persist(rec);
+        this.pendingReadyCompensations.delete(rec.id);
+        this.notify(rec);
+      }
+      this.storageError = null;
+      this.stateChanged();
+      this.startDrain();
     })().finally(() => { this.retryTask = null; });
     return this.retryTask;
   }
@@ -866,8 +918,10 @@ class PlanExecution {
     const { plan, source: boundSource, compressionOnly } = data;
     this.maintenance.protect(plan.sourcePath);
     await this.tempReady;
+    if (signal?.aborted) throw new Error('操作已取消');
     const directory = await this.maintenance.create(this.tmpDir, 'task', '');
     this.onTaskDir?.(directory);
+    if (signal?.aborted) throw new Error('操作已取消');
     return this.maintenance.task(directory, async () => {
     let indexedInput: { url: string; close: () => Promise<void> } | undefined;
     try {
