@@ -257,6 +257,8 @@ export interface ExecutionCancelAllResult {
   pendingFinalPreserved?: boolean;
   dequeuedCount: number;
   message?: string;
+  failedPlanIds?: string[];
+  errors?: string[];
 }
 export interface PlanListResult { records: PlanRecord[]; issues: string[] }
 export interface PreviewProgress { requestId: string; percent: number; message: string }

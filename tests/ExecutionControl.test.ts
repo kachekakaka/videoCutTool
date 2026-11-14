@@ -360,33 +360,63 @@ describe('任务执行停止、队列暂停与手动优先调度 (ExecutionContr
     }
   });
 
-  it('7. 全局全部停止排它屏障：拒绝新提交，清空队列与优先，保护 pendingFinal', async () => {
+  it('7. 全局全部停止排它屏障：真实 cancelAll 测试，中止活动任务，清空排队与优先，更新快照', async () => {
     const ctx = await createFixture();
     try {
       const pActive = ctx.makeRecord('p-active', '运行中任务');
       const pQueued = ctx.makeRecord('p-queued', '排队中任务');
-      const pPending = ctx.makeRecord('p-pending', '已生成成片待保存');
       await ctx.planManager.savePlan(pActive);
       await ctx.planManager.savePlan(pQueued);
-      await ctx.planManager.savePlan(pPending);
 
-      await ctx.planManager.pauseQueue();
-      await ctx.planManager.executePlan(pActive.id);
+      const runDeferred = deferred<void>();
+      const taskDirCreated = deferred<string>();
+
+      vi.spyOn(ctx.engine as any, 'executionSnapshot').mockImplementation((_tracker: any, onTaskDir?: any) => {
+        return {
+          ffprobePath: 'ffprobe',
+          executeSnapshot: async (_data: any, signal?: AbortSignal) => {
+            const managedRoot = path.join(ctx.slices, 'managed');
+            const taskDir = await ctx.maintenance.create(managedRoot, 'task', '');
+            onTaskDir?.(taskDir);
+            taskDirCreated.resolve(taskDir);
+            if (signal) {
+              signal.addEventListener('abort', () => runDeferred.resolve());
+            }
+            await runDeferred.promise;
+            return { success: false, error: 'canceled' };
+          },
+        };
+      });
+
+      // 启动 pActive 执行
+      void ctx.planManager.executePlan(pActive.id);
+      await taskDirCreated.promise;
+      expect(ctx.engine.getActivePlanId()).toBe(pActive.id);
+
+      // 提交 pQueued 进入排队
       await ctx.planManager.executePlan(pQueued.id);
+      expect((await ctx.planManager.getPlan(pQueued.id))?.status).toBe('queued');
 
-      // 模拟底层 pendingFinalPreserved 保护
-      vi.spyOn(ctx.engine, 'cancelAll').mockImplementation(async () => ({
-        success: true,
-        activeCancelled: true,
-        clearedQueuedCount: 1,
-        clearedPriority: false,
-        pendingFinalPreserved: true,
-        dequeuedCount: 1,
-      }));
-
+      // 调用真实的 cancelAllPlans()（严格不 Mock）
       const cancelAllResult = await ctx.planManager.cancelAllPlans();
       expect(cancelAllResult.success).toBe(true);
-      expect(cancelAllResult.pendingFinalPreserved).toBe(true);
+      expect(cancelAllResult.activeCancelled).toBe(true);
+      expect(cancelAllResult.dequeuedCount).toBe(1);
+
+      // 验证内存状态清空
+      expect(ctx.engine.getActivePlanId()).toBeNull();
+      expect(ctx.engine.getState().queuedIds).toEqual([]);
+      expect(ctx.engine.getPriorityPlanId()).toBeNull();
+
+      // 验证持久化状态全部恢复为 ready
+      expect((await ctx.planManager.getPlan(pActive.id))?.status).toBe('ready');
+      expect((await ctx.planManager.getPlan(pQueued.id))?.status).toBe('ready');
+
+      // 验证快照文件清空
+      const queueStateRaw = await fs.promises.readFile(path.join(ctx.directory, 'queue_state.json'), 'utf8');
+      const queueState = JSON.parse(queueStateRaw);
+      expect(queueState.queuedIds).toEqual([]);
+      expect(queueState.priorityPlanId).toBeNull();
     } finally {
       await ctx.cleanup();
     }
@@ -439,6 +469,519 @@ describe('任务执行停止、队列暂停与手动优先调度 (ExecutionContr
 
       await restartedEngine.shutdown();
     } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it('9. 素材准备/探测阶段触发停止：等待探测退出，方案安全恢复为 ready', async () => {
+    const ctx = await createFixture();
+    try {
+      const planA = ctx.makeRecord('plan-probe-stop', '探测阶段停止任务');
+      await ctx.planManager.savePlan(planA);
+
+      const probeStarted = deferred<void>();
+      const probeAbortDeferred = deferred<void>();
+
+      // 拦截 prober.probe 模拟耗时探测并在 abort 时退出
+      (ctx.prober as any).probe = vi.fn().mockImplementation(async (_source: string, signal?: AbortSignal) => {
+        probeStarted.resolve();
+        if (signal) {
+          signal.addEventListener('abort', () => probeAbortDeferred.resolve());
+        }
+        await probeAbortDeferred.promise;
+        throw new Error('操作已取消');
+      });
+
+      void ctx.planManager.executePlan(planA.id);
+      await probeStarted.promise;
+
+      // 验证当前任务已处于 active
+      expect(ctx.engine.getActivePlanId()).toBe(planA.id);
+
+      // 触发取消
+      const cancelResult = await ctx.planManager.cancelPlan(planA.id);
+      expect(cancelResult.success).toBe(true);
+
+      // 验证方案状态恢复为 ready，且未被写成 failed
+      expect(ctx.engine.getActivePlanId()).toBeNull();
+      const record = await ctx.planManager.getPlan(planA.id);
+      expect(record?.status).toBe('ready');
+      expect(record?.error).toBeUndefined();
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it('10. FFmpeg 启动与登记竞态时触发停止：子进程安全中止不遗留孤儿', async () => {
+    const ctx = await createFixture();
+    try {
+      const planA = ctx.makeRecord('plan-race', '启动竞态任务');
+      await ctx.planManager.savePlan(planA);
+
+      let abortSignaled = false;
+      vi.spyOn(ctx.engine as any, 'executionSnapshot').mockImplementation((_tracker: any, onTaskDir?: any) => {
+        return {
+          ffprobePath: 'ffprobe',
+          executeSnapshot: async (_data: any, signal?: AbortSignal) => {
+            const managedRoot = path.join(ctx.slices, 'managed');
+            const taskDir = await ctx.maintenance.create(managedRoot, 'task', '');
+            onTaskDir?.(taskDir);
+            if (signal?.aborted) {
+              abortSignaled = true;
+              throw new Error('操作已取消');
+            }
+            signal?.addEventListener('abort', () => {
+              abortSignaled = true;
+            });
+            await new Promise(r => setTimeout(r, 20));
+            throw new Error('操作已取消');
+          },
+        };
+      });
+
+      const execPromise = ctx.planManager.executePlan(planA.id);
+      // 等待任务进入 active 执行状态
+      for (let i = 0; i < 50; i++) {
+        if (ctx.engine.getActivePlanId() === planA.id) break;
+        await new Promise(r => setTimeout(r, 10));
+      }
+      const cancelResult = await ctx.planManager.cancelPlan(planA.id);
+      await execPromise.catch(() => {});
+
+      expect(abortSignaled).toBe(true);
+      expect(cancelResult.success).toBe(true);
+      expect(ctx.engine.getActivePlanId()).toBeNull();
+      expect((await ctx.planManager.getPlan(planA.id))?.status).toBe('ready');
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it('11. FFmpeg 尚未退出时禁止提前清理：严格等待执行链落地后才清理', async () => {
+    const ctx = await createFixture();
+    try {
+      const planA = ctx.makeRecord('plan-wait-exit', '延迟退出任务');
+      await ctx.planManager.savePlan(planA);
+
+      let processExited = false;
+      let sweepCalledBeforeExit = false;
+
+      const taskDirCreated = deferred<string>();
+      const runDeferred = deferred<void>();
+
+      vi.spyOn(ctx.engine as any, 'executionSnapshot').mockImplementation((_tracker: any, onTaskDir?: any) => {
+        return {
+          ffprobePath: 'ffprobe',
+          executeSnapshot: async (_data: any, signal?: AbortSignal) => {
+            const managedRoot = path.join(ctx.slices, 'managed');
+            const taskDir = await ctx.maintenance.create(managedRoot, 'task', '');
+            onTaskDir?.(taskDir);
+            taskDirCreated.resolve(taskDir);
+
+            if (signal) {
+              signal.addEventListener('abort', async () => {
+                // 模拟子进程退出耗时 60ms
+                await new Promise(r => setTimeout(r, 60));
+                processExited = true;
+                runDeferred.resolve();
+              });
+            }
+            await runDeferred.promise;
+            return { success: false, error: 'canceled' };
+          },
+        };
+      });
+
+      // 监听 maintenance.abandonAndSweep 调用时子进程是否已退出
+      const originalSweep = ctx.maintenance.abandonAndSweep.bind(ctx.maintenance);
+      vi.spyOn(ctx.maintenance, 'abandonAndSweep').mockImplementation(async (dir: string) => {
+        if (!processExited) {
+          sweepCalledBeforeExit = true;
+        }
+        return originalSweep(dir);
+      });
+
+      void ctx.planManager.executePlan(planA.id);
+      await taskDirCreated.promise;
+
+      const cancelResult = await ctx.planManager.cancelPlan(planA.id);
+      expect(cancelResult.success).toBe(true);
+      expect(sweepCalledBeforeExit).toBe(false);
+      expect(processExited).toBe(true);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it('12. 临时资产物理清理失败时不得报告停止成功，保留资产登记与错误状态', async () => {
+    const ctx = await createFixture();
+    try {
+      const planA = ctx.makeRecord('plan-clean-fail', '清理失败任务');
+      await ctx.planManager.savePlan(planA);
+
+      const taskDirCreated = deferred<string>();
+      const runDeferred = deferred<void>();
+
+      vi.spyOn(ctx.engine as any, 'executionSnapshot').mockImplementation((_tracker: any, onTaskDir?: any) => {
+        return {
+          ffprobePath: 'ffprobe',
+          executeSnapshot: async (_data: any, signal?: AbortSignal) => {
+            const managedRoot = path.join(ctx.slices, 'managed');
+            const taskDir = await ctx.maintenance.create(managedRoot, 'task', '');
+            onTaskDir?.(taskDir);
+            taskDirCreated.resolve(taskDir);
+
+            if (signal) {
+              signal.addEventListener('abort', () => runDeferred.resolve());
+            }
+            await runDeferred.promise;
+            return { success: false, error: 'canceled' };
+          },
+        };
+      });
+
+      // 模拟物理清理失败（例如 Windows 文件占用导致无法删除）
+      vi.spyOn(ctx.maintenance, 'abandonAndSweep').mockResolvedValue(false);
+
+      void ctx.planManager.executePlan(planA.id);
+      await taskDirCreated.promise;
+
+      const cancelResult = await ctx.planManager.cancelPlan(planA.id);
+      // 必须报告失败！
+      expect(cancelResult.success).toBe(false);
+      expect(cancelResult.message).toContain('临时资产目录物理清理失败');
+
+      // 验证方案状态没有被错误恢复为 ready，而是记录为 failed 并附带清理失败错误
+      const record = await ctx.planManager.getPlan(planA.id);
+      expect(record?.status).toBe('failed');
+      expect(record?.error).toContain('临时文件清理未完成');
+
+      expect(ctx.engine.getActivePlanId()).toBeNull();
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it('13. 全部停止时某个排队任务持久化失败：返回部分成功结果且不丢弃失败任务', async () => {
+    const ctx = await createFixture();
+    try {
+      const p1 = ctx.makeRecord('plan-s1', '排队任务 1');
+      const p2 = ctx.makeRecord('plan-s2', '排队任务 2');
+      const p3 = ctx.makeRecord('plan-s3', '排队任务 3');
+      await ctx.planManager.savePlan(p1);
+      await ctx.planManager.savePlan(p2);
+      await ctx.planManager.savePlan(p3);
+
+      await ctx.planManager.pauseQueue();
+      await ctx.planManager.executePlan(p1.id);
+      await ctx.planManager.executePlan(p2.id);
+      await ctx.planManager.executePlan(p3.id);
+
+      // 模拟 p2 持久化为 ready 时磁盘报错
+      const originalSave = (ctx.planManager as any).store.save.bind((ctx.planManager as any).store);
+      vi.spyOn((ctx.planManager as any).store, 'save').mockImplementation(async (record: any) => {
+        if (record.id === p2.id && record.status === 'ready') {
+          throw new Error('EIO: 磁盘写入失败');
+        }
+        return originalSave(record);
+      });
+
+      // 调用真实的 cancelAllPlans()
+      const result = await ctx.planManager.cancelAllPlans();
+      // 返回部分成功语义
+      expect(result.success).toBe(false);
+      expect(result.dequeuedCount).toBe(2); // p1 和 p3 成功移出
+      expect(result.failedPlanIds).toContain(p2.id);
+
+      // 验证 p2 依然保留在引擎队列与 accepted 中，没有丢弃
+      expect(ctx.engine.getState().queuedIds).toContain(p2.id);
+      expect(ctx.engine.isAccepted(p2.id)).toBe(true);
+
+      // p1 和 p3 成功恢复为 ready
+      expect((await ctx.planManager.getPlan(p1.id))?.status).toBe('ready');
+      expect((await ctx.planManager.getPlan(p3.id))?.status).toBe('ready');
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it('14. 调度快照写入失败时异常冒泡传递且内存状态回滚', async () => {
+    const ctx = await createFixture();
+    try {
+      const p1 = ctx.makeRecord('plan-snap-fail', '快照写入测试任务');
+      await ctx.planManager.savePlan(p1);
+
+      // 模拟 saveQueueState 写入失败
+      vi.spyOn(ctx.planManager, 'saveQueueState').mockRejectedValue(new Error('磁盘只读，快照无法写入'));
+
+      // 1. 测试 pauseQueue 持久化失败向外抛错且回滚
+      await expect(ctx.planManager.pauseQueue()).rejects.toThrow('磁盘只读，快照无法写入');
+      expect(ctx.engine.getState().queuePaused).toBe(false);
+
+      // 手动置为 pause 测试 setPriorityPlan 失败
+      (ctx.engine as any).queuePaused = true;
+      (ctx.engine as any).queue = [{ record: p1, prober: ctx.prober }];
+
+      // 2. 测试 setPriorityPlan 持久化失败
+      const priorityResult = await ctx.planManager.setPriorityPlan(p1.id);
+      expect(priorityResult.success).toBe(false);
+      expect(priorityResult.message).toContain('调度状态持久化失败');
+      expect(ctx.engine.getPriorityPlanId()).toBeNull();
+
+      // 3. 测试 resumeQueue 持久化失败向外抛错且回滚
+      await expect(ctx.planManager.resumeQueue()).rejects.toThrow('磁盘只读，快照无法写入');
+      expect(ctx.engine.getState().queuePaused).toBe(true);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it('15. 排队任务移出失败后事务回滚：恢复原队列位置、accepted 记录和 priorityPlanId', async () => {
+    const ctx = await createFixture();
+    try {
+      const p1 = ctx.makeRecord('p-roll-1', '任务 1');
+      const p2 = ctx.makeRecord('p-roll-2', '任务 2');
+      const p3 = ctx.makeRecord('p-roll-3', '任务 3');
+      await ctx.planManager.savePlan(p1);
+      await ctx.planManager.savePlan(p2);
+      await ctx.planManager.savePlan(p3);
+
+      await ctx.planManager.pauseQueue();
+      // 模拟繁忙防止立即派发优先任务，使 p2 稳定停留在排队队列中作为优先任务
+      (ctx.engine as any).active = { record: { id: 'busy-task' } };
+      await ctx.planManager.executePlan(p1.id);
+      await ctx.planManager.executePlan(p2.id);
+      await ctx.planManager.executePlan(p3.id);
+
+      // 将 p2 设为优先任务
+      await ctx.planManager.setPriorityPlan(p2.id);
+      expect(ctx.engine.getPriorityPlanId()).toBe(p2.id);
+      expect(ctx.engine.getState().queuedIds).toEqual([p1.id, p2.id, p3.id]);
+
+      // 拦截 store.save 模拟 p2 移出持久化失败
+      const originalSave = (ctx.planManager as any).store.save.bind((ctx.planManager as any).store);
+      vi.spyOn((ctx.planManager as any).store, 'save').mockImplementation(async (record: any) => {
+        if (record.id === p2.id && record.status === 'ready') {
+          throw new Error('EIO 模拟持久化失败');
+        }
+        return originalSave(record);
+      });
+
+      const cancelRes = await ctx.planManager.cancelPlan(p2.id);
+      expect(cancelRes.success).toBe(false);
+      expect(cancelRes.message).toContain('移出队列失败');
+
+      // 验证事务回滚：p2 回到原索引 1，队列顺序保持 [p1, p2, p3]
+      expect(ctx.engine.getState().queuedIds).toEqual([p1.id, p2.id, p3.id]);
+      // 验证 accepted 恢复
+      expect(ctx.engine.isAccepted(p2.id)).toBe(true);
+      // 验证 priorityPlanId 恢复
+      expect(ctx.engine.getPriorityPlanId()).toBe(p2.id);
+    } finally {
+      (ctx.engine as any).active = null;
+      await ctx.cleanup();
+    }
+  });
+
+  it('16. pendingFinal 脱离 active 后触发全部停止：保护成片与待保存结果，保留 retryPendingWrites', async () => {
+    const ctx = await createFixture();
+    try {
+      const p1 = ctx.makeRecord('p-final', '成片已生成的任务');
+      const p2 = ctx.makeRecord('p-wait', '等待中的排队任务');
+      await ctx.planManager.savePlan(p1);
+      await ctx.planManager.savePlan(p2);
+
+      await ctx.planManager.pauseQueue();
+      await ctx.planManager.executePlan(p1.id);
+      await ctx.planManager.executePlan(p2.id);
+
+      // 构造 pendingFinal 脱离 active 的状态（active 为 null，但 pendingFinal 存活）
+      const completedRecord: PlanRecord = {
+        ...p1,
+        status: 'completed',
+        outputPath: path.join(ctx.directory, 'final.mp4'),
+        completedAt: new Date().toISOString(),
+      };
+      (ctx.engine as any).active = null;
+      (ctx.engine as any).pendingFinal = completedRecord;
+      (ctx.engine as any).storageError = '模拟磁盘临时保存阻塞';
+
+      // 此时触发真实 cancelAllPlans
+      const cancelAllResult = await ctx.planManager.cancelAllPlans();
+      expect(cancelAllResult.pendingFinalPreserved).toBe(true);
+      expect(cancelAllResult.message).toContain('待保存结果未破坏');
+
+      // 验证成片和 pendingFinal 记录未被破坏或重置为 ready
+      expect((ctx.engine as any).pendingFinal).toBe(completedRecord);
+
+      // 验证排队任务 p2 被成功清空重置为 ready
+      expect((await ctx.planManager.getPlan(p2.id))?.status).toBe('ready');
+
+      // 验证 retryPendingWrites() 机制完好，重试后正常完成落盘
+      await ctx.engine.retryPendingWrites();
+      expect((ctx.engine as any).pendingFinal).toBeNull();
+      expect((await ctx.planManager.getPlan(p1.id))?.status).toBe('completed');
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it('17. 全部停止屏障期间拒绝新任务提交', async () => {
+    const ctx = await createFixture();
+    try {
+      const p1 = ctx.makeRecord('p-barrier-1', '长任务');
+      const p2 = ctx.makeRecord('p-barrier-2', '试图在停止期间提交的任务');
+      await ctx.planManager.savePlan(p1);
+      await ctx.planManager.savePlan(p2);
+
+      const barrierActive = deferred<void>();
+      const runDeferred = deferred<void>();
+
+      vi.spyOn(ctx.engine as any, 'executionSnapshot').mockImplementation((_tracker: any, onTaskDir?: any) => {
+        return {
+          ffprobePath: 'ffprobe',
+          executeSnapshot: async (_data: any, signal?: AbortSignal) => {
+            const managedRoot = path.join(ctx.slices, 'managed');
+            const taskDir = await ctx.maintenance.create(managedRoot, 'task', '');
+            onTaskDir?.(taskDir);
+            barrierActive.resolve();
+            if (signal) {
+              signal.addEventListener('abort', async () => {
+                // 延迟完成以保持 barrier 处于激活状态
+                await new Promise(r => setTimeout(r, 60));
+                runDeferred.resolve();
+              });
+            }
+            await runDeferred.promise;
+            return { success: false, error: 'canceled' };
+          },
+        };
+      });
+
+      void ctx.planManager.executePlan(p1.id);
+      await barrierActive.promise;
+
+      // 启动 cancelAllPlans（异步进行中，drainingBarrier 生效）
+      const cancelPromise = ctx.planManager.cancelAllPlans();
+
+      // 在 barrier 生效期间提交新任务
+      const submitResult = await ctx.planManager.executePlan(p2.id);
+      expect(submitResult.success).toBe(false);
+      expect(submitResult.message).toContain('当前正在执行全部停止，未接受新任务');
+
+      // 验证优先设置也被拒绝
+      const priorityResult = await ctx.planManager.setPriorityPlan(p2.id);
+      expect(priorityResult.success).toBe(false);
+      expect(priorityResult.message).toContain('当前正在执行全部停止');
+
+      await cancelPromise;
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it('18. 快照缺失但存在 queued 记录时安全降级为暂停，不意外自动派发', async () => {
+    const ctx = await createFixture();
+    try {
+      const p1 = ctx.makeRecord('p-orphan-1', '遗留排队任务');
+      await ctx.planManager.savePlan(p1);
+
+      // 人工写入 queued 状态的方案文件
+      await fs.promises.writeFile(
+        path.join(ctx.plansDir, `${p1.id}.json`),
+        JSON.stringify({ ...p1, status: 'queued' })
+      );
+
+      // 确保 queue_state.json 不存在
+      const stateFile = path.join(ctx.directory, 'queue_state.json');
+      await fs.promises.unlink(stateFile).catch(() => {});
+
+      // 模拟启动重启
+      const newEngine = new MediaCuttingEngine(undefined, ctx.slices, undefined, undefined, ctx.maintenance);
+      const newManager = new PlanManager(ctx.directory, newEngine, ctx.prober);
+      await newManager.ready;
+
+      // 验证：存在排队任务但快照缺失时，安全降级为暂停！
+      expect(newEngine.getState().queuePaused).toBe(true);
+      expect(newEngine.getActivePlanId()).toBeNull(); // 绝不自动开跑抢占 CPU
+      expect(newEngine.getState().queuedIds).toEqual([p1.id]);
+
+      // 验证降级状态已安全落盘
+      const savedState = JSON.parse(await fs.promises.readFile(stateFile, 'utf8'));
+      expect(savedState.queuePaused).toBe(true);
+
+      await newEngine.shutdown();
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it('19. 快照损坏后安全降级为暂停且不自动派发', async () => {
+    const ctx = await createFixture();
+    try {
+      const p1 = ctx.makeRecord('p-corrupt-1', '排队任务');
+      await ctx.planManager.savePlan(p1);
+
+      await fs.promises.writeFile(
+        path.join(ctx.plansDir, `${p1.id}.json`),
+        JSON.stringify({ ...p1, status: 'queued' })
+      );
+
+      // 写入损坏的非法 JSON 到 queue_state.json
+      const stateFile = path.join(ctx.directory, 'queue_state.json');
+      await fs.promises.writeFile(stateFile, '{ corrupted json content ... !@#$');
+
+      const newEngine = new MediaCuttingEngine(undefined, ctx.slices, undefined, undefined, ctx.maintenance);
+      const newManager = new PlanManager(ctx.directory, newEngine, ctx.prober);
+      await newManager.ready;
+
+      // 验证：安全降级为暂停，不自动派发
+      expect(newEngine.getState().queuePaused).toBe(true);
+      expect(newEngine.getActivePlanId()).toBeNull();
+      expect((await newManager.getPlan(p1.id))?.status).toBe('queued'); // 方案未被误修改
+
+      await newEngine.shutdown();
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it('20. 连续切换优先任务后普通队列顺序严格保持不变，恢复后优先执行最后指定任务', async () => {
+    const ctx = await createFixture();
+    try {
+      const p1 = ctx.makeRecord('p-sw-1', '队列 1');
+      const p2 = ctx.makeRecord('p-sw-2', '队列 2');
+      const p3 = ctx.makeRecord('p-sw-3', '队列 3');
+      await ctx.planManager.savePlan(p1);
+      await ctx.planManager.savePlan(p2);
+      await ctx.planManager.savePlan(p3);
+
+      await ctx.planManager.pauseQueue();
+      // 模拟繁忙防止立即消费
+      (ctx.engine as any).active = { record: { id: 'busy' } };
+
+      await ctx.planManager.executePlan(p1.id);
+      await ctx.planManager.executePlan(p2.id);
+      await ctx.planManager.executePlan(p3.id);
+
+      expect(ctx.engine.getState().queuedIds).toEqual([p1.id, p2.id, p3.id]);
+
+      // 连续切换：先 p2，后 p3，最后 p1
+      await ctx.planManager.setPriorityPlan(p2.id);
+      expect(ctx.engine.getState().queuedIds).toEqual([p1.id, p2.id, p3.id]);
+
+      await ctx.planManager.setPriorityPlan(p3.id);
+      expect(ctx.engine.getState().queuedIds).toEqual([p1.id, p2.id, p3.id]);
+
+      await ctx.planManager.setPriorityPlan(p1.id);
+      expect(ctx.engine.getPriorityPlanId()).toBe(p1.id);
+      expect(ctx.engine.getState().queuedIds).toEqual([p1.id, p2.id, p3.id]);
+
+      // 恢复队列：p1 作为优先任务移到最前，其余保持相对顺序
+      await ctx.planManager.resumeQueue();
+      expect(ctx.engine.getState().queuedIds).toEqual([p1.id, p2.id, p3.id]);
+    } finally {
+      (ctx.engine as any).active = null;
       await ctx.cleanup();
     }
   });

@@ -30,39 +30,43 @@ export class PlanManager {
       void indexes.ready.then(notifyIssues, notifyIssues);
     }
     this.engine.setPlanSaver?.(record => this.persist(record));
+    this.engine.setQueueStateSaver?.(state => this.saveQueueState(state));
     this.engine.setQueueStateListener?.(state => {
-      void this.saveQueueState(state);
+      void this.saveQueueState(state).catch(err => console.warn('后台快照保存失败：', err));
     });
   }
   setChangeListener(listener: (change: PlanChange) => void) { this.listener = listener; }
   private serial<T>(operation: () => Promise<T>): Promise<T> {
     const task = this.operations.then(operation); this.operations = task.catch(() => {}); return task;
   }
-  private async readQueueState(): Promise<PersistedQueueState> {
+  private async readQueueState(): Promise<{ state: PersistedQueueState; degraded: boolean }> {
     try {
       const content = await fs.promises.readFile(this.queueStateFile, 'utf8');
       try {
         const parsed = JSON.parse(content);
         if (parsed.version === 1 && typeof parsed.queuePaused === 'boolean' && Array.isArray(parsed.queuedIds)) {
           return {
-            version: 1,
-            queuePaused: parsed.queuePaused,
-            queuedIds: parsed.queuedIds.filter((id: any) => typeof id === 'string'),
-            priorityPlanId: typeof parsed.priorityPlanId === 'string' ? parsed.priorityPlanId : null,
+            state: {
+              version: 1,
+              queuePaused: parsed.queuePaused,
+              queuedIds: parsed.queuedIds.filter((id: any) => typeof id === 'string'),
+              priorityPlanId: typeof parsed.priorityPlanId === 'string' ? parsed.priorityPlanId : null,
+            },
+            degraded: false,
           };
         }
-        return { version: 1, queuePaused: true, queuedIds: [], priorityPlanId: null };
+        return { state: { version: 1, queuePaused: true, queuedIds: [], priorityPlanId: null }, degraded: true };
       } catch {
-        return { version: 1, queuePaused: true, queuedIds: [], priorityPlanId: null };
+        return { state: { version: 1, queuePaused: true, queuedIds: [], priorityPlanId: null }, degraded: true };
       }
     } catch (err: any) {
       if (err.code === 'ENOENT') {
-        return { version: 1, queuePaused: false, queuedIds: [], priorityPlanId: null };
+        return { state: { version: 1, queuePaused: false, queuedIds: [], priorityPlanId: null }, degraded: true };
       }
-      return { version: 1, queuePaused: true, queuedIds: [], priorityPlanId: null };
+      return { state: { version: 1, queuePaused: true, queuedIds: [], priorityPlanId: null }, degraded: true };
     }
   }
-  private async saveQueueState(state: { queuePaused: boolean; priorityPlanId: string | null; queuedIds: string[] }): Promise<void> {
+  async saveQueueState(state: { queuePaused: boolean; priorityPlanId: string | null; queuedIds: string[] }): Promise<void> {
     return this.serial(async () => {
       const data: PersistedQueueState = {
         version: 1,
@@ -74,8 +78,6 @@ export class PlanManager {
       try {
         await fs.promises.writeFile(tmpFile, JSON.stringify(data, null, 2), 'utf8');
         await fs.promises.rename(tmpFile, this.queueStateFile);
-      } catch (err) {
-        console.warn('调度状态持久化失败：', err);
       } finally {
         await fs.promises.unlink(tmpFile).catch(() => {});
       }
@@ -106,8 +108,12 @@ export class PlanManager {
     this.records = next; this.issues = issues;
 
     if (startup) {
-      const state = await this.readQueueState();
+      const { state, degraded } = await this.readQueueState();
       const validRecordMap = new Map([...next.entries()].filter(([_, r]) => r.status === 'queued'));
+      // 关键安全降级：快照缺失或损坏但存在 queued 任务时，安全降级为暂停，不能意外自动派发
+      const effectivePaused = (degraded && validRecordMap.size > 0) ? true : state.queuePaused;
+      const effectivePriority = (degraded && validRecordMap.size > 0) ? null : state.priorityPlanId;
+
       const orderedIds = state.queuedIds.filter(id => validRecordMap.has(id));
       for (const id of validRecordMap.keys()) {
         if (!orderedIds.includes(id)) orderedIds.push(id);
@@ -118,8 +124,15 @@ export class PlanManager {
           this.engine.loadQueuedPlan?.(record, this.prober);
         }
       }
-      const priorityId = (state.priorityPlanId && orderedIds.includes(state.priorityPlanId)) ? state.priorityPlanId : null;
-      this.engine.initQueueState?.(state.queuePaused, priorityId, orderedIds);
+      const priorityId = (effectivePriority && orderedIds.includes(effectivePriority)) ? effectivePriority : null;
+      this.engine.initQueueState?.(effectivePaused, priorityId, orderedIds);
+      if (degraded && validRecordMap.size > 0) {
+        await this.saveQueueState({
+          queuePaused: effectivePaused,
+          priorityPlanId: priorityId,
+          queuedIds: orderedIds,
+        }).catch(e => console.warn('降级快照持久化失败：', e));
+      }
     }
   }
   async listPlans(): Promise<PlanRecord[]> { await this.ready; return structuredClone([...this.records.values()].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))); }
@@ -232,34 +245,28 @@ export class PlanManager {
   async pauseQueue(): Promise<void> {
     await this.ready;
     await this.engine.pauseQueue();
-    await this.serial(async () => {});
   }
   async resumeQueue(): Promise<void> {
     await this.ready;
     await this.engine.resumeQueue();
-    await this.serial(async () => {});
   }
   async setPriorityPlan(planId: string): Promise<{ success: boolean; message?: string }> {
     await this.ready;
-    const res = await this.engine.setPriorityPlan(planId);
-    await this.serial(async () => {});
-    return res;
+    return this.engine.setPriorityPlan(planId);
   }
   async cancelPlan(id: string): Promise<ExecutionCancelResult> {
     await this.ready;
-    let res: ExecutionCancelResult;
     if (this.engine.getActivePlanId() === id) {
-      res = await this.engine.cancelActivePlan(id);
-    } else {
-      res = await this.engine.cancelQueuedPlan(id);
+      return this.engine.cancelActivePlan(id);
     }
-    await this.serial(async () => {});
+    const res = await this.engine.cancelQueuedPlan(id);
+    if (!res.success && this.engine.getActivePlanId() === id) {
+      return this.engine.cancelActivePlan(id);
+    }
     return res;
   }
   async cancelAllPlans(): Promise<ExecutionCancelAllResult> {
     await this.ready;
-    const res = await this.engine.cancelAll();
-    await this.serial(async () => {});
-    return res;
+    return this.engine.cancelAll();
   }
 }
