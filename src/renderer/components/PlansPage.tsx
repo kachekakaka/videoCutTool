@@ -16,6 +16,10 @@ import {
   Check,
   AlertCircle,
   Zap,
+  Pause,
+  Play,
+  Square,
+  Star,
 } from 'lucide-react';
 import { formatTimecode } from './VideoPlayer';
 import { useAppData } from '../AppDataContext';
@@ -36,20 +40,25 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
   const batchLock = React.useRef(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [planToDelete, setPlanToDelete] = useState<PlanRecord | null>(null);
+  const [planToStop, setPlanToStop] = useState<PlanRecord | null>(null);
+  const [confirmCancelAll, setConfirmCancelAll] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
 
   useEffect(() => setPage(1), [filter]);
   useEffect(() => setSelectedIds([]), [filter, page]);
 
-  // Esc 键关闭删除确认模态框
+  // Esc 键关闭所有模态框
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && planToDelete) {
-        setPlanToDelete(null);
+      if (e.key === 'Escape') {
+        if (planToDelete) setPlanToDelete(null);
+        if (planToStop) setPlanToStop(null);
+        if (confirmCancelAll) setConfirmCancelAll(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [planToDelete]);
+  }, [planToDelete, planToStop, confirmCancelAll]);
 
   const handleExecuteSingle = async (planId: string) => {
     setExecutingId(planId);
@@ -90,6 +99,85 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
       if (result) { setNotice(`已接受 ${result.queued} / ${result.total} 个选中方案${result.errors.length ? '；' + result.errors.join('；') : ''}`); setSelectedIds([]); }
     } catch (error) { setNotice(`执行选中项失败：${String(error)}`); }
     finally { batchLock.current = false; setBatchRunning(false); }
+  };
+
+  const handleTogglePause = async () => {
+    if (actionLoading || !window.electronAPI) return;
+    setActionLoading(true);
+    try {
+      if (engine.queuePaused) {
+        await window.electronAPI.resumeExecutionQueue();
+        setNotice('已恢复队列调度派发');
+      } else {
+        await window.electronAPI.pauseExecutionQueue();
+        setNotice('已暂停队列自动派发（当前任务完成后停下）');
+      }
+    } catch (err) {
+      setNotice(`操作失败：${String(err)}`);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleSetPriority = async (planId: string) => {
+    if (!window.electronAPI) return;
+    try {
+      const result = await window.electronAPI.setPriorityExecutionPlan(planId);
+      if (result.success) {
+        setNotice(result.message || '已指定该方案为下一优先执行任务');
+      } else {
+        setNotice(`指定优先失败：${result.message || ''}`);
+      }
+    } catch (err) {
+      setNotice(`指定优先失败：${String(err)}`);
+    }
+  };
+
+  const handleCancelQueued = async (planId: string) => {
+    if (!window.electronAPI) return;
+    try {
+      const result = await window.electronAPI.cancelPlanExecution(planId);
+      if (result.success) {
+        setNotice('方案已移出队列并恢复为待执行状态');
+      } else {
+        setNotice(`移出队列失败：${result.message || ''}`);
+      }
+    } catch (err) {
+      setNotice(`移出队列失败：${String(err)}`);
+    }
+  };
+
+  const handleConfirmStop = async () => {
+    if (!planToStop || !window.electronAPI) return;
+    const target = planToStop;
+    setPlanToStop(null);
+    setActionLoading(true);
+    try {
+      const result = await window.electronAPI.cancelPlanExecution(target.id);
+      if (result.success) {
+        setNotice(`已停止方案《${target.title}》并清理临时资产`);
+      } else {
+        setNotice(`停止未完成：${result.message || ''}`);
+      }
+    } catch (err) {
+      setNotice(`停止执行异常：${String(err)}`);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleConfirmCancelAll = async () => {
+    setConfirmCancelAll(false);
+    if (!window.electronAPI) return;
+    setActionLoading(true);
+    try {
+      const result = await window.electronAPI.cancelAllPlanExecutions();
+      setNotice(result.message || '已全部停止');
+    } catch (err) {
+      setNotice(`全部停止异常：${String(err)}`);
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const handleDeleteClick = (plan: PlanRecord) => {
@@ -248,6 +336,41 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
               </button>
             )}
 
+            {/* 调度暂停与恢复控制按钮 */}
+            <button
+              disabled={actionLoading}
+              onClick={handleTogglePause}
+              className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95 border ${
+                engine.queuePaused
+                  ? 'bg-amber-600 hover:bg-amber-500 text-white border-amber-500/50 shadow-md shadow-amber-600/20'
+                  : 'bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white border-white/10'
+              }`}
+              title={engine.queuePaused ? '恢复自动派发排队方案' : '暂停后续任务自动派发，当前任务完成后停下'}
+            >
+              {engine.queuePaused ? (
+                <>
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>恢复队列</span>
+                </>
+              ) : (
+                <>
+                  <Pause className="w-3.5 h-3.5 text-amber-400" />
+                  <span>暂停队列</span>
+                </>
+              )}
+            </button>
+
+            {/* 全局全部停止按钮 */}
+            <button
+              disabled={actionLoading || (!engine.activePlanId && queuedCount === 0 && !engine.priorityPlanId)}
+              onClick={() => setConfirmCancelAll(true)}
+              className="px-3 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600 disabled:opacity-30 disabled:cursor-not-allowed text-rose-300 hover:text-white border border-rose-500/30 text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95"
+              title="中断当前正在执行的任务并清空所有排队"
+            >
+              <Square className="w-3.5 h-3.5 fill-current" />
+              <span>全部停止</span>
+            </button>
+
             <button
               onClick={fetchPlans}
               className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white border border-white/10 transition-all focus-visible:ring-2 focus-visible:ring-blue-500 active:scale-95"
@@ -257,6 +380,25 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
             </button>
           </div>
         </div>
+
+        {/* 调度暂停常驻提示横幅 */}
+        {engine.queuePaused && (
+          <div className="p-3.5 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-200 text-xs flex items-center justify-between gap-3 shadow-lg">
+            <div className="flex items-center gap-2.5">
+              <Pause className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                <strong>调度队列已暂停</strong>：当前任务完成后不会自动开始下一个任务；您可以对排队中的方案点击【⭐ 单独启动】进行手动优先调度。
+              </span>
+            </div>
+            <button
+              onClick={handleTogglePause}
+              disabled={actionLoading}
+              className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold shrink-0 transition-all active:scale-95 shadow"
+            >
+              恢复自动派发
+            </button>
+          </div>
+        )}
 
         <div className="flex gap-4 items-center text-xs text-zinc-300">
           <label className="flex items-center gap-2"><input type="checkbox" disabled={batchRunning}
@@ -359,7 +501,16 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                             <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
                             <span>{progress?.stage === 'saving' ? '等待保存' : progress?.stage === 'failed' ? '处理失败' : '处理中'}</span>
                           </span>
-                        ) : isQueued ? <span className="text-xs text-blue-300">等待处理</span> : isFailed ? (
+                        ) : isQueued ? (
+                          plan.id === engine.priorityPlanId ? (
+                            <span className="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-bold">
+                              <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
+                              <span>优先排队</span>
+                            </span>
+                          ) : (
+                            <span className="text-xs text-blue-300">等待处理</span>
+                          )
+                        ) : isFailed ? (
                           <span className="text-xs bg-rose-500/20 text-rose-300 border border-rose-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-medium">
                             <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
                             <span>失败</span>
@@ -461,15 +612,51 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
                         <span>编辑</span>
                       </button>
 
-                      {/* 立即执行 / 重新导出 / 重试 */}
-                      {isProcessing || isQueued ? (
-                        <button
-                          disabled={true}
-                          className="px-3 py-1.5 rounded-lg text-white font-semibold flex items-center gap-1.5 bg-blue-600/50 cursor-not-allowed opacity-80 text-xs"
-                        >
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          <span>{isQueued ? '排队中...' : '后台处理中...'}</span>
-                        </button>
+                      {/* 停止导出 / 移出队列 / 单独启动 / 立即执行 / 重新导出 / 重试 */}
+                      {isProcessing ? (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setPlanToStop(plan)}
+                            disabled={actionLoading}
+                            className="px-2.5 py-1.5 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white font-bold flex items-center gap-1 transition-all shadow-md active:scale-95 text-xs focus-visible:ring-2 focus-visible:ring-rose-400"
+                            title="中断导出并安全清理临时切片"
+                          >
+                            <Square className="w-3.5 h-3.5 fill-current" />
+                            <span>停止导出</span>
+                          </button>
+                        </div>
+                      ) : isQueued ? (
+                        <div className="flex items-center gap-1.5">
+                          {engine.queuePaused && (
+                            plan.id === engine.priorityPlanId ? (
+                              <span className="px-2.5 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 font-bold flex items-center gap-1 text-xs">
+                                <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
+                                <span>优先任务</span>
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleSetPriority(plan.id)}
+                                disabled={actionLoading}
+                                className="px-2.5 py-1.5 rounded-lg bg-amber-600/90 hover:bg-amber-500 text-white font-bold flex items-center gap-1 transition-all shadow-md active:scale-95 text-xs focus-visible:ring-2 focus-visible:ring-amber-400"
+                                title="队列暂停时，指定该任务为下一优先执行任务"
+                              >
+                                <Star className="w-3.5 h-3.5" />
+                                <span>单独启动</span>
+                              </button>
+                            )
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleCancelQueued(plan.id)}
+                            disabled={actionLoading}
+                            className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-zinc-300 hover:text-white font-medium flex items-center gap-1 transition-all text-xs"
+                            title="移出调度队列，恢复为待执行状态"
+                          >
+                            <span>移出队列</span>
+                          </button>
+                        </div>
                       ) : isFailed ? (
                         <button
                           disabled={isRunning}
@@ -590,6 +777,107 @@ export const PlansPage: React.FC<PlansPageProps> = ({ onLoadPlanIntoCutter }) =>
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>确认永久删除</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 单任务中断停止确认模态框 */}
+      {planToStop && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in select-none"
+          onClick={() => setPlanToStop(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl bg-[#161b22] border border-rose-500/40 p-6 shadow-2xl text-left relative animate-in zoom-in-95"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-4">
+              <div className="w-10 h-10 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center shrink-0">
+                <Square className="w-5 h-5 text-rose-400 fill-current" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-base font-bold text-white mb-1.5">
+                  确认停止导出此任务？
+                </h3>
+                <p className="text-xs text-zinc-300 mb-2 leading-relaxed">
+                  即将停止方案导出：
+                  <span className="text-rose-300 font-mono font-semibold block mt-1 truncate" title={planToStop.title}>
+                    「{planToStop.title}」
+                  </span>
+                </p>
+                <p className="text-[11px] text-zinc-400 leading-normal">
+                  系统将安全终止 FFmpeg 转码子进程并彻底删除未完成的临时资产，该方案将恢复为待执行状态（ready），不会被标记为执行失败。
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setPlanToStop(null)}
+                className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-zinc-300 hover:text-white text-xs font-semibold transition-all focus-visible:ring-2 focus-visible:ring-blue-500 active:scale-95"
+              >
+                继续导出 (Esc)
+              </button>
+              <button
+                type="button"
+                disabled={actionLoading}
+                onClick={handleConfirmStop}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all shadow-lg shadow-rose-600/30 active:scale-95 focus-visible:ring-2 focus-visible:ring-rose-400 flex items-center gap-1.5"
+              >
+                <Square className="w-3.5 h-3.5 fill-current" />
+                <span>确认停止</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 全局全部停止确认模态框 */}
+      {confirmCancelAll && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in select-none"
+          onClick={() => setConfirmCancelAll(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl bg-[#161b22] border border-rose-500/40 p-6 shadow-2xl text-left relative animate-in zoom-in-95"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-4">
+              <div className="w-10 h-10 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center shrink-0">
+                <Square className="w-5 h-5 text-rose-400 fill-current" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-base font-bold text-white mb-1.5">
+                  确认全部停止？
+                </h3>
+                <p className="text-xs text-zinc-300 mb-2 leading-relaxed">
+                  即将建立全部停止屏障，中断正在运行的导出任务并清空所有排队与优先任务。
+                </p>
+                <p className="text-[11px] text-zinc-400 leading-normal">
+                  所有未完成任务将安全清理临时切片并恢复为待执行状态；已完成导出并生成成片的任务将受到完好保护，不会被重置。
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmCancelAll(false)}
+                className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-zinc-300 hover:text-white text-xs font-semibold transition-all focus-visible:ring-2 focus-visible:ring-blue-500 active:scale-95"
+              >
+                取消 (Esc)
+              </button>
+              <button
+                type="button"
+                disabled={actionLoading}
+                onClick={handleConfirmCancelAll}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all shadow-lg shadow-rose-600/30 active:scale-95 focus-visible:ring-2 focus-visible:ring-rose-400 flex items-center gap-1.5"
+              >
+                <Square className="w-3.5 h-3.5 fill-current" />
+                <span>确认全部停止</span>
               </button>
             </div>
           </div>

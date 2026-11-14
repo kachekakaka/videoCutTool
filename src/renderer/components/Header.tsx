@@ -1,5 +1,6 @@
 import React from 'react';
 import { Upload, FolderOpen } from 'lucide-react';
+import { useAppData } from '../AppDataContext';
 
 interface HeaderProps {
   activeTabTitle: string;
@@ -9,6 +10,7 @@ interface HeaderProps {
   workbenchMode?: 'temporal' | 'spatial';
   onWorkbenchModeChange?: (mode: 'temporal' | 'spatial') => void;
   hasSpatialActive?: boolean;
+  onNavigatePlans?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -19,7 +21,87 @@ export const Header: React.FC<HeaderProps> = ({
   workbenchMode,
   onWorkbenchModeChange,
   hasSpatialActive,
+  onNavigatePlans,
 }) => {
+  const { engine, plans } = useAppData();
+  const queuedCount = plans.filter(p => p.status === 'queued').length;
+  const isExecuting = Boolean(engine.activePlanId);
+  const isPaused = engine.queuePaused;
+  const hasPriority = Boolean(engine.priorityPlanId);
+
+  // 全局执行状态胶囊渲染
+  const renderStatusPill = () => {
+    if (!isExecuting && !isPaused && !hasPriority && queuedCount === 0) return null;
+
+    if (isExecuting && !isPaused) {
+      return (
+        <button
+          onClick={onNavigatePlans}
+          title="调度引擎正常运行中，点击进入方案中心"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs hover:bg-emerald-500/20 transition-all cursor-pointer"
+        >
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+          <span className="font-medium truncate max-w-[180px]">
+            正在导出{queuedCount > 0 ? ` (${queuedCount}项排队)` : ''}
+          </span>
+        </button>
+      );
+    }
+
+    if (isExecuting && isPaused) {
+      return (
+        <button
+          onClick={onNavigatePlans}
+          title="队列已暂停派发，当前任务完成后将停止。点击进入方案中心"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs hover:bg-amber-500/20 transition-all cursor-pointer"
+        >
+          <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
+          <span className="font-medium">已暂停 (完成当前后停)</span>
+        </button>
+      );
+    }
+
+    if (hasPriority) {
+      return (
+        <button
+          onClick={onNavigatePlans}
+          title="已指定手动优先任务，将下一位执行。点击进入方案中心"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-400/40 text-amber-200 text-xs hover:bg-amber-500/25 transition-all cursor-pointer font-medium"
+        >
+          <span>⭐</span>
+          <span>优先任务待执行</span>
+        </button>
+      );
+    }
+
+    if (isPaused) {
+      return (
+        <button
+          onClick={onNavigatePlans}
+          title="调度队列处于暂停状态，后续任务不会自动开始。点击进入方案中心"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-zinc-800/80 border border-amber-500/30 text-zinc-300 text-xs hover:bg-zinc-700 transition-all cursor-pointer"
+        >
+          <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+          <span>队列已暂停 ({queuedCount}个待办)</span>
+        </button>
+      );
+    }
+
+    if (queuedCount > 0) {
+      return (
+        <button
+          onClick={onNavigatePlans}
+          title="有方案在排队等待执行。点击进入方案中心"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-300 text-xs hover:bg-blue-500/20 transition-all cursor-pointer"
+        >
+          <span className="w-2 h-2 rounded-full bg-blue-400 shrink-0" />
+          <span>等待派发 ({queuedCount})</span>
+        </button>
+      );
+    }
+
+    return null;
+  };
   return (
     <header
       className="h-14 border-b border-white/10 px-4 sm:px-6 xl:px-8 flex items-center bg-[#090b10] backdrop-blur-md shrink-0 select-none"
@@ -82,6 +164,8 @@ export const Header: React.FC<HeaderProps> = ({
           className="flex items-center gap-2.5 pr-36 shrink-0"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
+          {renderStatusPill()}
+
           {onOpenOutputFolder && (
             <button
               onClick={onOpenOutputFolder}

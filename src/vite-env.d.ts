@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import { AppConfig, MediaMetadata, PlanRecord, CompressConfig, PreviewSample, PlanChange, PlanListResult, EngineState, ExecutionStatus, PreviewProgress, CompressionFile, CompressionSaveRequest, SelectedVideo } from './shared/types';
+import { AppConfig, MediaMetadata, PlanRecord, CompressConfig, PreviewSample, PlanChange, PlanListResult, EngineState, ExecutionStatus, PreviewProgress, CompressionFile, CompressionSaveRequest, SelectedVideo, ExecutionCancelResult, ExecutionCancelAllResult } from './shared/types';
 
 export interface ElectronAPI {
   getPathForFile: (file: File) => Promise<string>;
@@ -73,6 +73,13 @@ export interface ElectronAPI {
   batchExecutePlans: () => Promise<{ total: number; queued: number; errors?: string[] }>;
   executeSelectedPlans: (ids: string[]) => Promise<{ total: number; queued: number; errors: string[] }>;
   showItemInFolder: (fullPath: string) => Promise<void>;
+
+  // 任务执行控制与调度管理
+  pauseExecutionQueue: () => Promise<void>;
+  resumeExecutionQueue: () => Promise<void>;
+  setPriorityExecutionPlan: (planId: string) => Promise<{ success: boolean; message?: string }>;
+  cancelPlanExecution: (planId: string) => Promise<ExecutionCancelResult>;
+  cancelAllPlanExecutions: () => Promise<ExecutionCancelAllResult>;
 }
 
 declare global {

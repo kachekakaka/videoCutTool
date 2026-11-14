@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { PlanRecord, PlanChange, PlanListResult } from '../../shared/types';
+import { PlanRecord, PlanChange, PlanListResult, PersistedQueueState, ExecutionCancelResult, ExecutionCancelAllResult } from '../../shared/types';
 import { MediaCuttingEngine } from './MediaCuttingEngine';
 import { KeyframeProber } from './KeyframeProber';
 import { PlanRecordStore } from './PlanRecordStore';
@@ -9,6 +9,7 @@ import { fileIdentityAsync } from './MediaTools';
 
 export class PlanManager {
   private store: PlanRecordStore;
+  private queueStateFile: string;
   private records = new Map<string, PlanRecord>();
   private issues: string[] = [];
   private deleting = new Set<string>();
@@ -18,7 +19,9 @@ export class PlanManager {
   readonly ready: Promise<void>;
   constructor(directory: string, private engine: MediaCuttingEngine, private prober: KeyframeProber) {
     const resolved = path.resolve(directory);
-    this.store = new PlanRecordStore(path.basename(resolved) === 'plans' ? resolved : path.join(resolved, 'plans'));
+    const plansDir = path.basename(resolved) === 'plans' ? resolved : path.join(resolved, 'plans');
+    this.store = new PlanRecordStore(plansDir);
+    this.queueStateFile = path.join(path.dirname(plansDir), 'queue_state.json');
     this.ready = this.store.initialize().then(() => this.scan(true));
     const indexes = prober.store;
     if (indexes) {
@@ -26,11 +29,57 @@ export class PlanManager {
       // 初始化诊断单独补送，不让方案加载和保存等待索引目录。
       void indexes.ready.then(notifyIssues, notifyIssues);
     }
-    this.engine.setPlanSaver(record => this.persist(record));
+    this.engine.setPlanSaver?.(record => this.persist(record));
+    this.engine.setQueueStateListener?.(state => {
+      void this.saveQueueState(state);
+    });
   }
   setChangeListener(listener: (change: PlanChange) => void) { this.listener = listener; }
   private serial<T>(operation: () => Promise<T>): Promise<T> {
     const task = this.operations.then(operation); this.operations = task.catch(() => {}); return task;
+  }
+  private async readQueueState(): Promise<PersistedQueueState> {
+    try {
+      const content = await fs.promises.readFile(this.queueStateFile, 'utf8');
+      try {
+        const parsed = JSON.parse(content);
+        if (parsed.version === 1 && typeof parsed.queuePaused === 'boolean' && Array.isArray(parsed.queuedIds)) {
+          return {
+            version: 1,
+            queuePaused: parsed.queuePaused,
+            queuedIds: parsed.queuedIds.filter((id: any) => typeof id === 'string'),
+            priorityPlanId: typeof parsed.priorityPlanId === 'string' ? parsed.priorityPlanId : null,
+          };
+        }
+        return { version: 1, queuePaused: true, queuedIds: [], priorityPlanId: null };
+      } catch {
+        return { version: 1, queuePaused: true, queuedIds: [], priorityPlanId: null };
+      }
+    } catch (err: any) {
+      if (err.code === 'ENOENT') {
+        return { version: 1, queuePaused: false, queuedIds: [], priorityPlanId: null };
+      }
+      return { version: 1, queuePaused: true, queuedIds: [], priorityPlanId: null };
+    }
+  }
+  private async saveQueueState(state: { queuePaused: boolean; priorityPlanId: string | null; queuedIds: string[] }): Promise<void> {
+    return this.serial(async () => {
+      const data: PersistedQueueState = {
+        version: 1,
+        queuePaused: state.queuePaused,
+        queuedIds: state.queuedIds,
+        priorityPlanId: state.priorityPlanId,
+      };
+      const tmpFile = `${this.queueStateFile}.${randomUUID()}.tmp`;
+      try {
+        await fs.promises.writeFile(tmpFile, JSON.stringify(data, null, 2), 'utf8');
+        await fs.promises.rename(tmpFile, this.queueStateFile);
+      } catch (err) {
+        console.warn('调度状态持久化失败：', err);
+      } finally {
+        await fs.promises.unlink(tmpFile).catch(() => {});
+      }
+    });
   }
   private async scan(startup = false) {
     const files = (await fs.promises.readdir(this.store.plansDir)).filter(file => file.endsWith('.json'));
@@ -43,7 +92,10 @@ export class PlanManager {
           const result = await this.store.read(id);
           if (result.issue) issues.push(result.issue);
           let record = result.record;
-          if (record && (startup || !this.engine.isAccepted(id)) && ['queued', 'processing'].includes(record.status)) {
+          if (record && startup && record.status === 'processing') {
+            const recovered = { ...record, status: 'failed' as const, error: '上次执行中断，可重试', updatedAt: new Date().toISOString() };
+            try { record = await this.store.save(recovered); } catch (error) { issues.push(`${id} 中断状态保存失败：${String(error)}`); }
+          } else if (record && !startup && !this.engine.isAccepted(id) && ['queued', 'processing'].includes(record.status)) {
             const recovered = { ...record, status: 'failed' as const, error: '上次执行中断，可重试', updatedAt: new Date().toISOString() };
             try { record = await this.store.save(recovered); } catch (error) { issues.push(`${id} 中断状态保存失败：${String(error)}`); }
           }
@@ -52,6 +104,23 @@ export class PlanManager {
       }
     }));
     this.records = next; this.issues = issues;
+
+    if (startup) {
+      const state = await this.readQueueState();
+      const validRecordMap = new Map([...next.entries()].filter(([_, r]) => r.status === 'queued'));
+      const orderedIds = state.queuedIds.filter(id => validRecordMap.has(id));
+      for (const id of validRecordMap.keys()) {
+        if (!orderedIds.includes(id)) orderedIds.push(id);
+      }
+      for (const id of orderedIds) {
+        const record = validRecordMap.get(id);
+        if (record && !this.engine.isAccepted(id)) {
+          this.engine.loadQueuedPlan?.(record, this.prober);
+        }
+      }
+      const priorityId = (state.priorityPlanId && orderedIds.includes(state.priorityPlanId)) ? state.priorityPlanId : null;
+      this.engine.initQueueState?.(state.queuePaused, priorityId, orderedIds);
+    }
   }
   async listPlans(): Promise<PlanRecord[]> { await this.ready; return structuredClone([...this.records.values()].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))); }
   async refreshPlans(): Promise<PlanListResult> { await this.ready; await this.serial(async () => { await this.store.initialize(); await this.scan(); }); return this.details(); }
@@ -159,5 +228,38 @@ export class PlanManager {
       if (result.success) queued++; else errors.push(`${record.title}：${result.message}`);
     }
     return { total: unique.length, queued, errors };
+  }
+  async pauseQueue(): Promise<void> {
+    await this.ready;
+    await this.engine.pauseQueue();
+    await this.serial(async () => {});
+  }
+  async resumeQueue(): Promise<void> {
+    await this.ready;
+    await this.engine.resumeQueue();
+    await this.serial(async () => {});
+  }
+  async setPriorityPlan(planId: string): Promise<{ success: boolean; message?: string }> {
+    await this.ready;
+    const res = await this.engine.setPriorityPlan(planId);
+    await this.serial(async () => {});
+    return res;
+  }
+  async cancelPlan(id: string): Promise<ExecutionCancelResult> {
+    await this.ready;
+    let res: ExecutionCancelResult;
+    if (this.engine.getActivePlanId() === id) {
+      res = await this.engine.cancelActivePlan(id);
+    } else {
+      res = await this.engine.cancelQueuedPlan(id);
+    }
+    await this.serial(async () => {});
+    return res;
+  }
+  async cancelAllPlans(): Promise<ExecutionCancelAllResult> {
+    await this.ready;
+    const res = await this.engine.cancelAll();
+    await this.serial(async () => {});
+    return res;
   }
 }

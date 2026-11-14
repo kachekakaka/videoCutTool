@@ -233,7 +233,31 @@ export const EXECUTION_STAGE_LABELS: Record<ExecutionStage, string> = {
   preparing: '检查视频', normalizing: '整理时间戳', cutting: '裁剪中', merging: '合并中', encoding: '转码中',
   verifying: '校验产物', publishing: '发布中', saving: '等待保存结果', failed: '处理失败，等待保存结果',
 };
-export interface EngineState { activePlanId: string | null; queuedIds: string[]; storageError: string | null; progress: ExecutionProgress | null }
+export interface EngineState {
+  activePlanId: string | null;
+  queuedIds: string[];
+  queuePaused: boolean;
+  priorityPlanId: string | null;
+  storageError: string | null;
+  progress: ExecutionProgress | null;
+}
+export interface PersistedQueueState {
+  version: 1;
+  queuePaused: boolean;
+  queuedIds: string[];
+  priorityPlanId: string | null;
+}
+export interface ExecutionCancelResult {
+  success: boolean;
+  message?: string;
+}
+export interface ExecutionCancelAllResult {
+  success: boolean;
+  activeCancelled: boolean;
+  pendingFinalPreserved?: boolean;
+  dequeuedCount: number;
+  message?: string;
+}
 export interface PlanListResult { records: PlanRecord[]; issues: string[] }
 export interface PreviewProgress { requestId: string; percent: number; message: string }
 

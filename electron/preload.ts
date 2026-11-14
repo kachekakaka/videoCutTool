@@ -90,4 +90,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   batchExecutePlans: (): Promise<{ total: number; queued: number }> => ipcRenderer.invoke('plan:batchExecute'),
   executeSelectedPlans: ids => ipcRenderer.invoke('plan:executeSelected', ids),
   showItemInFolder: (fullPath: string): Promise<void> => ipcRenderer.invoke('shell:showItemInFolder', fullPath),
+
+  // 任务执行控制与调度管理
+  pauseExecutionQueue: (): Promise<void> => ipcRenderer.invoke('engine:pauseQueue'),
+  resumeExecutionQueue: (): Promise<void> => ipcRenderer.invoke('engine:resumeQueue'),
+  setPriorityExecutionPlan: (planId: string) => ipcRenderer.invoke('engine:setPriorityPlan', planId),
+  cancelPlanExecution: (planId: string) => ipcRenderer.invoke('plan:cancelExecution', planId),
+  cancelAllPlanExecutions: () => ipcRenderer.invoke('plan:cancelAllExecutions'),
 } satisfies ElectronAPI);

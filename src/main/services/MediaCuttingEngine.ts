@@ -49,6 +49,13 @@ export class MediaCuttingEngine {
   private drainPromise: Promise<void> = Promise.resolve();
   private progress: ExecutionProgress | null = null;
   private progressRun: symbol | null = null;
+  private currentRunId: symbol | null = null;
+  private activeExecutionPromise: Promise<void> | null = null;
+  private activeTaskDir: string | null = null;
+  private queuePaused = false;
+  private priorityPlanId: string | null = null;
+  private drainingBarrier: Promise<void> | null = null;
+  private onQueueStateChange?: (state: { queuePaused: boolean; priorityPlanId: string | null; queuedIds: string[] }) => void;
   private inputProvider?: InputProvider;
   setInputProvider(provider: NonNullable<MediaCuttingEngine['inputProvider']>) { this.inputProvider = provider; }
 
@@ -73,7 +80,73 @@ export class MediaCuttingEngine {
   getActivePlanId() { return this.active?.record.id || null; }
   getQueueLength() { return this.queue.length; }
   isAccepted(id: string) { return this.accepted.has(id) || this.submitting.has(id); }
-  getState(): EngineState { return { activePlanId: this.getActivePlanId(), queuedIds: this.queue.map(job => job.record.id), storageError: this.storageError, progress: this.progress ? { ...this.progress } : null }; }
+  getState(): EngineState {
+    return {
+      activePlanId: this.getActivePlanId(),
+      queuedIds: this.queue.map(job => job.record.id),
+      queuePaused: this.queuePaused,
+      priorityPlanId: this.priorityPlanId,
+      storageError: this.storageError,
+      progress: this.progress ? { ...this.progress } : null,
+    };
+  }
+  setQueueStateListener(listener: (state: { queuePaused: boolean; priorityPlanId: string | null; queuedIds: string[] }) => void) {
+    this.onQueueStateChange = listener;
+  }
+  private notifyQueueState() {
+    this.onQueueStateChange?.({
+      queuePaused: this.queuePaused,
+      priorityPlanId: this.priorityPlanId,
+      queuedIds: this.queue.map(job => job.record.id),
+    });
+  }
+  initQueueState(paused: boolean, priorityId: string | null, orderedQueuedIds?: string[]) {
+    this.queuePaused = paused;
+    this.priorityPlanId = priorityId;
+    if (orderedQueuedIds?.length) {
+      const orderMap = new Map(orderedQueuedIds.map((id, index) => [id, index]));
+      this.queue.sort((a, b) => {
+        const orderA = orderMap.get(a.record.id) ?? 999999;
+        const orderB = orderMap.get(b.record.id) ?? 999999;
+        return orderA - orderB;
+      });
+    }
+    this.stateChanged();
+    this.notifyQueueState();
+  }
+  async pauseQueue(): Promise<void> {
+    this.queuePaused = true;
+    this.stateChanged();
+    this.notifyQueueState();
+  }
+  async resumeQueue(): Promise<void> {
+    this.queuePaused = false;
+    if (this.priorityPlanId) {
+      const idx = this.queue.findIndex(j => j.record.id === this.priorityPlanId);
+      if (idx > 0) {
+        const [priorityJob] = this.queue.splice(idx, 1);
+        this.queue.unshift(priorityJob);
+      }
+      this.priorityPlanId = null;
+    }
+    this.stateChanged();
+    this.notifyQueueState();
+    this.startDrain();
+  }
+  isQueuePaused(): boolean { return this.queuePaused; }
+  async setPriorityPlan(planId: string): Promise<{ success: boolean; message?: string }> {
+    const exists = this.queue.some(j => j.record.id === planId);
+    if (!exists) return { success: false, message: '该方案未在排队列表中' };
+    this.priorityPlanId = planId;
+    this.stateChanged();
+    this.notifyQueueState();
+    if (!this.running && !this.active) {
+      this.startDrain();
+    }
+    return { success: true };
+  }
+  getPriorityPlanId(): string | null { return this.priorityPlanId; }
+  getCurrentRunId(): symbol | null { return this.currentRunId; }
   private clearProgress() { this.progressRun = null; this.progress = null; }
   private stateChanged() { this.onStateChange?.(this.getState()); }
   private async persist(record: PlanRecord) { await this.savePlanFn?.(record); }
@@ -83,6 +156,7 @@ export class MediaCuttingEngine {
     if (this.accepted.has(record.id)) return Promise.resolve({ queued: this.getActivePlanId() !== record.id, active: this.getActivePlanId() === record.id });
     const task = this.submissionChain.then(async () => {
       if (this.closing) throw new Error('应用正在退出，未接受新任务');
+      if (this.drainingBarrier) throw new Error('当前正在执行全部停止，未接受新任务');
       if (this.storageError) throw new Error('方案保存尚未恢复，请在方案中心重试保存后再提交');
       const snapshot = structuredClone(record); snapshot.status = 'queued'; delete snapshot.error;
       if (snapshot.compressionOnly) {
@@ -91,7 +165,7 @@ export class MediaCuttingEngine {
       }
       await this.persist(snapshot);
       const job = { record: snapshot, prober };
-      this.accepted.set(record.id, job); this.queue.push(job); this.notify(snapshot); this.stateChanged(); this.startDrain();
+      this.accepted.set(record.id, job); this.queue.push(job); this.notify(snapshot); this.stateChanged(); this.notifyQueueState(); this.startDrain();
       return { queued: this.getActivePlanId() !== record.id, active: this.getActivePlanId() === record.id };
     });
     this.submitting.set(record.id, task);
@@ -99,27 +173,173 @@ export class MediaCuttingEngine {
     void task.finally(() => this.submitting.delete(record.id)).catch(() => {});
     return task;
   }
+  loadQueuedPlan(record: PlanRecord, prober: KeyframeProber) {
+    if (this.accepted.has(record.id)) return;
+    const job = { record, prober };
+    this.accepted.set(record.id, job);
+    this.queue.push(job);
+    this.notify(record);
+  }
   /** 删除与派发在同一事件循环同步检查、移出；调用方随后持久化删除。 */
   removeQueued(id: string): Job | undefined {
     if (this.active?.record.id === id || this.pendingFinal?.id === id || this.submitting.has(id)) throw new Error('方案正在处理或保存，完成后可删除');
     const index = this.queue.findIndex(job => job.record.id === id);
     if (index < 0) return undefined;
-    const [job] = this.queue.splice(index, 1); this.accepted.delete(id); this.stateChanged(); return job;
+    const [job] = this.queue.splice(index, 1);
+    this.accepted.delete(id);
+    if (this.priorityPlanId === id) this.priorityPlanId = null;
+    this.stateChanged();
+    this.notifyQueueState();
+    return job;
   }
-  restoreQueued(job: Job) { this.accepted.set(job.record.id, job); this.queue.push(job); this.stateChanged(); this.startDrain(); }
+  restoreQueued(job: Job) {
+    this.accepted.set(job.record.id, job);
+    this.queue.push(job);
+    this.stateChanged();
+    this.notifyQueueState();
+    this.startDrain();
+  }
+  async cancelQueuedPlan(id: string): Promise<{ success: boolean; message?: string }> {
+    if (this.active?.record.id === id) return { success: false, message: '方案正在处理中，请使用停止导出' };
+    const index = this.queue.findIndex(job => job.record.id === id);
+    if (index < 0) return { success: false, message: '方案未在排队列表中' };
+    const [job] = this.queue.splice(index, 1);
+    this.accepted.delete(id);
+    if (this.priorityPlanId === id) this.priorityPlanId = null;
+    const readyRecord: PlanRecord = { ...job.record, status: 'ready', error: undefined };
+    await this.persist(readyRecord);
+    this.notify(readyRecord);
+    this.stateChanged();
+    this.notifyQueueState();
+    return { success: true };
+  }
+  async cancelActivePlan(id: string): Promise<{ success: boolean; message?: string }> {
+    if (!this.active || this.active.record.id !== id) {
+      return { success: false, message: '方案当前未在执行' };
+    }
+    const job = this.active;
+    const targetTaskDir = this.activeTaskDir;
+    // 1 & 2: 发送中止信号
+    this.controller?.abort();
+    // 3 & 4: 等待异步执行链彻底退出
+    if (this.activeExecutionPromise) {
+      await this.activeExecutionPromise.catch(() => {});
+    }
+    // 5 & 6: 确保临时目录物理清理并核验 ENOENT
+    if (targetTaskDir) {
+      await this.maintenance.releaseAsync(targetTaskDir).catch(() => {});
+      const deleted = await this.maintenance.abandonAndSweep(targetTaskDir).catch(() => false);
+      if (!deleted) {
+        console.warn(`临时资产目录物理清除失败或未完成：${targetTaskDir}`);
+      }
+    }
+    // 7: 状态持久化为 ready
+    const readyRecord: PlanRecord = { ...job.record, status: 'ready', error: undefined };
+    await this.persist(readyRecord);
+    this.accepted.delete(id);
+    this.notify(readyRecord);
+    this.clearProgress();
+    // 8: 条件派发与收尾
+    this.active = null;
+    this.controller = null;
+    this.currentRunId = null;
+    this.activeTaskDir = null;
+    this.activeExecutionPromise = null;
+    this.stateChanged();
+    this.notifyQueueState();
+    if (!this.closing && !this.storageError && !this.drainingBarrier) {
+      if (!this.queuePaused || this.priorityPlanId) {
+        this.startDrain();
+      }
+    }
+    return { success: true };
+  }
+  async cancelAll(): Promise<{ success: boolean; activeCancelled: boolean; pendingFinalPreserved?: boolean; dequeuedCount: number; message?: string }> {
+    let releaseBarrier!: () => void;
+    this.drainingBarrier = new Promise(resolve => { releaseBarrier = resolve; });
+    let activeCancelled = false;
+    let pendingFinalPreserved = false;
+    let dequeuedCount = 0;
+    try {
+      if (this.active) {
+        if (this.pendingFinal && this.pendingFinal.id === this.active.record.id) {
+          pendingFinalPreserved = true;
+        } else {
+          const activeId = this.active.record.id;
+          await this.cancelActivePlan(activeId);
+          activeCancelled = true;
+        }
+      }
+      const queuedJobs = [...this.queue];
+      this.queue = [];
+      this.priorityPlanId = null;
+      dequeuedCount = queuedJobs.length;
+      for (const job of queuedJobs) {
+        this.accepted.delete(job.record.id);
+        const readyRecord: PlanRecord = { ...job.record, status: 'ready', error: undefined };
+        await this.persist(readyRecord).catch(e => console.warn('排队方案重置失败：', e));
+        this.notify(readyRecord);
+      }
+      this.stateChanged();
+      this.notifyQueueState();
+      return {
+        success: true,
+        activeCancelled,
+        pendingFinalPreserved,
+        dequeuedCount,
+        message: pendingFinalPreserved
+          ? '当前导出任务已生成成片并受保护保留，待保存结果未破坏；其余排队任务已全部清空'
+          : undefined,
+      };
+    } finally {
+      this.drainingBarrier = null;
+      releaseBarrier();
+      this.stateChanged();
+    }
+  }
   private startDrain() {
-    if (this.running || this.storageError || this.closing) return;
+    if (this.running || this.storageError || this.closing || this.drainingBarrier) return;
+    if (this.queuePaused && !this.priorityPlanId) return;
     this.running = true;
-    this.drainPromise = this.drain().finally(() => { this.running = false; this.stateChanged(); if (this.queue.length && !this.storageError && !this.closing) this.startDrain(); });
+    this.drainPromise = this.drain().finally(() => {
+      this.running = false;
+      this.stateChanged();
+      if (this.queue.length && !this.storageError && !this.closing && !this.drainingBarrier && (!this.queuePaused || this.priorityPlanId)) {
+        this.startDrain();
+      }
+    });
   }
   private blockStorage(error: unknown) { this.storageError = `方案持久化失败：${error instanceof Error ? error.message : String(error)}。已有完整记录保留，请重试保存。`; this.stateChanged(); }
   private async drain(): Promise<void> {
-    while (this.queue.length && !this.closing && !this.storageError) {
-      const job = this.queue.shift()!; this.active = job; this.controller = new AbortController(); this.stateChanged();
+    while (!this.closing && !this.storageError && !this.drainingBarrier) {
+      let job: Job | undefined;
+      if (this.queuePaused) {
+        if (this.priorityPlanId) {
+          const idx = this.queue.findIndex(j => j.record.id === this.priorityPlanId);
+          if (idx >= 0) {
+            [job] = this.queue.splice(idx, 1);
+            this.priorityPlanId = null;
+            this.notifyQueueState();
+          } else {
+            this.priorityPlanId = null;
+            this.notifyQueueState();
+            break;
+          }
+        } else {
+          break;
+        }
+      } else {
+        if (!this.queue.length) break;
+        job = this.queue.shift()!;
+        this.notifyQueueState();
+      }
+      if (!job) break;
+
+      this.active = job; this.controller = new AbortController(); this.stateChanged();
       const processing = { ...job.record, status: 'processing' as const };
       try { await this.persist(processing); } catch (error) { this.queue.unshift(job); this.active = null; this.controller = null; this.blockStorage(error); return; }
       job.record = processing; this.notify(processing);
-      const run = Symbol(); this.progressRun = run;
+      const run = Symbol(); this.progressRun = run; this.currentRunId = run;
       const tracker = new ExecutionProgressTracker(processing.id, value => {
         if (this.progressRun === run) { this.progress = value; this.stateChanged(); }
       });
@@ -127,7 +347,7 @@ export class MediaCuttingEngine {
       try {
         if (!processing.compressionOnly && !processing.sourceIdentity) throw new Error('素材对应关系待确认，请回载方案确认后执行');
         if (processing.sourceIdentity && processing.sourceIdentity !== await fileIdentityAsync(processing.sourcePath)) throw new Error('排队期间素材已变化，原方案切点未执行');
-        const execution = this.executionSnapshot(tracker);
+        const execution = this.executionSnapshot(tracker, dir => { this.activeTaskDir = dir; });
         let plan: MediaRetentionPlan;
         let source: PlanExecutionData['source'];
         if (processing.compressionOnly) {
@@ -153,16 +373,19 @@ export class MediaCuttingEngine {
           const draft = RetentionDraft.fromRecord(processing, meta.durationMs);
           plan = draft.toPlan(meta.keyframes, { outputPath: processing.outputPath || processing.sourcePath, stripOriginalCover: processing.stripOriginalCover !== false, title: processing.title, keyframePoints: meta.keyframePoints });
         }
-        const result = await execution.executeSnapshot({ plan, source, compressionOnly: processing.compressionOnly === true }, this.controller.signal);
+        const execTask = execution.executeSnapshot({ plan, source, compressionOnly: processing.compressionOnly === true }, this.controller.signal);
+        this.activeExecutionPromise = execTask.then(() => {}).catch(() => {});
+        const result = await execTask;
         final = result.success
           ? { ...processing, status: 'completed', outputPath: result.outputPath, outputPaths: result.outputPaths, resolvedEncoder: result.resolvedEncoder, completedAt: new Date().toISOString(), error: undefined }
           : { ...processing, status: 'failed', outputPath: result.outputPath, outputPaths: result.outputPaths, error: result.error || '剪辑失败' };
       } catch (error) { final = { ...processing, status: 'failed', error: error instanceof Error ? error.message : String(error) }; }
+      finally { this.activeExecutionPromise = null; }
       if (final.compressionOnly && !final.outputPath) final.outputPath = null;
       if (final.status === 'completed') tracker.saving(); else tracker.failed();
       try { await this.persist(final); this.accepted.delete(final.id); this.notify(final); this.clearProgress(); }
       catch (error) { this.pendingFinal = final; this.blockStorage(error); }
-      finally { this.active = null; this.controller = null; this.stateChanged(); }
+      finally { this.active = null; this.controller = null; this.currentRunId = null; this.activeTaskDir = null; this.stateChanged(); }
     }
   }
   retryPendingWrites(): Promise<void> {
@@ -222,10 +445,10 @@ export class MediaCuttingEngine {
       currentJob.promise.then(encoder => { cleanup(); if (signal?.aborted) reject(abortError()); else resolve(encoder); }, error => { cleanup(); reject(error); });
     });
   }
-  private executionSnapshot(tracker?: ExecutionProgressTracker): PlanExecution {
+  private executionSnapshot(tracker?: ExecutionProgressTracker, onTaskDir?: (dir: string) => void): PlanExecution {
     const ffmpegPath = this.ffmpegPath;
     return new PlanExecution(ffmpegPath, this.ffprobePath, this.tmpDir, this.maintenance, this.tempReady,
-      (config, signal) => this.probeEncoderSupportFor(ffmpegPath, config, signal), this.inputProvider, tracker);
+      (config, signal) => this.probeEncoderSupportFor(ffmpegPath, config, signal), this.inputProvider, tracker, onTaskDir);
   }
   executeRawPlan(data: PlanExecutionData, signal?: AbortSignal): Promise<CutResult> { return this.executionSnapshot().executeSnapshot(data, signal); }
   async compressFile(input: string, output: string, config: CompressConfig, encoder: Encoder = 'cpu', signal?: AbortSignal, spatialFilterArgs?: string[], progressKey?: string, cpuRetry = false, stripCover = false, prepared?: ProbedFile): Promise<void> {
@@ -246,6 +469,7 @@ class PlanExecution {
     private readonly probeEncoderSupport: (config: CompressConfig, signal?: AbortSignal) => Promise<Encoder>,
     private readonly inputProvider?: InputProvider,
     private readonly tracker?: ExecutionProgressTracker,
+    private readonly onTaskDir?: (dir: string) => void,
   ) {}
   private async runStep(key: string | undefined, args: string[], durationMs: number, signal?: AbortSignal, cpuRetry = false) {
     if (!this.tracker || !key) { await runMediaTool(this.ffmpegPath, args, { signal }); return; }
@@ -361,6 +585,7 @@ class PlanExecution {
     this.maintenance.protect(plan.sourcePath);
     await this.tempReady;
     const directory = await this.maintenance.create(this.tmpDir, 'task', '');
+    this.onTaskDir?.(directory);
     return this.maintenance.task(directory, async () => {
     let indexedInput: { url: string; close: () => Promise<void> } | undefined;
     try {
@@ -488,7 +713,7 @@ class PlanExecution {
     finally {
       await indexedInput?.close().catch(error => console.warn('索引输入关闭失败：', error));
       await this.maintenance.abandon(directory).catch(error => console.warn('本次切片缓存收尾失败：', error));
-    this.maintenance.release(directory); await this.maintenance.sweep();
+      await this.maintenance.release(directory); await this.maintenance.sweep();
     }
     });
   }

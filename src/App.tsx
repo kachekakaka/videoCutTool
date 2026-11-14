@@ -150,6 +150,7 @@ const AppContent: React.FC = () => {
           workbenchMode={activeTab === 'cutter' && currentVideoPath ? workbenchMode : undefined}
           onWorkbenchModeChange={setWorkbenchMode}
           hasSpatialActive={hasSpatialActive}
+          onNavigatePlans={() => setActiveTab('plans')}
         />
 
         <main className="flex-1 overflow-hidden relative flex flex-col">

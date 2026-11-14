@@ -176,9 +176,9 @@ export class CacheMaintenanceService {
     let released = false;
     return () => { if (!released) { released = true; this.release(file); } };
   }
-  release(file: string) {
-    if (this.closed) { const count = this.references.get(key(file)) ?? 0; if (count > 1) this.references.set(key(file), count - 1); else this.references.delete(key(file)); return; }
-    void this.serial(async () => {
+  release(file: string): Promise<void> {
+    if (this.closed) { const count = this.references.get(key(file)) ?? 0; if (count > 1) this.references.set(key(file), count - 1); else this.references.delete(key(file)); return Promise.resolve(); }
+    const task = this.serial(async () => {
       const count = this.references.get(key(file)) ?? 0;
       if (count > 1) this.references.set(key(file), count - 1); else this.references.delete(key(file));
       const root = this.roots.get(key(path.dirname(file))), entry = root?.entries.get(path.basename(file));
@@ -189,7 +189,9 @@ export class CacheMaintenanceService {
       }
     }).catch(e => this.report(file, e));
     this.schedule();
+    return task;
   }
+  async releaseAsync(file: string): Promise<void> { await this.release(file); }
   async touch(file: string) {
     await this.serial(async () => { const root = this.root(path.dirname(file)), entry = root.entries.get(path.basename(file)); if (entry) { entry.used = this.now(); if (this.now() - (this.persisted.get(key(this.recordPath(root, entry)))?.time ?? 0) >= 30000) await this.save(root, entry); } });
   }
@@ -207,6 +209,18 @@ export class CacheMaintenanceService {
   async abandon(file: string) {
     await this.serial(async () => { const root = this.root(path.dirname(file)), entry = root.entries.get(path.basename(file)); if (entry) { entry.state = 'abandoned'; await this.save(root, entry); } });
     this.schedule();
+  }
+  /** 废弃并同步执行物理清理，严格以目标目录 ENOENT 判定真实删除。 */
+  async abandonAndSweep(directory: string): Promise<boolean> {
+    await this.abandon(directory);
+    const delays = [0, 50, 150, 400];
+    for (const delay of delays) {
+      if (delay > 0) await new Promise(r => setTimeout(r, delay));
+      await this.sweep();
+      const exists = await fs.promises.stat(directory).then(() => true, (err: any) => err.code === 'ENOENT' ? false : true);
+      if (!exists) return true;
+    }
+    return false;
   }
   async allowTaskFile(directory: string, file: string) {
     await this.serial(async () => {
