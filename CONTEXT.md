@@ -63,7 +63,7 @@
 ## Management & Execution Concepts
 
 ### Media Cutting Engine
-负责后台执行 Retention Plan 的处理模块，协调媒体处理、产物发布与执行状态。实现入口与队列边界见[模块与契约](docs/架构.md#模块与契约)。
+负责后台执行 Retention Plan 的处理模块，协调媒体处理、产物发布与执行状态。支持队列调度级暂停（暂停后当前处理中的单任务继续完成，排队任务暂不派发）与任务中断停止（终止底层媒体进程并回收未完成临时切片与半成品）。实现入口与队列边界见[模块与契约](docs/架构.md#模块与契约)。
 避免：Export queue、worker thread、task runner、ffmpeg wrapper。
 
 ### Plan Manager
@@ -94,7 +94,7 @@ Data Directory 中的运行配置，管理工具、执行与通知等设置；�
 避免：Green package、installer package、single-file SFX。
 
 ### Execution Status
-方案持久保存的执行阶段：`ready` 未提交，`queued` 已接受并等待，`processing` 后台处理中，`completed` 导出完成并记录产物，`failed` 执行失败或上次中断、可重试。状态与恢复操作的实现边界见[模块与契约](docs/架构.md#模块与契约)。
+方案持久保存的执行阶段：`ready` 未提交，`queued` 已接受并等待，`processing` 后台处理中，`completed` 导出完成并记录产物，`failed` 执行失败或上次中断、可重试。手动停止正在处理的任务或移出队列时，安全清理中间产物并恢复为 `ready`，不新增取消专用持久状态。状态与恢复操作的实现边界见[模块与契约](docs/架构.md#模块与契约)。
 避免：Run state、task progress、finish flag。
 
 ### Execution Progress
