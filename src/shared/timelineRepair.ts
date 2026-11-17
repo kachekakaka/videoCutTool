@@ -1,6 +1,6 @@
 export interface TimelineRepairProgress {
   requestId: string;
-  stage: 'checking' | 'choosing' | 'confirming' | 'scanning' | 'remuxing' | 'validating' | 'copying' | 'publishing';
+  stage: 'checking' | 'choosing' | 'confirming' | 'scanning' | 'remuxing' | 'validating' | 'publishing';
   percent?: number;
 }
 export interface TimelineRepairResult { output?: string; canceled?: boolean }

@@ -6,7 +6,8 @@ import { frameTime, timeMs } from '../../shared/mediaTime';
 import { REPAIR_CLOCK, RepairPacket, repairTimeline } from './RepairTimeline';
 import { writeMp4Timeline } from './Mp4TimelineRepair';
 import { CacheMaintenanceService } from './CacheMaintenanceService';
-import { publishRepairOutput } from './RepairOutput';
+import { publishOutput } from './OutputPublisher';
+import { createOutputWorkspace } from './OutputTaskWorkspace';
 import { TimelineRepairProgress } from '../../shared/timelineRepair';
 
 /** 只读有限流摘要；已有后台分析由共享索引服务持有。 */
@@ -18,8 +19,8 @@ export async function inspectRepairSource(source: string, ffprobe: string, signa
 }
 
 /** 显式修复任务入口；复用后台只读分析，用户确认后才生成新 MP4。 */
-export async function repairToMp4(options: { source: string; output: string; temporaryRoot: string; ffmpeg: string; ffprobe: string; signal?: AbortSignal; maintenance?: CacheMaintenanceService; indexes?: StreamPlaybackIndexService; progress?: (progress: Omit<TimelineRepairProgress, 'requestId'>) => void }) {
-  const { source, output, temporaryRoot, ffmpeg, ffprobe, signal } = options;
+export async function repairToMp4(options: { source: string; output: string; ffmpeg: string; ffprobe: string; signal?: AbortSignal; maintenance: CacheMaintenanceService; indexes?: StreamPlaybackIndexService; progress?: (progress: Omit<TimelineRepairProgress, 'requestId'>) => void }) {
+  const { source, output, ffmpeg, ffprobe, signal, maintenance } = options;
   const check = () => { if (signal?.aborted) throw abortError(); };
   check();
   if (path.extname(output).toLowerCase() !== '.mp4') throw new Error('修复输出必须为新的 MP4 文件');
@@ -29,11 +30,12 @@ export async function repairToMp4(options: { source: string; output: string; tem
   options.progress?.({ stage: 'checking' });
   const { video, audio } = await inspectRepairSource(source, ffprobe, signal);
   const sourceSize = (await fs.promises.stat(source)).size;
-  await fs.promises.mkdir(temporaryRoot, { recursive: true });
-  for (const directory of [temporaryRoot, path.dirname(output)]) {
-    const space = await fs.promises.statfs(directory);
-    if (space.bavail * space.bsize < sourceSize * 1.1 + 64 * 1024 ** 2) throw new Error(`磁盘可用空间不足，需为完整修复副本预留空间：${directory}`);
-  }
+  maintenance.protect(source, output);
+  const workspace = await createOutputWorkspace(path.dirname(output), maintenance, signal);
+  const { directory } = workspace;
+  try {
+  const space = await fs.promises.statfs(directory);
+  if (space.bavail * space.bsize < sourceSize * 1.1 + 64 * 1024 ** 2) throw new Error(`磁盘可用空间不足，需为完整修复副本预留空间：${directory}`);
   options.progress?.({ stage: 'scanning', percent: 0 });
   let lastProgress = 0;
   const streams = new Map<number, { packets: RepairPacket[]; num: number; den: number; position: number }>();
@@ -59,13 +61,6 @@ export async function repairToMp4(options: { source: string; output: string; tem
     if (tail) consume(tail);
   }
   check(); const timeline = repairTimeline(streams.get(video.index)!.packets, streams.get(audio.index)!.packets);
-  const maintenance = options.maintenance || new CacheMaintenanceService(path.join(temporaryRoot, '.cache-maintenance'));
-  const root = path.join(temporaryRoot, 'slices', 'managed');
-  maintenance.protect(source, output);
-  let directory: string | undefined;
-  try {
-  await maintenance.registerRoot(root);
-  directory = await maintenance.create(root, 'task', '');
   const carrier = path.join(directory, 'carrier.mp4');
   await maintenance.allowTaskFile(directory, carrier);
   return await maintenance.task(directory, async () => {
@@ -80,7 +75,7 @@ export async function repairToMp4(options: { source: string; output: string; tem
     if (await fileIdentityAsync(source) !== sourceIdentity) throw new Error('处理期间原片发生变化，拒绝输出');
     check();
     options.progress?.({ stage: 'publishing' });
-    await publishRepairOutput(carrier, output, maintenance, signal, percent => options.progress?.({ stage: 'copying', percent }));
+    await publishOutput(carrier, output, signal);
     if (options.indexes?.store) {
       try {
         const info = await probeFile(output, ffprobe), identity = await fileIdentityAsync(output);
@@ -91,7 +86,6 @@ export async function repairToMp4(options: { source: string; output: string; tem
     return { output, videoPackets: timeline.video.length, audioPackets: timeline.audio.length, boundaries: timeline.boundaries, adjustedDuplicates: timeline.adjustedDuplicates, audioOverlapRepairs: timeline.audioOverlapRepairs, maxAudioAdjustmentMs: timeline.maxAudioAdjustment / REPAIR_CLOCK * 1000 };
   });
   } finally {
-    if (directory) { await maintenance.abandon(directory); maintenance.release(directory); await maintenance.sweep(); }
-    if (!options.maintenance) await maintenance.close();
+    await workspace.close().catch(error => console.warn('修复缓存收尾失败，已发布成品保留：', error));
   }
 }

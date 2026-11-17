@@ -8,7 +8,7 @@ export type CacheKind = 'playback' | 'picture' | 'index' | 'task';
 type Stamp = { ino: number; dev: number; size: number; mtimeMs: number };
 type Entry = { id: string; name: string; kind: CacheKind; state: 'building' | 'ready' | 'abandoned'; used: number; released: number; files: Record<string, Stamp | null>; children: number[]; spawning?: number; retry?: number; failures?: number };
 interface SpawnRegistration { started: (child: ChildProcess) => Promise<void>; cancel: () => Promise<void> }
-type Root = { directory: string; id: string; entries: Map<string, Entry>; owned: boolean; token: string };
+type Root = { directory: string; id: string; entries: Map<string, Entry>; owned: boolean; token: string; transient?: boolean; users: number };
 export type CachePolicy = { bytes: number; count: number; ttl: number; grace: number };
 const hour = 3600000;
 export const CACHE_POLICIES: Record<Exclude<CacheKind, 'task'>, CachePolicy> = {
@@ -74,22 +74,34 @@ export class CacheMaintenanceService {
   }
   private recordPath(root: Root, entry: Entry) { return path.join(root.directory, `.vct-entry-${entry.id}.json`); }
   private remembered(root: Root, entry: Entry) { this.persisted.set(key(this.recordPath(root, entry)), { json: JSON.stringify(entry), time: this.now() }); }
-  private async save(root: Root, entry: Entry) { await this.write(this.recordPath(root, entry), entry); this.remembered(root, entry); }
-  private async claim(directory: string, id?: string): Promise<Root> {
+  private async assertOwner(root: Root) {
+    await this.safePath(path.join(root.directory, lockName));
+    await this.safePath(path.join(root.directory, marker));
+    const owner = JSON.parse(await fs.promises.readFile(path.join(root.directory, lockName), 'utf8'));
+    const identity = JSON.parse(await fs.promises.readFile(path.join(root.directory, marker), 'utf8'));
+    if (!root.owned || owner.token !== root.token || identity.id !== root.id) throw new Error('受控根所有权发生变化');
+  }
+  private async save(root: Root, entry: Entry) {
+    await this.assertOwner(root);
+    await this.write(this.recordPath(root, entry), entry); this.remembered(root, entry);
+  }
+  private async claim(directory: string, id?: string, transient = false): Promise<Root> {
     const absolute = path.resolve(directory);
     await this.safePath(absolute);
-    await fs.promises.mkdir(absolute, { recursive: true });
+    if (!id) await fs.promises.mkdir(absolute, { recursive: true });
+    if (!(await fs.promises.lstat(absolute)).isDirectory()) throw new Error('受控根不是目录');
     const rootMarker = path.join(absolute, marker);
     await this.safePath(rootMarker);
     let identity: { id: string; version: number };
     try { identity = JSON.parse(await fs.promises.readFile(rootMarker, 'utf8')); }
     catch (e: any) {
       if (e.code !== 'ENOENT' || id) throw new Error('受控根登记缺失或损坏');
+      if ((await fs.promises.readdir(absolute)).length) throw new Error('不能认领未知非空目录');
       identity = { version: 1, id: randomUUID() };
       await fs.promises.writeFile(rootMarker, JSON.stringify(identity), { flag: 'wx' });
     }
     if (identity.version !== 1 || !/^[a-f0-9-]{36}$/.test(identity.id) || (id && id !== identity.id)) throw new Error('受控根身份不匹配');
-    const root: Root = { directory: absolute, id: identity.id, entries: new Map(), owned: false, token: randomUUID() };
+    const root: Root = { directory: absolute, id: identity.id, entries: new Map(), owned: false, token: randomUUID(), transient, users: 0 };
     const lock = path.join(absolute, lockName);
     await this.safePath(lock);
     try {
@@ -134,7 +146,43 @@ export class CacheMaintenanceService {
       await this.write(pointer, { version: 1, id: root.id, directory: root.directory });
     });
   }
-  async discover() {
+  /** 导出根仅在使用期间占用；登记保留供重启发现。 */
+  async acquireOutputRoot(directory: string): Promise<() => Promise<void>> {
+    await this.serial(async () => {
+      let root = this.roots.get(key(directory));
+      if (!root) {
+        root = await this.claim(directory, undefined, true);
+        if (!root.owned) throw new Error('导出目录正由其他进程使用或无法确认归属');
+        this.roots.set(key(directory), root);
+      }
+      await this.assertOwner(root);
+      root.users++;
+      try {
+        await fs.promises.mkdir(this.registryDirectory, { recursive: true });
+        await this.write(path.join(this.registryDirectory, `${root.id}.json`), { version: 1, id: root.id, directory: root.directory, transient: true });
+      } catch (error) { root.users--; await this.releaseIdle(root); throw error; }
+    });
+    let released = false;
+    return async () => {
+      if (released) return;
+      released = true;
+      await this.serial(async () => { const root = this.roots.get(key(directory)); if (root) { root.users--; await this.releaseIdle(root); } });
+    };
+  }
+  private async releaseIdle(root: Root) {
+    if (!root.transient || root.users || [...this.references].some(([file, count]) => count > 0 && file.startsWith(key(root.directory) + path.sep))) return;
+    if ([...root.entries.values()].some(entry => entry.spawning || entry.children.some(alive))) { this.report(root.directory, '媒体进程仍存活或归属不明，保留占用'); return; }
+    const lock = path.join(root.directory, lockName);
+    try {
+      await this.safePath(lock);
+      const owner = JSON.parse(await fs.promises.readFile(lock, 'utf8'));
+      if (owner.token !== root.token) throw new Error('根锁所有权发生变化');
+      await fs.promises.unlink(lock);
+      root.owned = false;
+      this.roots.delete(key(root.directory));
+    } catch (error) { this.report(lock, error); }
+  }
+  private async discoverRoots() {
     await fs.promises.mkdir(this.registryDirectory, { recursive: true });
     for (const name of await fs.promises.readdir(this.registryDirectory)) {
       if (!/^[a-f0-9-]{36}\.json$/.test(name)) continue;
@@ -142,10 +190,11 @@ export class CacheMaintenanceService {
         const pointer = path.join(this.registryDirectory, name); await this.safePath(pointer);
         const item = JSON.parse(await fs.promises.readFile(pointer, 'utf8'));
         if (item.version !== 1 || name !== `${item.id}.json` || !path.isAbsolute(item.directory) || path.basename(item.directory) !== 'managed' || !['playback_cache', 'preview_cache', 'cache', 'slices', 'stream_indexes', 'index-staging'].includes(path.basename(path.dirname(item.directory)))) throw new Error('历史根登记不合法');
-        await this.serial(async () => { if (!this.roots.has(key(item.directory))) { const root = await this.claim(item.directory, item.id); if (root.owned) this.roots.set(key(item.directory), root); } });
+        await this.serial(async () => { if (!this.roots.has(key(item.directory))) { const root = await this.claim(item.directory, item.id, item.transient === true); if (root.owned) this.roots.set(key(item.directory), root); } });
       } catch (e) { this.report(name, e); }
     }
   }
+  async discover() { await this.sweep(); }
   private root(directory: string) { const root = this.roots.get(key(directory)); if (!root?.owned) throw new Error('缓存根未取得所有权'); return root; }
   async find(directory: string, cacheId: string, kind: CacheKind) {
     return this.serial(async () => {
@@ -166,7 +215,10 @@ export class CacheMaintenanceService {
       await this.save(root, entry); root.entries.set(name, entry);
       const target = path.join(directory, name);
       this.references.set(key(target), 1);
-      if (kind === 'task') await fs.promises.mkdir(target);
+      if (kind === 'task') {
+        try { await fs.promises.mkdir(target); }
+        catch (error) { this.references.delete(key(target)); throw error; }
+      }
       return target;
     });
   }
@@ -215,6 +267,19 @@ export class CacheMaintenanceService {
   }
   /** 废弃并同步执行物理清理，严格以目标目录 ENOENT 判定真实删除。 */
   async abandonAndSweep(directory: string): Promise<boolean> {
+    const exists = await fs.promises.lstat(directory).then(() => true, (error: any) => { if (error.code === 'ENOENT') return false; throw error; });
+    if (!exists) return true;
+    // 执行器可能已经释放根；只重新取得已有根，绝不补建历史路径。
+    await this.serial(async () => {
+      const parent = path.dirname(directory);
+      if (!this.roots.has(key(parent))) {
+        await this.safePath(parent);
+        const identity = JSON.parse(await fs.promises.readFile(path.join(parent, marker), 'utf8'));
+        const root = await this.claim(parent, identity.id, true);
+        if (!root.owned) throw new Error('任务根由其他进程占用');
+        this.roots.set(key(parent), root);
+      }
+    });
     await this.abandon(directory);
     const delays = [0, 50, 150, 400];
     for (const delay of delays) {
@@ -241,7 +306,7 @@ export class CacheMaintenanceService {
     const settle = (child?: ChildProcess) => {
       if (settled) return Promise.resolve();
       settled = true;
-      if (child) child.once('close', () => { void this.serial(async () => { entry.children = entry.children.filter(pid => pid !== child.pid); await this.save(root, entry); }).catch(e => this.report(directory, e)); });
+      if (child) child.once('close', () => { void this.serial(async () => { entry.children = entry.children.filter(pid => pid !== child.pid); await this.save(root, entry); await this.releaseIdle(root); }).catch(e => this.report(directory, e)); });
       return this.serial(async () => {
         if (child?.pid) entry.children.push(child.pid);
         entry.spawning = Math.max(0, (entry.spawning ?? 0) - 1);
@@ -271,6 +336,7 @@ export class CacheMaintenanceService {
     return this.sweepPromise;
   }
   private async sweepOnce() {
+    await this.discoverRoots();
     const started = performance.now();
     const statistics = { checked: 0, deleted: 0, logicalBytes: 0, protected: 0, active: 0, delayed: 0, errors: 0, durationMs: 0 };
     const totals = new Map<CacheKind, { bytes: number; count: number }>();
@@ -281,6 +347,7 @@ export class CacheMaintenanceService {
       if (this.closed) break;
       if (++checked % 64 === 0) await new Promise<void>(resolve => setImmediate(resolve));
       await this.serial(async () => {
+        if (!root.owned || this.roots.get(key(root.directory)) !== root) return;
         const file = path.join(root.directory, entry.name), now = this.now();
         statistics.checked++;
         if (!root.entries.has(entry.name)) return;
@@ -325,9 +392,10 @@ export class CacheMaintenanceService {
           this.persisted.delete(key(this.recordPath(root, entry)));
           statistics.deleted++; statistics.logicalBytes += removedBytes;
           const total = totals.get(entry.kind); if (total) { total.bytes -= entry.files['']?.size ?? 0; total.count--; }
-        } catch (e) { statistics.errors++; entry.failures = (entry.failures ?? 0) + 1; entry.retry = now + Math.min(hour, 30000 * 2 ** Math.min(entry.failures, 7)); this.report(file, e); await this.save(root, entry); }
+        } catch (e) { statistics.errors++; entry.failures = (entry.failures ?? 0) + 1; entry.retry = now + Math.min(hour, 30000 * 2 ** Math.min(entry.failures, 7)); this.report(file, e); await this.save(root, entry).catch(error => this.report(file, error)); }
       });
     }
+    await this.serial(async () => { for (const root of this.roots.values()) await this.releaseIdle(root); });
     statistics.durationMs = performance.now() - started;
     this.lastSweep = statistics;
     if (statistics.deleted || statistics.errors) console.info('缓存维护完成（字节数为逻辑大小）：', statistics);

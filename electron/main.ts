@@ -387,7 +387,7 @@ handle('media:repairTimeline', (event, file: string, id: string) => {
       } catch (error) { clear(); reject(error); }
     });
     check(); if (!approved) return { canceled: true };
-    const result = await repairToMp4({ source, output, temporaryRoot: getExternalTmpDir(hostDir), ffmpeg, ffprobe, signal: controller.signal, maintenance, indexes: streamPlayback.indexes, progress });
+    const result = await repairToMp4({ source, output, ffmpeg, ffprobe, signal: controller.signal, maintenance, indexes: streamPlayback.indexes, progress });
     await files.authorize(result.output);
     return { output: result.output };
   })().catch(error => { if (controller.signal.aborted || error.name === 'AbortError') return { canceled: true }; throw error; }).finally(() => { repairConfirmations.delete(key); repairRequests.delete(key); });
@@ -559,13 +559,12 @@ app.whenReady().then(async () => {
   }
 
   const currentConfig = configService.getConfig();
-  const tempSlicesDir = path.resolve(getExternalTmpDir(exeDir), 'slices');
   const tempPreviewDir = path.resolve(getExternalTmpDir(exeDir), 'preview_cache');
   maintenance = new CacheMaintenanceService(path.join(getExternalTmpDir(exeDir), '.cache-maintenance'), { busy: () => Boolean(cuttingEngine?.getActivePlanId()) || hasActiveMediaProcesses() });
   maintenance.protect(configService.getConfigPath(), path.join(configService.getDataDirectory(), 'plans'), path.join(exeDir, 'workspace.json'));
   const mediaIndexes = new MediaIndexService(configService.getDataDirectory(), maintenance, currentConfig.ffprobePath);
   prober = mediaIndexes.prober;
-  cuttingEngine = new MediaCuttingEngine(currentConfig.ffmpegPath, tempSlicesDir, undefined, undefined, maintenance);
+  cuttingEngine = new MediaCuttingEngine(currentConfig.ffmpegPath, undefined, undefined, maintenance);
   cuttingEngine.updateTools(currentConfig.ffmpegPath, currentConfig.ffprobePath);
   cuttingEngine.setInputProvider((file, signal) => prober.input(file, signal));
   planManager = new PlanManager(configService.getDataDirectory(), cuttingEngine, prober);

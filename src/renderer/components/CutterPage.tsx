@@ -1198,7 +1198,7 @@ export const CutterPage: React.FC<CutterPageProps> = ({
     }
   };
 
-  const repairStages: Record<TimelineRepairProgress['stage'], string> = { checking: '检查修复条件', choosing: '选择新文件', confirming: '等待确认修复', scanning: '分析时间轴断点', remuxing: '无损封装 MP4', validating: '检查修复结果', copying: '复制到目标磁盘', publishing: '保存完整 MP4' };
+  const repairStages: Record<TimelineRepairProgress['stage'], string> = { checking: '检查修复条件', choosing: '选择新文件', confirming: '等待确认修复', scanning: '分析时间轴断点', remuxing: '无损封装 MP4', validating: '检查修复结果', publishing: '保存完整 MP4' };
   const repairPanel = (repairSource || repairProgress || repairMessage) && (
     <div role="status" className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/10 text-sm text-amber-100 space-y-2 shrink-0">
       {isActive && repairConfirmation && <TimelineRepairDialog confirmation={repairConfirmation} onCancel={cancelRepair} onConfirm={confirmRepair} />}

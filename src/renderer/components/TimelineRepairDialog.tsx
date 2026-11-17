@@ -33,7 +33,7 @@ export function TimelineRepairDialog({ confirmation, onCancel, onConfirm }: {
       </dl>
       <div className="mt-4 space-y-2 text-xs leading-relaxed text-zinc-300">
         <p>仅修复时间轴并无损另存为 MP4，不重新编码。原片和已保存方案都保留，不自动迁移切点。</p>
-        <p>修复会读取整段录像，需要额外磁盘空间。跨盘保存会先在目标盘的受管临时目录完成复制。</p>
+        <p>修复会读取整段录像，并在目标磁盘生成临时文件，需要额外磁盘空间。检查通过后才保存完整成品；目标位置须支持安全发布。</p>
       </div>
       <div className="mt-6 flex justify-end gap-3">
         <button type="button" autoFocus onClick={onCancel} className="rounded-lg border border-white/15 px-4 py-2 text-sm hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400">取消</button>

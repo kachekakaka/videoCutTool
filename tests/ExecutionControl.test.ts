@@ -23,13 +23,15 @@ async function createFixture() {
   const base = path.resolve('../videoCutTool_tmp/execution-control-tests');
   await fs.promises.mkdir(base, { recursive: true });
   const directory = await fs.promises.mkdtemp(path.join(base, 'case-'));
-  const slices = path.join(directory, 'slices');
+  const slices = path.join(directory, 'cut/videoCutTool_tmp/slices');
   const registry = path.join(directory, 'registry');
   const plansDir = path.join(directory, 'plans');
   await fs.promises.mkdir(plansDir, { recursive: true });
 
   const maintenance = new CacheMaintenanceService(registry);
-  const engine = new MediaCuttingEngine(undefined, slices, undefined, undefined, maintenance);
+  // 此组调度测试替换执行器，由夹具显式准备其模拟任务根。
+  await maintenance.registerRoot(path.join(slices, 'managed'));
+  const engine = new MediaCuttingEngine(undefined, undefined, undefined, maintenance);
 
   const source = path.join(directory, 'source.mp4');
   await fs.promises.writeFile(source, '视频源测试内容');
@@ -453,7 +455,7 @@ describe('任务执行停止、队列暂停与手动优先调度 (ExecutionContr
       );
 
       // 模拟应用重启：创建新的 PlanManager 实例
-      const restartedEngine = new MediaCuttingEngine(undefined, ctx.slices, undefined, undefined, ctx.maintenance);
+      const restartedEngine = new MediaCuttingEngine(undefined, undefined, undefined, ctx.maintenance);
       const restartedManager = new PlanManager(ctx.directory, restartedEngine, ctx.prober);
       await restartedManager.ready;
 
@@ -895,7 +897,7 @@ describe('任务执行停止、队列暂停与手动优先调度 (ExecutionContr
       await fs.promises.unlink(stateFile).catch(() => {});
 
       // 模拟启动重启
-      const newEngine = new MediaCuttingEngine(undefined, ctx.slices, undefined, undefined, ctx.maintenance);
+      const newEngine = new MediaCuttingEngine(undefined, undefined, undefined, ctx.maintenance);
       const newManager = new PlanManager(ctx.directory, newEngine, ctx.prober);
       await newManager.ready;
 
@@ -929,7 +931,7 @@ describe('任务执行停止、队列暂停与手动优先调度 (ExecutionContr
       const stateFile = path.join(ctx.directory, 'queue_state.json');
       await fs.promises.writeFile(stateFile, '{ corrupted json content ... !@#$');
 
-      const newEngine = new MediaCuttingEngine(undefined, ctx.slices, undefined, undefined, ctx.maintenance);
+      const newEngine = new MediaCuttingEngine(undefined, undefined, undefined, ctx.maintenance);
       const newManager = new PlanManager(ctx.directory, newEngine, ctx.prober);
       await newManager.ready;
 
@@ -1294,15 +1296,19 @@ describe('任务执行停止、队列暂停与手动优先调度 (ExecutionContr
   });
 
   describe('任务执行控制最终缺陷定向修复专项测试 (Final P0 Tests)', () => {
-    it('最终专项 1: tempReady 尚未完成时触发停止，不得继续创建临时目录', async () => {
+    it('最终专项 1: 取得导出根期间停止，不得继续创建任务目录', async () => {
       const ctx = await createFixture();
       try {
         const planA = ctx.makeRecord('plan-tempready-stop', 'tempReady未完成停止任务');
         await ctx.planManager.savePlan(planA);
 
         const tempReadyDeferred = deferred<void>();
-        // 替换 engine 内部的 tempReady 为可控的未完成 Promise
-        (ctx.engine as any).tempReady = tempReadyDeferred.promise;
+        const entered = deferred<void>();
+        const acquire = ctx.maintenance.acquireOutputRoot.bind(ctx.maintenance);
+        vi.spyOn(ctx.maintenance, 'acquireOutputRoot').mockImplementation(async directory => {
+          const release = await acquire(directory); entered.resolve();
+          await tempReadyDeferred.promise; return release;
+        });
 
         let createCalled = false;
         const originalCreate = ctx.maintenance.create.bind(ctx.maintenance);
@@ -1322,6 +1328,7 @@ describe('任务执行停止、队列暂停与手动优先调度 (ExecutionContr
         expect(ctx.engine.getActivePlanId()).toBe(planA.id);
 
         // 在 tempReady 尚未 resolve 前触发停止
+        await entered.promise;
         const cancelPromise = ctx.planManager.cancelPlan(planA.id);
 
         // 停止触发后（controller.signal 已 aborted），再 resolve tempReady

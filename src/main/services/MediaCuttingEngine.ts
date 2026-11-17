@@ -14,6 +14,8 @@ import { resolveOutputBatch, resolveOutputDirectory } from './OutputPathResolver
 import { buildSpatialFiltergraph, hasSpatialEffects, spatialOutputSize, validateSpatial, Dimension } from '../../shared/spatialFiltergraph';
 import { removeMp4Preroll } from './Mp4TimelineRepair';
 import { exportPreciseFile, preciseAudioDefaults } from './PreciseExport';
+import { createOutputWorkspace } from './OutputTaskWorkspace';
+import { publishOutput, removePublished } from './OutputPublisher';
 
 type Encoder = 'cpu' | 'nvenc' | 'qsv';
 type InputProvider = (file: string, signal?: AbortSignal) => Promise<{ url: string; close: () => Promise<void> }>;
@@ -29,7 +31,6 @@ export type PlanStatusListener = (event: { planId: string; status: ExecutionStat
 export class MediaCuttingEngine {
   private ffmpegPath: string;
   private ffprobePath: string;
-  private tmpDir: string;
   private queue: Job[] = [];
   private accepted = new Map<string, Job>();
   private submitting = new Map<string, Promise<{ queued: boolean; active: boolean }>>();
@@ -66,16 +67,12 @@ export class MediaCuttingEngine {
 
   private maintenance: CacheMaintenanceService;
   private ownsMaintenance: boolean;
-  private tempReady: Promise<void>;
-  constructor(preferredPath?: string, customSlicesDir?: string, saver?: (record: PlanRecord) => any, listener?: PlanStatusListener, maintenance?: CacheMaintenanceService) {
+  constructor(preferredPath?: string, saver?: (record: PlanRecord) => any, listener?: PlanStatusListener, maintenance?: CacheMaintenanceService) {
     this.ffmpegPath = resolveTool('ffmpeg', preferredPath);
     this.ffprobePath = resolveTool('ffprobe', preferredPath ? path.join(path.dirname(preferredPath), 'ffprobe.exe') : undefined);
     const base = process.cwd();
-    this.tmpDir = customSlicesDir || path.join(externalTemporaryDirectory(base), 'slices');
     this.ownsMaintenance = !maintenance;
-    this.maintenance = maintenance ?? new CacheMaintenanceService(path.join(path.dirname(this.tmpDir), '.cache-maintenance'));
-    this.tmpDir = path.join(this.tmpDir, 'managed');
-    this.tempReady = this.maintenance.registerRoot(this.tmpDir);
+    this.maintenance = maintenance ?? new CacheMaintenanceService(path.join(externalTemporaryDirectory(base), '.cache-maintenance'));
     this.savePlanFn = saver; this.onStatusChange = listener;
   }
   updateTools(ffmpeg?: string, ffprobe?: string) { this.ffmpegPath = resolveTool('ffmpeg', ffmpeg); this.ffprobePath = resolveTool('ffprobe', ffprobe); this.cachedEncoders.clear(); }
@@ -459,7 +456,7 @@ export class MediaCuttingEngine {
         this.startDrain();
       }
     }
-    return { success: true };
+    return { success: true, ...(readyRecord.outputPaths?.length ? { message: `任务已停止，已保留完整成品：${readyRecord.outputPaths.join('、')}` } : {}) };
   }
   async cancelAll(): Promise<ExecutionCancelAllResult> {
     let releaseBarrier!: () => void;
@@ -701,6 +698,7 @@ export class MediaCuttingEngine {
 
         // 如果被主动中止或取消，不持久化为 failed，交由 cancelActivePlan 完成收尾
         if (this.controller?.signal.aborted || this.cancelledActiveId === processing.id || this.currentRunId !== run) {
+          if (final.outputPaths?.length) job.record = { ...job.record, outputPath: final.outputPaths[0], outputPaths: final.outputPaths };
           this.clearProgress();
           return;
         }
@@ -802,7 +800,7 @@ export class MediaCuttingEngine {
   }
   private executionSnapshot(tracker?: ExecutionProgressTracker, onTaskDir?: (dir: string) => void): PlanExecution {
     const ffmpegPath = this.ffmpegPath;
-    return new PlanExecution(ffmpegPath, this.ffprobePath, this.tmpDir, this.maintenance, this.tempReady,
+    return new PlanExecution(ffmpegPath, this.ffprobePath, this.maintenance,
       (config, signal) => this.probeEncoderSupportFor(ffmpegPath, config, signal), this.inputProvider, tracker, onTaskDir);
   }
   executeRawPlan(data: PlanExecutionData, signal?: AbortSignal): Promise<CutResult> { return this.executionSnapshot().executeSnapshot(data, signal); }
@@ -818,9 +816,7 @@ class PlanExecution {
   constructor(
     private readonly ffmpegPath: string,
     readonly ffprobePath: string,
-    private readonly tmpDir: string,
     private readonly maintenance: CacheMaintenanceService,
-    private readonly tempReady: Promise<void>,
     private readonly probeEncoderSupport: (config: CompressConfig, signal?: AbortSignal) => Promise<Encoder>,
     private readonly inputProvider?: InputProvider,
     private readonly tracker?: ExecutionProgressTracker,
@@ -877,20 +873,6 @@ class PlanExecution {
     if (original.length !== actual.length || original.some((stream, index) => (precise ? actual[index].codec !== 'aac' : stream.codec !== actual[index].codec) || (stream.language && stream.language !== actual[index].language) || (precise && stream.default !== actual[index].default))) throw new Error('导出音轨数量、编码、语言或默认轨与预期不一致，产物未发布');
     if (expected.filter(stream => stream.type === 'video' && !stream.attachedPicture).length !== info.streams.filter(stream => stream.type === 'video' && !stream.attachedPicture).length) throw new Error('导出视频流数量不一致，产物未发布');
   }
-  /** 同卷用排他硬链接避免再次复制；跨卷持有排他创建的文件句柄完成发布。 */
-  private async publishOne(source: string, target: string, signal?: AbortSignal): Promise<fs.Stats> {
-    if (signal?.aborted) throw new Error('操作已取消');
-    try { await fs.promises.link(source, target); return await fs.promises.stat(target); }
-    catch (error: any) { if (!['EXDEV', 'EPERM', 'ENOTSUP', 'EACCES'].includes(error.code)) throw error; }
-    const handle = await fs.promises.open(target, 'wx');
-    const identity = await handle.stat();
-    try { await handle.writeFile(fs.createReadStream(source), { signal }); await handle.sync(); return identity; }
-    catch (error) { await handle.close(); await this.removePublished(target, identity); throw error; }
-    finally { await handle.close().catch(() => {}); }
-  }
-  private async removePublished(file: string, identity: fs.Stats) {
-    try { const current = await fs.promises.lstat(file); if (current.ino === identity.ino && current.dev === identity.dev) await fs.promises.unlink(file); } catch {}
-  }
   /** 一份安全覆盖只编码一次；视频在解码后按逻辑边界分窗，音轨不跟随窗口重复。 */
   private async spatialPiece(input: string, output: string, pieces: string[], unions: PlanSegment[], plan: OutputFilePlan, size: Dimension, target: Dimension | undefined, config: CompressConfig, encoder: Encoder, signal?: AbortSignal, progressKey?: string, cpuRetry = false) {
     const info = await probeFile(input, this.ffprobePath, signal);
@@ -938,16 +920,16 @@ class PlanExecution {
   async executeSnapshot(data: PlanExecutionData, signal?: AbortSignal): Promise<CutResult> {
     const { plan, source: boundSource, compressionOnly } = data;
     this.maintenance.protect(plan.sourcePath);
-    await this.tempReady;
     if (signal?.aborted) throw new Error('操作已取消');
-    const directory = await this.maintenance.create(this.tmpDir, 'task', '');
+    const destination = resolveOutputDirectory(plan.sourcePath, compressionOnly);
+    const workspace = await createOutputWorkspace(destination, this.maintenance, signal);
+    const { directory } = workspace;
     this.onTaskDir?.(directory);
-    if (signal?.aborted) throw new Error('操作已取消');
     return this.maintenance.task(directory, async () => {
     let indexedInput: { url: string; close: () => Promise<void> } | undefined;
     try {
       if (!plan.outputs.length || (!compressionOnly && plan.outputs.some(output => !output.planSegments.length))) throw new Error('未选择任何保留片段');
-      const destination = resolveOutputDirectory(plan.sourcePath, compressionOnly);
+      if (signal?.aborted) throw abortError();
       if (await fileIdentityAsync(plan.sourcePath) !== boundSource.identity) throw new Error('导出开始前原片发生变化，未发布结果');
       const info = boundSource.info || await probeFile(plan.sourcePath, this.ffprobePath, signal);
       if (!compressionOnly) indexedInput = await this.inputProvider?.(plan.sourcePath, signal);
@@ -1056,21 +1038,26 @@ class PlanExecution {
         try {
           for (let i = 0; i < targets.length; i++) {
             this.tracker?.stage('publishing', i + 1, targets.length);
-            published.push({ file: targets[i], identity: await this.publishOne(finalFiles[i], targets[i], signal) });
+            published.push({ file: targets[i], identity: await publishOutput(finalFiles[i], targets[i], signal) });
             this.tracker?.finishOperation(`publish:${i}`);
           }
           return { success: true, outputPath: targets[0], outputPaths: targets, resolvedEncoder: encoder };
         } catch (error: any) {
           if (error.code !== 'EEXIST') return { success: false, outputPath: published[0]?.file || plan.outputPath, outputPaths: published.map(entry => entry.file), error: `${error.message || error}${published.length ? `；已保留 ${published.length} 个完整分段：${published.map(entry => entry.file).join('、')}` : ''}` };
-          for (const entry of published) await this.removePublished(entry.file, entry.identity);
+          for (let i = 0; i < published.length; i++) {
+            try { await removePublished(published[i].file, published[i].identity); }
+            catch (cleanupError) {
+              const retained = published.slice(i).map(entry => entry.file);
+              return { success: false, outputPath: retained[0], outputPaths: retained, error: `同名重试前撤销产物失败，已保留完整成品：${retained.join('、')}；${String(cleanupError)}` };
+            }
+          }
         }
       }
       throw new Error('输出目录持续出现同名文件，未覆盖已有文件，请重试');
     } catch (error) { return { success: false, outputPath: plan.outputPath, error: error instanceof Error ? error.message : String(error) }; }
     finally {
       await indexedInput?.close().catch(error => console.warn('索引输入关闭失败：', error));
-      await this.maintenance.abandon(directory).catch(error => console.warn('本次切片缓存收尾失败：', error));
-      await this.maintenance.release(directory); await this.maintenance.sweep();
+      await workspace.close().catch(error => console.warn('本次导出缓存收尾失败，成品保留：', error));
     }
     });
   }

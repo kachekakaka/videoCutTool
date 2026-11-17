@@ -3,6 +3,7 @@ import path from 'path';
 import { describe, expect, it, vi } from 'vitest';
 import { CacheMaintenanceService } from '../src/main/services/CacheMaintenanceService';
 import { MediaCuttingEngine } from '../src/main/services/MediaCuttingEngine';
+import { resolveOutputDirectory } from '../src/main/services/OutputPathResolver';
 import { RetentionDraft } from '../src/shared/RetentionDraft';
 import * as mediaTools from '../src/main/services/MediaTools';
 import type { KeyframeProber } from '../src/main/services/KeyframeProber';
@@ -28,9 +29,9 @@ describe('导出快照的缓存归属', () => {
     const base = path.resolve('../videoCutTool_tmp/precise-review-20261023/unit');
     await fs.promises.mkdir(base, { recursive: true });
     const directory = await fs.promises.mkdtemp(path.join(base, 'case-'));
-    const registry = path.join(directory, 'registry'), slices = path.join(directory, 'slices'), root = path.join(slices, 'managed');
+    const registry = path.join(directory, 'registry'), root = path.join(resolveOutputDirectory(path.join(directory, 'source.mp4'), false), 'videoCutTool_tmp/slices/managed');
     const manager = new CacheMaintenanceService(registry);
-    const engine = new MediaCuttingEngine(undefined, slices, undefined, undefined, manager);
+    const engine = new MediaCuttingEngine(undefined, undefined, undefined, manager);
     const draft = new RetentionDraft(path.join(directory, 'source.mp4'), 1000);
     draft.setDecision('seg_0', 'discard');
     const plan = draft.toPlan([], { outputPath: directory });
@@ -42,10 +43,12 @@ describe('导出快照的缓存归属', () => {
       expect((await fs.promises.readdir(registry)).filter(name => name.endsWith('.json'))).toHaveLength(1);
       expect((await fs.promises.readdir(root)).filter(name => name.startsWith('asset_'))).toEqual([]);
       await engine.shutdown();
+      const releaseRoot = await manager.acquireOutputRoot(root);
       const task = await manager.create(root, 'task', '');
       const partial = path.join(task, 'precise_0_0.nut');
       await manager.allowTaskFile(task, partial); await fs.promises.writeFile(partial, '未完成的媒体');
       manager.release(task);
+      await releaseRoot();
       await manager.close();
       const recovered = new CacheMaintenanceService(registry);
       try { await recovered.discover(); await recovered.sweep(); expect(fs.existsSync(task)).toBe(false); expect(recovered.issues).toEqual([]); }
@@ -55,13 +58,14 @@ describe('导出快照的缓存归属', () => {
   it('引擎自建的维护服务在关闭后释放所有权，可以在同进程重新打开', async () => {
     const base = path.resolve('../videoCutTool_tmp/precise-review-20261023/unit');
     await fs.promises.mkdir(base, { recursive: true });
-    const directory = await fs.promises.mkdtemp(path.join(base, 'owned-')), slices = path.join(directory, 'slices');
+    const directory = await fs.promises.mkdtemp(path.join(base, 'owned-'));
+    const slices = path.join(resolveOutputDirectory(path.join(directory, 'source.mp4'), false), 'videoCutTool_tmp/slices');
     const draft = new RetentionDraft(path.join(directory, 'source.mp4'), 1000); draft.setDecision('seg_0', 'discard');
     const plan = draft.toPlan([], { outputPath: directory });
     await fs.promises.writeFile(plan.sourcePath, '无保留片段的源文件');
     const data = { plan, source: { identity: await mediaTools.fileIdentityAsync(plan.sourcePath) }, compressionOnly: false };
     for (let i = 0; i < 2; i++) {
-      const engine = new MediaCuttingEngine(undefined, slices);
+      const engine = new MediaCuttingEngine(undefined);
       try { expect((await engine.executeRawPlan(data)).success).toBe(false); }
       finally { await engine.shutdown(); }
       expect(fs.existsSync(path.join(slices, 'managed/.vct-owner.json'))).toBe(false);
@@ -71,8 +75,8 @@ describe('导出快照的缓存归属', () => {
 
 describe('单次导出的工具快照与共享探测', () => {
   it('中途更新配置后，本次探测与媒体处理仍使用旧工具，后续探测使用新工具', async () => {
-    const { directory, files: [oldFfmpeg, oldFfprobe, nextFfmpeg, nextFfprobe, source] } = await executionFixture();
-    const engine = new MediaCuttingEngine(oldFfmpeg, path.join(directory, 'slices'));
+    const { files: [oldFfmpeg, oldFfprobe, nextFfmpeg, nextFfprobe, source] } = await executionFixture();
+    const engine = new MediaCuttingEngine(oldFfmpeg);
     engine.updateTools(oldFfmpeg, oldFfprobe);
     const entered = deferred<void>(), resume = deferred<void>(), close = vi.fn(async () => {});
     engine.setInputProvider(async () => { entered.resolve(); await resume.promise; return { url: source, close }; });
@@ -101,8 +105,8 @@ describe('单次导出的工具快照与共享探测', () => {
   });
 
   it('同键消费者共享一次探测，取消其中一个不影响另一个及后续缓存命中', async () => {
-    const { directory, files: [ffmpeg] } = await executionFixture();
-    const engine = new MediaCuttingEngine(ffmpeg, path.join(directory, 'slices'));
+    const { files: [ffmpeg] } = await executionFixture();
+    const engine = new MediaCuttingEngine(ffmpeg);
     const complete = deferred<string>(), canceled = new AbortController();
     const run = vi.spyOn(mediaTools, 'runMediaTool').mockImplementation(() => complete.promise);
     try {
@@ -131,7 +135,7 @@ async function queuedFixture(compressionOnly = false) {
   const saved: PlanRecord[] = [];
   const saver = vi.fn(async (record: PlanRecord) => { saved.push(structuredClone(record)); });
   const finished = deferred<PlanRecord>(), blocked = deferred<void>();
-  const engine = new MediaCuttingEngine(ffmpeg, path.join(directory, 'slices'), saver, event => {
+  const engine = new MediaCuttingEngine(ffmpeg, saver, event => {
     if (event.status === 'completed' || event.status === 'failed') finished.resolve(event.record!);
   }, maintenance);
   engine.updateTools(ffmpeg, ffprobe);
@@ -163,6 +167,43 @@ async function queuedFixture(compressionOnly = false) {
 }
 
 describe('导出原片版本贯穿准备与发布', () => {
+  it('真实队列在发布后取消仍保存完整产物路径，重复清理已删除任务目录成功', async () => {
+    const f = await queuedFixture(), entered = deferred<void>();
+    let cancellation: ReturnType<MediaCuttingEngine['cancelActivePlan']> | undefined;
+    const link = fs.promises.link.bind(fs.promises);
+    vi.spyOn(fs.promises, 'link').mockImplementation(async (source,target) => {
+      await link(source,target);
+      if (!String(target).includes('probe-link')) { cancellation = f.engine.cancelActivePlan(f.record.id); entered.resolve(); }
+    });
+    try {
+      await f.engine.submitPlan(f.record,f.prober); await entered.promise;
+      expect((await cancellation!).success).toBe(true);
+      const saved = f.saved.at(-1)!;
+      expect(saved.status).toBe('ready'); expect(saved.outputPaths).toHaveLength(1);
+      expect(fs.existsSync(saved.outputPaths![0])).toBe(true);
+    } finally { await f.close(); }
+  });
+  it.each(['EXDEV', 'cancel'])('多文件发布中途失败保留并返回已完成文件（%s）', async failure => {
+    const f = await queuedFixture(), controller = new AbortController();
+    const draft = new RetentionDraft(f.source, 1000); draft.addCut(500); draft.outputMode = 'separate';
+    draft.compress = { enabled: true, preset: 'balanced', encoder: 'cpu' };
+    const plan = draft.toPlan([0], { outputPath:f.directory });
+    const link = fs.promises.link.bind(fs.promises); let count = 0;
+    vi.spyOn(fs.promises, 'link').mockImplementation(async (source, target) => {
+      if (!String(target).includes('probe-link')) {
+        count++;
+        if (count === 2 && failure === 'EXDEV') throw Object.assign(new Error('跨卷'), { code:'EXDEV' });
+      }
+      await link(source,target);
+      if (count === 1 && failure === 'cancel') controller.abort();
+    });
+    try {
+      const result = await f.engine.executeRawPlan({ plan, source:{ identity:f.identity, info:f.info }, compressionOnly:false }, controller.signal);
+      expect(result.success).toBe(false); expect(result.outputPaths, result.error).toHaveLength(1);
+      expect(await fs.promises.readFile(result.outputPaths![0], 'utf8')).toBe('定向验证媒体产物');
+      expect((await fs.promises.readdir(path.join(resolveOutputDirectory(f.source,false),'videoCutTool_tmp/slices/managed'))).filter(name => name.startsWith('asset_'))).toEqual([]);
+    } finally { await f.close(); }
+  });
   it('未确认来源时不启动媒体准备', async () => {
     const f = await queuedFixture(); delete f.record.sourceIdentity;
     try {
@@ -197,7 +238,7 @@ describe('导出原片版本贯穿准备与发布', () => {
       expect(f.run).not.toHaveBeenCalled();
       expect(f.probe).toHaveBeenCalledTimes(compressionOnly ? 1 : 0);
       expect(f.identityReads).toHaveBeenCalledTimes(compressionOnly ? 3 : 2);
-      expect(await fs.promises.readdir(path.join(f.directory, 'slices/managed'))).not.toEqual(expect.arrayContaining([expect.stringMatching(/^asset_/)]));
+      expect(await fs.promises.readdir(path.join(resolveOutputDirectory(f.source, compressionOnly), 'videoCutTool_tmp/slices/managed'))).not.toEqual(expect.arrayContaining([expect.stringMatching(/^asset_/)]));
     } finally { resume.resolve(); await f.close(); }
   });
 
@@ -224,9 +265,9 @@ describe('导出原片版本贯穿准备与发布', () => {
     try {
       const final = await f.submit();
       expect(final.status).toBe('failed'); expect(final.error).toContain('导出期间原片发生变化');
-      expect(await fs.promises.readdir(path.join(f.directory, 'cut'))).toEqual([]);
+      expect(await fs.promises.readdir(path.join(f.directory, 'cut'))).toEqual(['videoCutTool_tmp']);
       expect(f.closeInput).toHaveBeenCalledTimes(1); expect(f.identityReads).toHaveBeenCalledTimes(3);
-      expect((await fs.promises.readdir(path.join(f.directory, 'slices/managed'))).filter(name => name.startsWith('asset_'))).toEqual([]);
+      expect((await fs.promises.readdir(path.join(resolveOutputDirectory(f.source, false), 'videoCutTool_tmp/slices/managed'))).filter(name => name.startsWith('asset_'))).toEqual([]);
     } finally { await f.close(); }
   });
 
