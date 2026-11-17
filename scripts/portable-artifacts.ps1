@@ -112,7 +112,7 @@ function Assert-PortableSnapshot($Context,$Record,[string[]]$EvidenceDirectories
   if($Record.kind -eq 'release' -and [IO.Path]::GetDirectoryName($root) -ne $Context.Release){throw '发布根不合法'}
   Assert-ArtifactOutsideEvidence $root $EvidenceDirectories
   $actual=Get-ArtifactFiles $root
-  foreach($required in @('VideoCutTool.exe','app/VideoCutTool.exe','app/resources/app.asar','app/resources/bin/ffmpeg.exe','app/resources/bin/ffprobe.exe')){
+  foreach($required in @('VideoCutTool.exe','VideoCutTool-cli.exe','app/VideoCutTool.exe','app/resources/app.asar','app/resources/bin/ffmpeg.exe','app/resources/bin/ffprobe.exe')){
     $name=$required.Replace('/',[IO.Path]::DirectorySeparatorChar)
     if(-not $actual.ContainsKey($name) -or $actual[$name].bytes -le 0){throw "保留副本缺少有效文件：$name"}
   }
@@ -142,7 +142,7 @@ function Start-PortableArtifact([string]$Repository,[string]$Path) {
     Assert-ArtifactOutsideEvidence $target @(Get-ArtifactEvidenceDirectories $ctx @(Read-ArtifactRecords $ctx))
     if ([IO.Path]::GetFileName($target) -notmatch '^portable-[a-f0-9]{32}$') { throw '候选目录名称不合法' }
     if (Test-Path -LiteralPath $target) { throw '候选目录已存在，不得认领旧目录' }
-    $expected=@{'VideoCutTool.exe'=$true;'candidate.json'=$true;'builder-debug.yml'=$true;'builder-effective-config.yaml'=$true}
+    $expected=@{'VideoCutTool.exe'=$true;'VideoCutTool-cli.exe'=$true;'candidate.json'=$true;'builder-debug.yml'=$true;'builder-effective-config.yaml'=$true}
     $electron=Join-Path $ctx.Repository 'node_modules/electron/dist'
     foreach($prefix in @('app','win-unpacked')){
       if(Test-Path -LiteralPath $electron){foreach($file in @(Get-ChildItem -LiteralPath $electron -Recurse -File)){$expected[(Join-Path $prefix ([IO.Path]::GetRelativePath($electron,$file.FullName)))]=$true}}
@@ -162,7 +162,7 @@ function Complete-PortableArtifact([string]$Repository,[string]$Id,[bool]$Succee
     if (-not $record -or $record.owner -ne $PID -or $record.state -ne 'building') { throw '候选归属或状态不匹配' }
     Assert-ArtifactPath $record.root $ctx.Temporary | Out-Null
     if ($Succeeded) {
-      foreach ($name in @('VideoCutTool.exe','app/VideoCutTool.exe','app/resources/app.asar','app/resources/bin/ffmpeg.exe','app/resources/bin/ffprobe.exe')) { if (-not (Test-Path -LiteralPath (Join-Path $record.root $name) -PathType Leaf)) { throw "候选必要文件缺失：$name" } }
+      foreach ($name in @('VideoCutTool.exe','VideoCutTool-cli.exe','app/VideoCutTool.exe','app/resources/app.asar','app/resources/bin/ffmpeg.exe','app/resources/bin/ffprobe.exe')) { if (-not (Test-Path -LiteralPath (Join-Path $record.root $name) -PathType Leaf)) { throw "候选必要文件缺失：$name" } }
     }
     $record.files=Get-ArtifactFiles $record.root
     foreach($name in $record.files.Keys){if(-not $record.expected.ContainsKey($name)){throw "构建含事前未登记文件：$name"}}
@@ -183,7 +183,7 @@ function Register-CurrentPortable([string]$Repository,[string]$CandidateId,[stri
       Save-ArtifactRecord $ctx $old
     }
     $candidate.state='transferred'; Save-ArtifactRecord $ctx $candidate
-    $new=@{version=1;id=[guid]::NewGuid().ToString();root=$ctx.Release;kind='current';state='ready';owner=0;created=$candidate.created;completed=[DateTime]::UtcNow.Ticks;files=(Get-ArtifactFiles $ctx.Release @('app','VideoCutTool.exe'));pinned=$true;sourceId=$CandidateId}
+    $new=@{version=1;id=[guid]::NewGuid().ToString();root=$ctx.Release;kind='current';state='ready';owner=0;created=$candidate.created;completed=[DateTime]::UtcNow.Ticks;files=(Get-ArtifactFiles $ctx.Release @('app','VideoCutTool.exe','VideoCutTool-cli.exe'));pinned=$true;sourceId=$CandidateId}
     Save-ArtifactRecord $ctx $new
   }
 }
@@ -196,7 +196,7 @@ function Register-PortableRelease([string]$Repository,[string]$CandidateId,[stri
     $dir=Assert-ArtifactPath $Directory $ctx.Release; $zipPath=Assert-ArtifactPath $Zip $ctx.Release
     if ([IO.Path]::GetDirectoryName($dir) -ne $ctx.Release -or [IO.Path]::GetDirectoryName($zipPath) -ne $ctx.Release -or [IO.Path]::GetExtension($zipPath) -ne '.zip') { throw '发布副本必须直接位于 release 内' }
     $files=Get-ArtifactFiles $dir
-    $expected=@{}; foreach($name in $source.files.Keys){if($name -eq 'VideoCutTool.exe' -or $name -match '^app[\\/]'){$expected[$name]=$source.files[$name]}}
+    $expected=@{}; foreach($name in $source.files.Keys){if($name -in @('VideoCutTool.exe','VideoCutTool-cli.exe') -or $name -match '^app[\\/]'){$expected[$name]=$source.files[$name]}}
     if ($files.Count -ne $expected.Count) { throw '发布目录条目与候选不一致' }
     foreach($name in $files.Keys){ if(-not $expected.ContainsKey($name) -or $files[$name].bytes -ne $expected[$name].bytes){throw "发布文件与候选不一致：$name"} }
     $archive=[IO.Compression.ZipFile]::OpenRead($zipPath)

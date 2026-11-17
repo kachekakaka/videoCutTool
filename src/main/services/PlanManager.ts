@@ -17,7 +17,7 @@ export class PlanManager {
   private listener?: (change: PlanChange) => void;
   private confirmations = new Map<string, { id: string; record: string; identity: string }>();
   readonly ready: Promise<void>;
-  constructor(directory: string, private engine: MediaCuttingEngine, private prober: KeyframeProber) {
+  constructor(directory: string, private engine: MediaCuttingEngine, private prober: KeyframeProber, private startupPolicy: 'restore' | 'new-only' = 'restore') {
     const resolved = path.resolve(directory);
     const plansDir = path.basename(resolved) === 'plans' ? resolved : path.join(resolved, 'plans');
     this.store = new PlanRecordStore(plansDir);
@@ -107,7 +107,9 @@ export class PlanManager {
     }));
     this.records = next; this.issues = issues;
 
-    if (startup) {
+    if (startup && this.startupPolicy === 'new-only') {
+      this.engine.initQueueState?.(false, null, []);
+    } else if (startup) {
       const { state, degraded } = await this.readQueueState();
       const validRecordMap = new Map([...next.entries()].filter(([_, r]) => r.status === 'queued'));
       // 关键安全降级：快照缺失或损坏但存在 queued 任务时，安全降级为暂停，不能意外自动派发

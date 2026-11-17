@@ -1,8 +1,10 @@
 import fs from 'fs';
 import path from 'path';
-import { AppConfig, CompressConfig, PlanRecord } from '../../shared/types';
+import { AppConfig, PlanRecord } from '../../shared/types';
 import { validateSpatial } from '../../shared/spatialFiltergraph';
 import { validateOutputGroups } from '../../shared/RetentionPlanner';
+import { validateCompress } from './ProcessingValidation';
+export { validateCompress } from './ProcessingValidation';
 
 export function textValue(value: unknown, label: string, max = 4096): asserts value is string {
   if (typeof value !== 'string' || !value || value.length > max || value.includes('\0')) throw new Error(`${label}无效`);
@@ -11,12 +13,6 @@ export function localPath(value: unknown): asserts value is string {
   textValue(value, '本地路径'); if (!path.isAbsolute(value)) throw new Error('仅允许绝对本地路径');
 }
 export function requestId(value: unknown): asserts value is string { textValue(value, '请求标识', 128); if (!/^[\w-]+$/.test(value)) throw new Error('请求标识无效'); }
-export function validateCompress(value?: CompressConfig) {
-  if (value === undefined) return;
-  if (!value || typeof value.enabled !== 'boolean' || !['custom', 'high_quality', 'balanced', 'high_compression', 'scale_1080p'].includes(value.preset) || (value.encoder !== undefined && !['auto', 'cpu', 'nvenc', 'qsv'].includes(value.encoder)) || (value.hardwareAcceleration !== undefined && typeof value.hardwareAcceleration !== 'boolean')) throw new Error('压缩配置无效');
-  if (value.crf !== undefined && (!Number.isFinite(value.crf) || value.crf < 0 || value.crf > 51)) throw new Error('压缩画质参数无效');
-  if (value.maxHeight !== undefined && (!Number.isInteger(value.maxHeight) || value.maxHeight < 2 || value.maxHeight > 16384)) throw new Error('压缩尺寸无效');
-}
 export function validateConfigPatch(patch: Partial<AppConfig>) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('配置内容无效');
   const booleans = ['autoConcatSingleFile', 'stripOriginalCover', 'notifyOnExportComplete'];
@@ -32,6 +28,10 @@ export function validateRecord(record: PlanRecord) {
   if (!record || typeof record !== 'object') throw new Error('方案内容无效');
   requestId(record.id); localPath(record.sourcePath); textValue(record.title, '方案标题', 256);
   if (record.outputPath) localPath(record.outputPath);
+  if (record.requestedOutputPath !== undefined) {
+    localPath(record.requestedOutputPath);
+    if (!record.compressionOnly && record.outputMode !== 'single') throw new Error('指定输出路径只允许单文件输出');
+  }
   const unknownDuration = record.compressionOnly === true && record.totalDurationMs === null && record.keptDurationMs === null;
   if ((!unknownDuration && (typeof record.totalDurationMs !== 'number' || !Number.isFinite(record.totalDurationMs) || record.totalDurationMs <= 0)) || !Array.isArray(record.cuts) || record.cuts.length > 10000 || record.cuts.some((cut, index) => !Number.isFinite(cut) || cut <= 0 || record.totalDurationMs === null || cut >= record.totalDurationMs || (index > 0 && cut <= record.cuts[index - 1]))) throw new Error('方案切点或时长无效');
   if (!record.decisions || Array.isArray(record.decisions) || typeof record.decisions !== 'object') throw new Error('方案保留决策无效');
@@ -55,6 +55,12 @@ export function validateRecord(record: PlanRecord) {
     for (const [id, config] of Object.entries(record.segmentSpatialOverrides)) { if (!validId(id) || !config) throw new Error('独立画面配置对应分段不存在'); validateSpatial(config); }
   }
   if (JSON.stringify(record).length > 4 * 1024 * 1024) throw new Error('方案内容过大');
+}
+
+/** 桌面页面不能通过公共记录字段绕过文件授权指定任意发布位置。 */
+export function validateDesktopRecord(record: PlanRecord) {
+  if (record?.requestedOutputPath !== undefined) throw new Error('桌面请求不允许指定完整输出路径');
+  validateRecord(record);
 }
 
 /** 仅登记用户实际选择、已保存方案或服务生成的文件，不向页面暴露任意路径登记接口。 */

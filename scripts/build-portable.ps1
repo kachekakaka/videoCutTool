@@ -46,6 +46,10 @@ try {
   $candidateLauncher = Join-Path $candidatePath 'VideoCutTool.exe'
   & $compiler /target:winexe /optimize+ "/out:$candidateLauncher" (Join-Path $PSScriptRoot 'launcher.cs')
   if ($LASTEXITCODE -ne 0) { throw '启动器编译失败，旧便携版本保持原状' }
+  $candidateCli = Join-Path $candidatePath 'VideoCutTool-cli.exe'
+  & $compiler /target:exe /optimize+ /reference:System.Web.Extensions.dll "/out:$candidateCli" (Join-Path $PSScriptRoot 'cli-launcher.cs')
+  if ($LASTEXITCODE -ne 0) { throw 'CLI 启动器编译失败，旧便携版本保持原状' }
+  Require-File $candidateCli
   foreach ($file in @($candidateLauncher, (Join-Path $candidateApp 'VideoCutTool.exe'), (Join-Path $candidateApp 'resources/app.asar'), (Join-Path $candidateApp 'resources/bin/ffmpeg.exe'), (Join-Path $candidateApp 'resources/bin/ffprobe.exe'))) { Require-File $file }
   & node -e "const a=require('@electron/asar');const p=require('path');const f=a.listPackage(p.join(process.argv[1],'resources/app.asar'));for(const x of ['/dist/index.html','/dist-electron/main.js','/dist-electron/preload.cjs'])if(!f.some(y=>y.replaceAll(String.fromCharCode(92),'/')===x))throw Error('Missing '+x)" $candidateApp
   if ($LASTEXITCODE -ne 0) { throw '应用内容验证失败，旧便携版本保持原状' }
@@ -60,6 +64,7 @@ try {
 
   $targetApp = Join-Path $releasePath 'app'
   $targetLauncher = Join-Path $releasePath 'VideoCutTool.exe'
+  $targetCli = Join-Path $releasePath 'VideoCutTool-cli.exe'
   foreach ($pointer in @((Join-Path $releasePath 'workspace.json'), (Join-Path $releasePath 'config.json'))) {
     if (Test-Path -LiteralPath $pointer) {
       $data = [IO.File]::ReadAllText($pointer) | ConvertFrom-Json
@@ -69,22 +74,27 @@ try {
       }
     }
   }
-  $occupied = Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -and ($_.Path -eq $targetLauncher -or $_.Path.StartsWith($targetApp + '\', [StringComparison]::OrdinalIgnoreCase)) } catch { $false } }
+  $occupied = Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -and ($_.Path -eq $targetLauncher -or $_.Path -eq $targetCli -or $_.Path.StartsWith($targetApp + '\', [StringComparison]::OrdinalIgnoreCase)) } catch { $false } }
   if ($occupied) { throw "旧版本正在运行，请关闭相关实例后重新打包。候选包保留：$candidatePath" }
   New-Item -ItemType Directory -Path $releasePath -Force | Out-Null
   $backup = Join-Path $candidatePath 'previous'; New-Item -ItemType Directory -Path $backup | Out-Null
   $movedApp = $false; $movedLauncher = $false; $installedApp = $false; $installedLauncher = $false
+  $movedCli = $false; $installedCli = $false
   try {
     if (Test-Path -LiteralPath $targetApp) { Move-Owned $targetApp (Join-Path $backup 'app'); $movedApp = $true }
     if (Test-Path -LiteralPath $targetLauncher) { Move-Owned $targetLauncher (Join-Path $backup 'VideoCutTool.exe'); $movedLauncher = $true }
+    if (Test-Path -LiteralPath $targetCli) { Move-Owned $targetCli (Join-Path $backup 'VideoCutTool-cli.exe'); $movedCli = $true }
     Move-Owned $candidateApp $targetApp; $installedApp = $true
     Move-Owned $candidateLauncher $targetLauncher; $installedLauncher = $true
+    Move-Owned $candidateCli $targetCli; $installedCli = $true
   } catch {
     $publishError = $_
+    if ($installedCli) { Move-Owned $targetCli $candidateCli }
     if ($installedLauncher) { Move-Owned $targetLauncher $candidateLauncher }
     if ($installedApp) { Move-Owned $targetApp $candidateApp }
     if ($movedApp) { Move-Owned (Join-Path $backup 'app') $targetApp }
     if ($movedLauncher) { Move-Owned (Join-Path $backup 'VideoCutTool.exe') $targetLauncher }
+    if ($movedCli) { Move-Owned (Join-Path $backup 'VideoCutTool-cli.exe') $targetCli }
     throw $publishError
   }
   try { Register-CurrentPortable -Repository $repoPath -CandidateId $artifactId -PreviousPath $backup }

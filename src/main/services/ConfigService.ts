@@ -10,10 +10,14 @@ export class ConfigService {
   private currentConfig: AppConfig;
   private dataDir: string;
 
-  constructor(dataDir: string = process.cwd(), configPath?: string) {
+  constructor(dataDir: string = process.cwd(), configPath?: string, private mode: 'desktop' | 'cli' = 'desktop') {
     this.dataDir = path.resolve(dataDir);
+    if (mode === 'desktop') ConfigService.assertDesktopDirectory(this.dataDir);
     this.configPath = configPath || path.join(this.dataDir, 'config.json');
     this.currentConfig = this.loadOrCreateConfig();
+  }
+  private static assertDesktopDirectory(directory: string) {
+    if (fs.existsSync(path.join(directory, '.videocuttool-cli.json'))) throw new Error('CLI 专用数据目录不能绑定到桌面，请选择独立目录');
   }
 
   /**
@@ -62,6 +66,7 @@ export class ConfigService {
     overrides?: Partial<AppConfig>
   ): ConfigService {
     const resolvedDataDir = path.resolve(selectedDataDir);
+    ConfigService.assertDesktopDirectory(resolvedDataDir);
     if (!fs.existsSync(resolvedDataDir)) {
       fs.mkdirSync(resolvedDataDir, { recursive: true });
     }
@@ -112,24 +117,26 @@ export class ConfigService {
    * 加载或自愈创建默认 config.json
    */
   public loadOrCreateConfig(): AppConfig {
+    const defaults: AppConfig = this.mode === 'cli' ? { ...DEFAULT_APP_CONFIG, dataDirectory: this.dataDir, plansStoragePath: this.getPlansDirectory(), ffmpegPath: '', ffprobePath: '', notifyOnExportComplete: false } : DEFAULT_APP_CONFIG;
     try {
       if (fs.existsSync(this.configPath)) {
         const raw = fs.readFileSync(this.configPath, 'utf-8');
         const parsed = JSON.parse(raw);
         // 与默认值安全浅合并，补齐可能缺失的字段（自愈能力）
         const merged: AppConfig = {
-          ...DEFAULT_APP_CONFIG,
+          ...defaults,
           ...parsed,
         };
         return merged;
       }
     } catch (err) {
+      if (this.mode === 'cli') throw err;
       console.warn('读取 config.json 失败，将重新生成默认配置:', err);
     }
 
     // 文件不存在或损坏，原子写入默认配置
-    this.saveConfig(DEFAULT_APP_CONFIG);
-    return { ...DEFAULT_APP_CONFIG };
+    this.saveConfig(defaults);
+    return { ...defaults };
   }
 
   /**

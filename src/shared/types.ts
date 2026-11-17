@@ -136,6 +136,7 @@ export interface OutputFilePlan extends OutputGroup {
 }
 
 export interface MediaRetentionPlan {
+  requestedOutputPath?: string;
   exportPrecision?: ExportPrecision;
   version: '1.0';
   title?: string;
@@ -152,6 +153,7 @@ export interface MediaRetentionPlan {
 export type ExecutionStatus = 'ready' | 'queued' | 'processing' | 'completed' | 'failed';
 
 interface PlanRecordFields {
+  requestedOutputPath?: string;
   sourceIdentity?: string;
   contentRevision?: string;
   exportPrecision?: ExportPrecision;

@@ -18,6 +18,7 @@ export default defineConfig({
     electron([
       {
         entry: 'electron/main.ts',
+        vite: { build: { target: 'node20' } },
         onstart(options) {
           // 插件默认附加 --no-sandbox，与主进程 enableSandbox 冲突；显式保持沙箱启动。
           options.startup(['.']);

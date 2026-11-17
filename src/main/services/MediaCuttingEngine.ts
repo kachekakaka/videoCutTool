@@ -43,6 +43,17 @@ export class MediaCuttingEngine {
   private onStateChange?: (state: EngineState) => void;
   private storageError: string | null = null;
   private pendingFinal: PlanRecord | null = null;
+  private results = new Map<string, PlanRecord>();
+  private publishedResults = new Map<string, string[]>();
+  private observers = new Set<() => void>();
+  subscribeExecution(listener: () => void) { this.observers.add(listener); return () => { this.observers.delete(listener); }; }
+  getExecutionSnapshot(id: string) {
+    const pending = this.pendingFinal?.id === id ? this.pendingFinal : this.pendingCancelReady?.id === id ? this.pendingCancelReady : null;
+    const record = pending || this.results.get(id) || this.accepted.get(id)?.record;
+    return structuredClone({ record, pendingFinal: pending, storageError: this.storageError, completedPersisted: this.results.get(id)?.status === 'completed', outputPaths: this.publishedResults.get(id) || record?.outputPaths || [], progress: this.progress?.planId === id ? this.progress : null });
+  }
+  /** CLI 存储故障只停止本轮工作，不清空待保存结果，也不自动重试。 */
+  async stopAfterStorageFailure() { await this.shutdown(); }
   private retryTask: Promise<void> | null = null;
   private closing = false;
   private cachedEncoders = new Map<string, Encoder>();
@@ -214,9 +225,9 @@ export class MediaCuttingEngine {
   getPriorityPlanId(): string | null { return this.priorityPlanId; }
   getCurrentRunId(): symbol | null { return this.currentRunId; }
   private clearProgress() { this.progressRun = null; this.progress = null; }
-  private stateChanged() { this.onStateChange?.(this.getState()); }
+  private stateChanged() { this.onStateChange?.(this.getState()); for (const listener of this.observers) listener(); }
   private async persist(record: PlanRecord) { await this.savePlanFn?.(record); }
-  private notify(record: PlanRecord) { this.onStatusChange?.({ planId: record.id, status: record.status, record: structuredClone(record), outputPath: record.outputPath || undefined, error: record.error }); }
+  private notify(record: PlanRecord) { this.results.set(record.id, structuredClone(record)); this.onStatusChange?.({ planId: record.id, status: record.status, record: structuredClone(record), outputPath: record.outputPath || undefined, error: record.error }); for (const listener of this.observers) listener(); }
   submitPlan(record: PlanRecord, prober: KeyframeProber): Promise<{ queued: boolean; active: boolean }> {
     const pending = this.submitting.get(record.id); if (pending) return pending;
     if (this.accepted.has(record.id)) return Promise.resolve({ queued: this.getActivePlanId() !== record.id, active: this.getActivePlanId() === record.id });
@@ -689,6 +700,7 @@ export class MediaCuttingEngine {
             const draft = RetentionDraft.fromRecord(processing, meta.durationMs);
             plan = draft.toPlan(meta.keyframes, { outputPath: processing.outputPath || processing.sourcePath, stripOriginalCover: processing.stripOriginalCover !== false, title: processing.title, keyframePoints: meta.keyframePoints });
           }
+          plan.requestedOutputPath = processing.requestedOutputPath;
           const execTask = execution.executeSnapshot({ plan, source, compressionOnly: processing.compressionOnly === true }, this.controller.signal);
           const result = await execTask;
           final = result.success
@@ -696,6 +708,7 @@ export class MediaCuttingEngine {
             : { ...processing, status: 'failed', outputPath: result.outputPath, outputPaths: result.outputPaths, error: result.error || '剪辑失败' };
         } catch (error) { final = { ...processing, status: 'failed', error: error instanceof Error ? error.message : String(error) }; }
 
+        this.publishedResults.set(final.id, [...(final.outputPaths || [])]);
         // 如果被主动中止或取消，不持久化为 failed，交由 cancelActivePlan 完成收尾
         if (this.controller?.signal.aborted || this.cancelledActiveId === processing.id || this.currentRunId !== run) {
           if (final.outputPaths?.length) job.record = { ...job.record, outputPath: final.outputPaths[0], outputPaths: final.outputPaths };
@@ -921,12 +934,13 @@ class PlanExecution {
     const { plan, source: boundSource, compressionOnly } = data;
     this.maintenance.protect(plan.sourcePath);
     if (signal?.aborted) throw new Error('操作已取消');
-    const destination = resolveOutputDirectory(plan.sourcePath, compressionOnly);
+    const destination = plan.requestedOutputPath ? path.dirname(plan.requestedOutputPath) : resolveOutputDirectory(plan.sourcePath, compressionOnly);
     const workspace = await createOutputWorkspace(destination, this.maintenance, signal);
     const { directory } = workspace;
     this.onTaskDir?.(directory);
     return this.maintenance.task(directory, async () => {
     let indexedInput: { url: string; close: () => Promise<void> } | undefined;
+    const publishedPaths: string[] = [];
     try {
       if (!plan.outputs.length || (!compressionOnly && plan.outputs.some(output => !output.planSegments.length))) throw new Error('未选择任何保留片段');
       if (signal?.aborted) throw abortError();
@@ -945,6 +959,7 @@ class PlanExecution {
         ? plan.compress
         : { enabled: true, preset: 'balanced', crf: 22 };
       const formats = precise ? { intermediateExtension: '.nut', outputExtension: '.mp4' } : resolveFormats(plan.sourcePath, info.streams, needCompress ? effectiveCompressConfig : undefined, plan.stripOriginalCover !== false);
+      if (plan.requestedOutputPath && (plan.outputs.length !== 1 || path.extname(plan.requestedOutputPath).toLowerCase() !== formats.outputExtension)) throw new Error('指定输出路径与输出容器不兼容');
       let encoder: Encoder | undefined = precise ? 'cpu' : needCompress ? await this.probeEncoderSupport(effectiveCompressConfig, signal) : undefined;
       const encode = async (output: string, work: (selected: Encoder, retry: boolean) => Promise<void>) => {
         try { await work(encoder!, false); }
@@ -1033,17 +1048,18 @@ class PlanExecution {
       const timestamp = formatTaskTimestamp();
       for (let attempt = 0; attempt < 10; attempt++) {
         if (signal?.aborted) throw new Error('操作已取消');
-        const targets = resolveOutputBatch({ directory: destination, source: plan.sourcePath, title: plan.title, extension: formats.outputExtension, count: finalFiles.length, segmented: finalFiles.length > 1, timestamp });
+        const targets = plan.requestedOutputPath ? [plan.requestedOutputPath] : resolveOutputBatch({ directory: destination, source: plan.sourcePath, title: plan.title, extension: formats.outputExtension, count: finalFiles.length, segmented: finalFiles.length > 1, timestamp });
         const published: Array<{ file: string; identity: fs.Stats }> = [];
         try {
           for (let i = 0; i < targets.length; i++) {
             this.tracker?.stage('publishing', i + 1, targets.length);
             published.push({ file: targets[i], identity: await publishOutput(finalFiles[i], targets[i], signal) });
+            publishedPaths.push(targets[i]);
             this.tracker?.finishOperation(`publish:${i}`);
           }
           return { success: true, outputPath: targets[0], outputPaths: targets, resolvedEncoder: encoder };
         } catch (error: any) {
-          if (error.code !== 'EEXIST') return { success: false, outputPath: published[0]?.file || plan.outputPath, outputPaths: published.map(entry => entry.file), error: `${error.message || error}${published.length ? `；已保留 ${published.length} 个完整分段：${published.map(entry => entry.file).join('、')}` : ''}` };
+          if (error.code !== 'EEXIST' || plan.requestedOutputPath) return { success: false, outputPath: published[0]?.file || '', outputPaths: published.map(entry => entry.file), error: `${error.code === 'EEXIST' ? 'OUTPUT_EXISTS: 目标文件已存在；' : ''}${error.message || error}${published.length ? `；已保留 ${published.length} 个完整分段：${published.map(entry => entry.file).join('、')}` : ''}` };
           for (let i = 0; i < published.length; i++) {
             try { await removePublished(published[i].file, published[i].identity); }
             catch (cleanupError) {
@@ -1056,8 +1072,10 @@ class PlanExecution {
       throw new Error('输出目录持续出现同名文件，未覆盖已有文件，请重试');
     } catch (error) { return { success: false, outputPath: plan.outputPath, error: error instanceof Error ? error.message : String(error) }; }
     finally {
-      await indexedInput?.close().catch(error => console.warn('索引输入关闭失败：', error));
-      await workspace.close().catch(error => console.warn('本次导出缓存收尾失败，成品保留：', error));
+      const cleanupErrors: string[] = [];
+      await indexedInput?.close().catch(error => { cleanupErrors.push(String(error)); console.warn('索引输入关闭失败：', error); });
+      await workspace.close().catch(error => { cleanupErrors.push(String(error)); console.warn('本次导出缓存收尾失败，成品保留：', error); });
+      if (plan.requestedOutputPath && cleanupErrors.length) return { success: false, outputPath: publishedPaths[0] || '', outputPaths: publishedPaths, error: `CLEANUP_FAILED: ${cleanupErrors.join('；')}` };
     }
     });
   }

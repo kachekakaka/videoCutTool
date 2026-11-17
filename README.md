@@ -10,6 +10,7 @@
 | --- | --- |
 | 授权、协作、Git 与临时文件边界 | [AGENTS.md](AGENTS.md) |
 | 业务概念与术语含义 | [CONTEXT.md](CONTEXT.md) |
+| 命令行压缩、无损剪切及程序调用 | [CLI 使用契约](docs/CLI.md) |
 | 模块职责、媒体读取成本、数据归属 | [docs/架构.md](docs/架构.md)；接口字段查其中链接的源码 |
 | 页面布局与交互演示 | [唯一原型](docs/prototypes/prototype.html)，新页面在原文件追加 Tab |
 | 当前待做与暂缓事项 | [待做事项](docs/待做事项.md) |
